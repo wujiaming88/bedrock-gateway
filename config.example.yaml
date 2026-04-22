@@ -1,0 +1,69 @@
+# Bedrock Gateway example configuration
+# Copy to config.yaml and customize.
+
+# ─── Authentication ───────────────────────────────────────
+# Supported modes: bearer_token | credentials | iam_role | profile
+auth:
+  mode: bearer_token
+  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}
+
+  # -- credentials mode --
+  # mode: credentials
+  # access_key_id: ${AWS_ACCESS_KEY_ID}
+  # secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+  # session_token: ${AWS_SESSION_TOKEN}  # optional
+
+  # -- iam_role mode (auto from EC2/ECS/Lambda) --
+  # mode: iam_role
+
+  # -- profile mode (AWS CLI profile) --
+  # mode: profile
+  # profile: default
+
+# ─── Region ───────────────────────────────────────────────
+region: us-east-1
+
+# ─── Server ───────────────────────────────────────────────
+server:
+  host: 127.0.0.1
+  port: 4000
+  log_level: info   # debug | info | warning | error
+
+# ─── Retry ────────────────────────────────────────────────
+retry:
+  max_retries: 3
+  base_delay: 1.0   # seconds, exponential backoff: delay * 2^attempt
+
+# ─── Models ───────────────────────────────────────────────
+# Map user-facing aliases to Bedrock model IDs.
+# Omit this section entirely to use the built-in defaults.
+models:
+  claude-opus-4.7:
+    bedrock_id: us.anthropic.claude-opus-4-7
+    context_length: 1000000
+    max_output: 128000
+
+  claude-opus-4:
+    bedrock_id: us.anthropic.claude-opus-4-6-v1
+    context_length: 1000000
+    max_output: 128000
+
+  claude-sonnet-4.6:
+    bedrock_id: us.anthropic.claude-sonnet-4-6
+    context_length: 1000000
+    max_output: 64000
+
+  claude-sonnet-4:
+    bedrock_id: us.anthropic.claude-sonnet-4-20250514-v1:0
+    context_length: 200000
+    max_output: 64000
+
+  claude-haiku:
+    bedrock_id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    context_length: 200000
+    max_output: 64000
+
+  claude-sonnet-3.5:
+    bedrock_id: us.anthropic.claude-3-5-sonnet-20241022-v2:0
+    context_length: 200000
+    max_output: 64000

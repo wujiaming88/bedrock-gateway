@@ -1,0 +1,16 @@
+services:
+  bedrock-gateway:
+    build: .
+    ports:
+      - "4000:4000"
+    environment:
+      - AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

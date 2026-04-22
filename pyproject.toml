@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bedrock-gateway"
+version = "0.1.0"
+description = "Lightweight OpenAI-compatible proxy for AWS Bedrock"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Bedrock Gateway Contributors" },
+]
+keywords = ["aws", "bedrock", "openai", "proxy", "claude", "anthropic", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "httpx>=0.24.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+boto3 = ["boto3>=1.28.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.24.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+]
+all = ["bedrock-gateway[boto3,dev]"]
+
+[project.scripts]
+bedrock-gateway = "bedrock_gateway.server:run"
+
+[project.urls]
+Homepage = "https://github.com/bedrock-gateway/bedrock-gateway"
+Repository = "https://github.com/bedrock-gateway/bedrock-gateway"
+Issues = "https://github.com/bedrock-gateway/bedrock-gateway/issues"
+
+[tool.setuptools.packages.find]
+include = ["bedrock_gateway*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
