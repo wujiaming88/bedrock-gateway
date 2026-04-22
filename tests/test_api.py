@@ -125,7 +125,9 @@ class TestChatCompletionsSync:
         assert data["object"] == "chat.completion"
         assert data["choices"][0]["message"]["content"] == "Hello from Bedrock!"
         assert data["choices"][0]["finish_reason"] == "stop"
-        assert data["usage"]["input_tokens"] == 10
+        assert data["usage"]["prompt_tokens"] == 10
+        assert data["usage"]["completion_tokens"] == 5
+        assert data["usage"]["total_tokens"] == 15
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_with_system_message(self, mock_client_cls, client: TestClient):

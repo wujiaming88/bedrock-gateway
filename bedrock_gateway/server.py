@@ -28,6 +28,7 @@ from .config import GatewayConfig, load_config
 from .converter import (
     convert_tool_choice,
     convert_tools,
+    convert_usage,
     decode_event_stream_chunk,
     extract_system_and_messages,
     make_stream_chunk,
@@ -225,7 +226,7 @@ async def _handle_sync(
                     "choices": [
                         {"index": 0, "message": message, "finish_reason": finish}
                     ],
-                    "usage": usage,
+                    "usage": convert_usage(usage),
                 }
 
             if resp.status_code in (429, 529, 503):
@@ -316,6 +317,8 @@ async def _handle_stream(
 
                         buf = b""
                         processed = 0
+                        stream_input_tokens = 0
+                        stream_output_tokens = 0
                         current_tool_id: str | None = None
                         current_tool_name: str | None = None
 
@@ -325,7 +328,11 @@ async def _handle_stream(
                             for event in events:
                                 etype = event.get("type", "")
 
-                                if etype == "content_block_start":
+                                if etype == "message_start":
+                                    _mu = event.get("message", {}).get("usage", {})
+                                    stream_input_tokens = _mu.get("input_tokens", 0)
+
+                                elif etype == "content_block_start":
                                     cb = event.get("content_block", {})
                                     if cb.get("type") == "tool_use":
                                         current_tool_id = cb.get("id", "")
@@ -379,9 +386,21 @@ async def _handle_stream(
                                         "stop_reason", "end_turn"
                                     )
                                     fr = "tool_calls" if sr == "tool_use" else "stop"
+                                    _du = event.get("usage", {})
+                                    if _du.get("output_tokens"):
+                                        stream_output_tokens = _du["output_tokens"]
+                                    if _du.get("input_tokens"):
+                                        stream_input_tokens = _du["input_tokens"]
                                     yield make_stream_chunk(
                                         msg_id, model, {}, fr
                                     )
+                                    # Send separate usage-only chunk (OpenAI stream_options format)
+                                    _usage = {
+                                        "prompt_tokens": stream_input_tokens,
+                                        "completion_tokens": stream_output_tokens,
+                                        "total_tokens": stream_input_tokens + stream_output_tokens,
+                                    }
+                                    yield f'data: {json.dumps({"id": msg_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [], "usage": _usage})}\n\n'
 
                             processed = len(buf)
 

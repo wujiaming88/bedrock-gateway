@@ -233,6 +233,18 @@ def extract_system_and_messages(
 # Response parsing
 # ---------------------------------------------------------------------------
 
+
+def convert_usage(bedrock_usage: dict) -> dict:
+    """Convert Bedrock usage format to OpenAI format."""
+    input_t = bedrock_usage.get("input_tokens", 0)
+    output_t = bedrock_usage.get("output_tokens", 0)
+    return {
+        "prompt_tokens": input_t,
+        "completion_tokens": output_t,
+        "total_tokens": input_t + output_t,
+    }
+
+
 def parse_bedrock_response(result: dict) -> tuple[dict, str]:
     """
     Parse a Bedrock (Anthropic) response into an OpenAI-compatible message.
