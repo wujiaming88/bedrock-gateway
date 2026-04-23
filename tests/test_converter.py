@@ -15,6 +15,7 @@ from bedrock_gateway.converter import (
     decode_event_stream_chunk,
     extract_system_and_messages,
     make_stream_chunk,
+    map_reasoning_effort,
     parse_bedrock_response,
 )
 
@@ -357,6 +358,94 @@ class TestParsBedrockResponse:
         message, finish = parse_bedrock_response({"content": []})
         assert message["content"] is None
         assert finish == "stop"
+
+    def test_parse_thinking_blocks(self):
+        """Thinking blocks are extracted into reasoning_content."""
+        result = {
+            "content": [
+                {"type": "thinking", "thinking": "Let me think..."},
+                {"type": "thinking", "thinking": " Step 2."},
+                {"type": "text", "text": "Here is my answer."},
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        }
+        message, finish = parse_bedrock_response(result)
+        assert message["role"] == "assistant"
+        assert message["content"] == "Here is my answer."
+        assert message["reasoning_content"] == "Let me think... Step 2."
+        assert finish == "stop"
+
+    def test_parse_redacted_thinking(self):
+        """Redacted thinking blocks are collected; they have no 'thinking' text."""
+        result = {
+            "content": [
+                {"type": "thinking", "thinking": "Visible thought."},
+                {"type": "redacted_thinking", "data": "encrypted-blob"},
+                {"type": "text", "text": "Final answer."},
+            ],
+        }
+        message, finish = parse_bedrock_response(result)
+        assert message["content"] == "Final answer."
+        # redacted_thinking has no 'thinking' key, so only the first block contributes
+        assert message["reasoning_content"] == "Visible thought."
+        assert finish == "stop"
+
+    def test_no_thinking_no_reasoning_content(self):
+        """When there are no thinking blocks, reasoning_content is absent."""
+        result = {"content": [{"type": "text", "text": "Just text."}]}
+        message, _ = parse_bedrock_response(result)
+        assert "reasoning_content" not in message
+
+
+# ─── Reasoning Effort Mapping ───────────────────────────────────────
+
+
+class TestReasoningEffortMapping:
+    """Tests for map_reasoning_effort."""
+
+    def test_reasoning_effort_mapping_levels(self):
+        """Each effort level maps to the correct budget_tokens."""
+        model = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # non-4.6/4.7
+        result = map_reasoning_effort("minimal", model)
+        assert result == {"type": "enabled", "budget_tokens": 128}
+
+        result = map_reasoning_effort("low", model)
+        assert result == {"type": "enabled", "budget_tokens": 1024}
+
+        result = map_reasoning_effort("medium", model)
+        assert result == {"type": "enabled", "budget_tokens": 2048}
+
+        result = map_reasoning_effort("high", model)
+        assert result == {"type": "enabled", "budget_tokens": 4096}
+
+    def test_reasoning_effort_unknown_returns_none(self):
+        result = map_reasoning_effort("extreme", "some-model")
+        assert result is None
+
+    def test_reasoning_effort_claude_4_6_adaptive(self):
+        """Claude 4.6/4.7 models use adaptive thinking."""
+        for model_id in [
+            "us.anthropic.claude-opus-4-6-v1",
+            "us.anthropic.claude-opus-4-7",
+            "us.anthropic.claude-sonnet-4-6",
+        ]:
+            result = map_reasoning_effort("high", model_id)
+            assert result == {"type": "adaptive"}, f"Failed for {model_id}"
+
+    def test_reasoning_effort_returns_copy(self):
+        """Returned dict should be a copy, not the original."""
+        model = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        r1 = map_reasoning_effort("low", model)
+        r2 = map_reasoning_effort("low", model)
+        assert r1 is not r2
+
+    def test_budget_tokens_clamp(self):
+        """Budget tokens below 1024 should be clamped by the caller."""
+        model = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        result = map_reasoning_effort("minimal", model)
+        assert result is not None
+        # The mapper returns the raw value; clamping is done in server.py
+        assert result["budget_tokens"] == 128
 
 
 # ─── Streaming Helpers ─────────────────────────────────────────────────

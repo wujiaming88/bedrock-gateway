@@ -253,6 +253,7 @@ def parse_bedrock_response(result: dict) -> tuple[dict, str]:
     """
     text = ""
     tool_calls: list[dict] = []
+    thinking_blocks: list[dict] = []
 
     for block in result.get("content", []):
         btype = block.get("type", "")
@@ -267,13 +268,69 @@ def parse_bedrock_response(result: dict) -> tuple[dict, str]:
                     "arguments": json.dumps(block.get("input", {})),
                 },
             })
+        elif btype == "thinking":
+            thinking_blocks.append(block)
+        elif btype == "redacted_thinking":
+            thinking_blocks.append(block)
+
+    # Build reasoning_content from thinking blocks
+    reasoning_content = ""
+    for tb in thinking_blocks:
+        reasoning_content += tb.get("thinking", "")
 
     message: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
     if tool_calls:
         message["tool_calls"] = tool_calls
 
     finish_reason = "tool_calls" if tool_calls else "stop"
     return message, finish_reason
+
+
+# ---------------------------------------------------------------------------
+# Streaming helpers
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Reasoning effort mapping
+# ---------------------------------------------------------------------------
+
+# Maps OpenAI reasoning_effort levels to Anthropic thinking parameters
+REASONING_EFFORT_MAP: dict[str, dict[str, Any]] = {
+    "minimal": {"type": "enabled", "budget_tokens": 128},
+    "low": {"type": "enabled", "budget_tokens": 1024},
+    "medium": {"type": "enabled", "budget_tokens": 2048},
+    "high": {"type": "enabled", "budget_tokens": 4096},
+}
+
+# Bedrock model IDs that support adaptive thinking (Claude 4.6/4.7)
+_ADAPTIVE_THINKING_PATTERNS: list[str] = [
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+]
+
+
+def _model_supports_adaptive(model: str) -> bool:
+    """Check if a Bedrock model ID supports adaptive thinking."""
+    return any(pattern in model for pattern in _ADAPTIVE_THINKING_PATTERNS)
+
+
+def map_reasoning_effort(effort: str, model: str) -> dict[str, Any] | None:
+    """
+    Map an OpenAI ``reasoning_effort`` value to an Anthropic ``thinking`` parameter.
+
+    For Claude 4.6/4.7 models, returns ``{"type": "adaptive"}`` regardless of
+    effort level.  For other models, returns a budget_tokens-based config.
+
+    Returns ``None`` if the effort level is not recognized.
+    """
+    if effort not in REASONING_EFFORT_MAP:
+        return None
+    if _model_supports_adaptive(model):
+        return {"type": "adaptive"}
+    return dict(REASONING_EFFORT_MAP[effort])  # shallow copy
 
 
 # ---------------------------------------------------------------------------

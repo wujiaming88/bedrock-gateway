@@ -32,6 +32,7 @@ from .converter import (
     decode_event_stream_chunk,
     extract_system_and_messages,
     make_stream_chunk,
+    map_reasoning_effort,
     parse_bedrock_response,
 )
 from .models import ModelRegistry
@@ -169,9 +170,24 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         # Extended thinking
         thinking = body.get("thinking")
+        reasoning_effort = body.get("reasoning_effort")
+
+        # reasoning_effort → thinking mapping (thinking takes precedence)
+        if not thinking and reasoning_effort:
+            thinking = map_reasoning_effort(reasoning_effort, model)
+
         if thinking:
+            # Budget tokens minimum clamp (Bedrock requires >= 1024)
+            if thinking.get("budget_tokens", 0) < 1024 and "budget_tokens" in thinking:
+                thinking["budget_tokens"] = 1024
+
             bedrock_body["thinking"] = thinking
             bedrock_body.pop("temperature", None)
+
+            # Auto-fill max_tokens when thinking is enabled
+            if "max_tokens" not in body and "max_completion_tokens" not in body:
+                budget = thinking.get("budget_tokens", 0)
+                bedrock_body["max_tokens"] = budget + default_max if budget else default_max
 
         if stream:
             return await _handle_stream(
@@ -352,6 +368,9 @@ async def _handle_stream(
                                                 }]
                                             },
                                         )
+                                    elif cb.get("type") == "thinking":
+                                        # Start of a thinking block — no output needed
+                                        pass
 
                                 elif etype == "content_block_delta":
                                     delta = event.get("delta", {})
@@ -376,6 +395,20 @@ async def _handle_stream(
                                                 }]
                                             },
                                         )
+                                    elif dtype == "thinking_delta":
+                                        yield make_stream_chunk(
+                                            msg_id,
+                                            model,
+                                            {
+                                                "reasoning_content": delta.get(
+                                                    "thinking", ""
+                                                )
+                                            },
+                                        )
+                                    elif dtype == "signature_delta":
+                                        # Signature associated with thinking block;
+                                        # no user-visible output needed.
+                                        pass
 
                                 elif etype == "content_block_stop":
                                     current_tool_id = None
