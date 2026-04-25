@@ -111,6 +111,7 @@ class GatewayConfig:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
+    # ── Opus ──────────────────────────────────────────────────────────
     "claude-opus-4.7": {
         "bedrock_id": "us.anthropic.claude-opus-4-7",
         "context_length": 1_000_000,
@@ -121,6 +122,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "context_length": 1_000_000,
         "max_output": 128_000,
     },
+    # ── Sonnet 4.x ───────────────────────────────────────────────────
     "claude-sonnet-4.6": {
         "bedrock_id": "us.anthropic.claude-sonnet-4-6",
         "context_length": 1_000_000,
@@ -131,16 +133,51 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "context_length": 200_000,
         "max_output": 64_000,
     },
+    # ── Haiku ─────────────────────────────────────────────────────────
     "claude-haiku": {
         "bedrock_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "context_length": 200_000,
         "max_output": 64_000,
     },
+    # ── Sonnet 3.5 ────────────────────────────────────────────────────
     "claude-sonnet-3.5": {
         "bedrock_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
         "context_length": 200_000,
         "max_output": 64_000,
     },
+}
+
+# Common model name variations → canonical alias
+_MODEL_ALIASES: dict[str, str] = {
+    # Opus variations
+    "claude-opus": "claude-opus-4",
+    "claude-4-opus": "claude-opus-4",
+    "claude-3-opus": "claude-opus-4",
+    "claude-3-opus-20240229": "claude-opus-4",
+    # Sonnet 4 variations
+    "claude-sonnet": "claude-sonnet-4",
+    "claude-4-sonnet": "claude-sonnet-4",
+    # Haiku variations
+    "claude-3-haiku": "claude-haiku",
+    "claude-3.5-haiku": "claude-haiku",
+    "claude-3-5-haiku": "claude-haiku",
+    "claude-haiku-3.5": "claude-haiku",
+    "claude-haiku-3-5": "claude-haiku",
+    "claude-4.5-haiku": "claude-haiku",
+    "claude-4-5-haiku": "claude-haiku",
+    "claude-haiku-4.5": "claude-haiku",
+    "claude-haiku-4-5": "claude-haiku",
+    "claude-3-5-haiku-20241022": "claude-haiku",
+    # Sonnet 3.5 variations
+    "claude-3.5-sonnet": "claude-sonnet-3.5",
+    "claude-3-5-sonnet": "claude-sonnet-3.5",
+    "claude-3-5-sonnet-v2": "claude-sonnet-3.5",
+    "claude-3-5-sonnet-20241022": "claude-sonnet-3.5",
+    "claude-sonnet-3-5": "claude-sonnet-3.5",
+    # Anthropic API names (as sent by some SDKs)
+    "claude-3-5-sonnet-latest": "claude-sonnet-3.5",
+    "claude-3-5-haiku-latest": "claude-haiku",
+    "claude-sonnet-4-0-20250514": "claude-sonnet-4",
 }
 
 

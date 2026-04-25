@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import GatewayConfig, ModelEntry
+from .config import GatewayConfig, ModelEntry, _MODEL_ALIASES
 
 
 @dataclass
@@ -26,7 +26,8 @@ class ModelRegistry:
     Thread-safe registry mapping user-facing model aliases to Bedrock model IDs.
 
     Models are loaded from :class:`GatewayConfig` at startup.  Unknown aliases
-    are passed through as-is (the Bedrock ID *is* the alias).
+    are first checked against a built-in alias table, then passed through as-is
+    (the Bedrock ID *is* the alias).
     """
 
     def __init__(self, config: GatewayConfig) -> None:
@@ -37,13 +38,34 @@ class ModelRegistry:
     # ------------------------------------------------------------------
 
     def resolve(self, alias: str) -> str:
-        """Return the Bedrock model ID for *alias*, or *alias* itself."""
+        """Return the Bedrock model ID for *alias*, or *alias* itself.
+
+        Resolution order:
+        1. Exact match in registered models
+        2. Lookup in common alias table → re-resolve canonical name
+        3. Pass-through (treat alias as raw Bedrock model ID)
+        """
         entry = self._models.get(alias)
-        return entry.bedrock_id if entry else alias
+        if entry:
+            return entry.bedrock_id
+
+        # Try common alias table
+        canonical = _MODEL_ALIASES.get(alias)
+        if canonical:
+            entry = self._models.get(canonical)
+            if entry:
+                return entry.bedrock_id
+
+        return alias
 
     def get_info(self, alias: str) -> ModelInfo | None:
         """Return full metadata for *alias*, or ``None`` if unknown."""
         entry = self._models.get(alias)
+        if entry is None:
+            canonical = _MODEL_ALIASES.get(alias)
+            if canonical:
+                entry = self._models.get(canonical)
+                alias = canonical
         if entry is None:
             return None
         return ModelInfo(
@@ -53,10 +75,21 @@ class ModelRegistry:
             max_output=entry.max_output,
         )
 
-    def get_max_output(self, alias: str, default: int = 128_000) -> int:
-        """Return max output tokens for *alias*, with a fallback."""
+    def get_max_output(self, alias: str, default: int = 64_000) -> int:
+        """Return max output tokens for *alias*, with a fallback.
+
+        Default lowered to 64K (safe for most Bedrock models) to avoid
+        validation errors when an unknown model is passed through.
+        """
         entry = self._models.get(alias)
-        return entry.max_output if entry else default
+        if entry:
+            return entry.max_output
+        canonical = _MODEL_ALIASES.get(alias)
+        if canonical:
+            entry = self._models.get(canonical)
+            if entry:
+                return entry.max_output
+        return default
 
     def list_models(self) -> list[dict]:
         """Return an OpenAI-compatible model list."""

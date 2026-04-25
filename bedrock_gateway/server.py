@@ -33,6 +33,7 @@ from .converter import (
     extract_system_and_messages,
     make_stream_chunk,
     map_reasoning_effort,
+    parse_bedrock_error,
     parse_bedrock_response,
 )
 from .models import ModelRegistry
@@ -259,13 +260,16 @@ async def _handle_sync(
                 await asyncio.sleep(delay)
                 continue
 
+            error = parse_bedrock_error(resp.status_code, resp.text)
             logger.error(
-                "ERR %d model=%s body=%s",
+                "ERR %d model=%s msg=%s",
                 resp.status_code,
                 model,
-                resp.text[:300],
+                error["message"][:300],
             )
-            return _oai_error(resp.status_code, resp.text)
+            return _oai_error(
+                resp.status_code, error["message"], error["type"]
+            )
 
         except httpx.TimeoutException:
             last_error = "Request timeout"
@@ -321,18 +325,12 @@ async def _handle_stream(
                             err = ""
                             async for chunk in resp.aiter_text():
                                 err += chunk
-                            yield make_stream_chunk(
-                                msg_id, model, {}, None
-                            ).replace(
-                                "data: ",
-                                f'data: {json.dumps({"error": {"message": err, "code": resp.status_code}})}\n\ndata: ',
-                                1,
-                            )
+                            error = parse_bedrock_error(resp.status_code, err)
+                            yield f'data: {json.dumps({"error": error})}\n\n'
                             yield "data: [DONE]\n\n"
                             return
 
                         buf = b""
-                        processed = 0
                         stream_input_tokens = 0
                         stream_output_tokens = 0
                         current_tool_id: str | None = None
@@ -340,13 +338,19 @@ async def _handle_stream(
 
                         async for raw in resp.aiter_bytes():
                             buf += raw
-                            events = decode_event_stream_chunk(buf[processed:])
+                            events, consumed = decode_event_stream_chunk(buf)
+                            if consumed > 0:
+                                buf = buf[consumed:]
                             for event in events:
                                 etype = event.get("type", "")
 
                                 if etype == "message_start":
                                     _mu = event.get("message", {}).get("usage", {})
                                     stream_input_tokens = _mu.get("input_tokens", 0)
+                                    # Send initial role chunk (OpenAI spec)
+                                    yield make_stream_chunk(
+                                        msg_id, model, {"role": "assistant"}
+                                    )
 
                                 elif etype == "content_block_start":
                                     cb = event.get("content_block", {})
@@ -435,7 +439,7 @@ async def _handle_stream(
                                     }
                                     yield f'data: {json.dumps({"id": msg_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [], "usage": _usage})}\n\n'
 
-                            processed = len(buf)
+
 
                 yield "data: [DONE]\n\n"
                 return

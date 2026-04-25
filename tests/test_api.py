@@ -18,6 +18,7 @@ from bedrock_gateway.config import (
     ModelEntry,
     RetryConfig,
     ServerConfig,
+    load_config,
 )
 from bedrock_gateway.server import create_app
 
@@ -212,7 +213,7 @@ class TestChatCompletionsSync:
     def test_bedrock_error(self, mock_client_cls, client: TestClient):
         mock_response = MagicMock()
         mock_response.status_code = 400
-        mock_response.text = "Bad request from Bedrock"
+        mock_response.text = json.dumps({"message": "max_tokens: 200000 is too large"})
 
         mock_instance = AsyncMock()
         mock_instance.post = AsyncMock(return_value=mock_response)
@@ -226,6 +227,31 @@ class TestChatCompletionsSync:
         })
 
         assert resp.status_code == 400
+        data = resp.json()
+        assert "error" in data
+        assert data["error"]["message"] == "max_tokens: 200000 is too large"
+        assert data["error"]["type"] == "invalid_request_error"
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_bedrock_error_plain_text(self, mock_client_cls, client: TestClient):
+        """Non-JSON error body is still passed through."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
+
+        mock_instance = AsyncMock()
+        mock_instance.post = AsyncMock(return_value=mock_response)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_instance
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+
+        assert resp.status_code == 500
+        assert resp.json()["error"]["message"] == "Internal Server Error"
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
@@ -330,3 +356,40 @@ class TestConfigIntegration:
         assert client.app.state.config is config  # type: ignore
         assert client.app.state.registry is not None
         assert client.app.state.auth is not None
+
+
+# ---------------------------------------------------------------------------
+# Model resolution integration
+# ---------------------------------------------------------------------------
+
+class TestModelResolution:
+    """Model alias resolution via the registry."""
+
+    def test_exact_match(self, client: TestClient):
+        registry = client.app.state.registry  # type: ignore
+        assert registry.resolve("test-model") == "us.anthropic.test-model-v1"
+
+    def test_unknown_passthrough(self, client: TestClient):
+        registry = client.app.state.registry  # type: ignore
+        raw_id = "us.anthropic.some-random-model"
+        assert registry.resolve(raw_id) == raw_id
+
+    def test_default_max_output_lowered(self, client: TestClient):
+        """Unknown models get 64K default, not 128K (avoids Bedrock rejection)."""
+        registry = client.app.state.registry  # type: ignore
+        assert registry.get_max_output("unknown-model") == 64_000
+
+    def test_alias_resolution(self):
+        """Common aliases resolve through the alias table."""
+        from bedrock_gateway.models import ModelRegistry
+        cfg = load_config("/nonexistent/config.yaml")  # loads default models
+        registry = ModelRegistry(cfg)
+        # claude-3.5-sonnet -> claude-sonnet-3.5 -> bedrock id
+        resolved = registry.resolve("claude-3.5-sonnet")
+        assert "sonnet" in resolved and "anthropic" in resolved
+        # claude-opus -> claude-opus-4 -> bedrock id
+        resolved = registry.resolve("claude-opus")
+        assert "opus" in resolved and "anthropic" in resolved
+        # claude-3-5-haiku -> claude-haiku -> bedrock id
+        resolved = registry.resolve("claude-3-5-haiku")
+        assert "haiku" in resolved and "anthropic" in resolved

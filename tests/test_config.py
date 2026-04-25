@@ -67,6 +67,24 @@ class TestDefaultConfig:
         assert "claude-opus-4" in cfg.models
 
 
+class TestModelAliases:
+    """Model alias table for common name variations."""
+
+    def test_aliases_exist(self):
+        from bedrock_gateway.config import _MODEL_ALIASES
+        assert "claude-3.5-sonnet" in _MODEL_ALIASES
+        assert "claude-3-5-haiku" in _MODEL_ALIASES
+        assert "claude-opus" in _MODEL_ALIASES
+        assert "claude-sonnet" in _MODEL_ALIASES
+
+    def test_aliases_point_to_valid_defaults(self):
+        from bedrock_gateway.config import _MODEL_ALIASES, _DEFAULT_MODELS
+        for alias, canonical in _MODEL_ALIASES.items():
+            assert canonical in _DEFAULT_MODELS, (
+                f"Alias {alias!r} -> {canonical!r} not in _DEFAULT_MODELS"
+            )
+
+
 class TestModelParsing:
     """Model entry parsing from YAML."""
 

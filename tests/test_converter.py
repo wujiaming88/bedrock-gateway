@@ -16,6 +16,7 @@ from bedrock_gateway.converter import (
     extract_system_and_messages,
     make_stream_chunk,
     map_reasoning_effort,
+    parse_bedrock_error,
     parse_bedrock_response,
 )
 
@@ -478,15 +479,78 @@ class TestDecodeEventStreamChunk:
         event = {"type": "content_block_delta", "delta": {"text": "hi"}}
         encoded = b64.b64encode(json.dumps(event).encode()).decode()
         raw = f'{{"bytes":"{encoded}"}}'.encode()
-        events = decode_event_stream_chunk(raw)
+        events, consumed = decode_event_stream_chunk(raw)
         assert len(events) == 1
         assert events[0]["type"] == "content_block_delta"
+        assert consumed > 0
 
     def test_invalid_base64_skipped(self):
         raw = b'{"bytes":"not-valid-json-after-decode!!!"}'
-        events = decode_event_stream_chunk(raw)
+        events, consumed = decode_event_stream_chunk(raw)
         # Should silently skip invalid entries
         assert isinstance(events, list)
 
     def test_empty_input(self):
-        assert decode_event_stream_chunk(b"") == []
+        events, consumed = decode_event_stream_chunk(b"")
+        assert events == []
+        assert consumed == 0
+
+    def test_multiple_events(self):
+        import base64 as b64
+
+        e1 = {"type": "message_start"}
+        e2 = {"type": "content_block_delta", "delta": {"text": "x"}}
+        parts = []
+        for e in [e1, e2]:
+            enc = b64.b64encode(json.dumps(e).encode()).decode()
+            parts.append(f'{{"bytes":"{enc}"}}'.encode())
+        raw = b" ".join(parts)
+        events, consumed = decode_event_stream_chunk(raw)
+        assert len(events) == 2
+        assert consumed > 0
+        assert consumed <= len(raw)
+
+
+# ─── Error Parsing ──────────────────────────────────────────────────
+
+
+class TestParsBedrockError:
+    """Tests for parse_bedrock_error."""
+
+    def test_json_with_message_field(self):
+        body = json.dumps({"message": "Model not found"})
+        err = parse_bedrock_error(404, body)
+        assert err["message"] == "Model not found"
+        assert err["type"] == "not_found_error"
+        assert err["code"] == 404
+
+    def test_json_with_capital_message(self):
+        body = json.dumps({"Message": "Access denied"})
+        err = parse_bedrock_error(403, body)
+        assert err["message"] == "Access denied"
+        assert err["type"] == "permission_error"
+
+    def test_plain_text_body(self):
+        err = parse_bedrock_error(500, "Internal Server Error")
+        assert err["message"] == "Internal Server Error"
+        assert err["type"] == "api_error"
+
+    def test_rate_limit(self):
+        body = json.dumps({"message": "Too many requests"})
+        err = parse_bedrock_error(429, body)
+        assert err["type"] == "rate_limit_error"
+
+    def test_invalid_request(self):
+        body = json.dumps({"message": "max_tokens too large"})
+        err = parse_bedrock_error(400, body)
+        assert err["type"] == "invalid_request_error"
+        assert err["message"] == "max_tokens too large"
+
+    def test_overloaded(self):
+        body = json.dumps({"message": "Overloaded"})
+        err = parse_bedrock_error(529, body)
+        assert err["type"] == "overloaded_error"
+
+    def test_empty_body(self):
+        err = parse_bedrock_error(500, "")
+        assert err["message"] == ""

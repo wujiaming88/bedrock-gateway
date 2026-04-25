@@ -245,6 +245,38 @@ def convert_usage(bedrock_usage: dict) -> dict:
     }
 
 
+def parse_bedrock_error(status_code: int, body: str) -> dict:
+    """Parse a Bedrock error response into an OpenAI-compatible error dict.
+
+    Bedrock returns errors as JSON like ``{"message": "..."}`` or
+    ``{"Message": "..."}`` (capitalization varies by error type).
+    This function extracts the human-readable message and maps the
+    HTTP status to an OpenAI error type.
+    """
+    try:
+        data = json.loads(body)
+        message = (
+            data.get("message")
+            or data.get("Message")
+            or data.get("error", {}).get("message")
+            or body
+        )
+    except (json.JSONDecodeError, ValueError, TypeError):
+        message = body
+
+    error_type_map = {
+        400: "invalid_request_error",
+        401: "authentication_error",
+        403: "permission_error",
+        404: "not_found_error",
+        429: "rate_limit_error",
+        529: "overloaded_error",
+    }
+    error_type = error_type_map.get(status_code, "api_error")
+
+    return {"message": message, "type": error_type, "code": status_code}
+
+
 def parse_bedrock_response(result: dict) -> tuple[dict, str]:
     """
     Parse a Bedrock (Anthropic) response into an OpenAI-compatible message.
@@ -358,18 +390,25 @@ def make_stream_chunk(
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def decode_event_stream_chunk(buf: bytes) -> list[dict]:
+def decode_event_stream_chunk(buf: bytes) -> tuple[list[dict], int]:
     """
     Extract base64-encoded JSON events from an AWS event-stream binary chunk.
 
     The Bedrock streaming response wraps each event as a JSON payload inside
     binary event-stream frames with ``"bytes":"<base64>"`` encoding.
+
+    Returns ``(events, consumed_bytes)`` where *consumed_bytes* is the offset
+    up to (and including) the last successfully matched frame.  The caller
+    should trim the buffer at this offset so that partially-received frames
+    at the tail are re-examined when more data arrives.
     """
     events: list[dict] = []
+    consumed = 0
     for match in re.finditer(rb'"bytes":"([A-Za-z0-9+/=]+)"', buf):
         try:
             decoded = json.loads(base64.b64decode(match.group(1)))
             events.append(decoded)
         except (json.JSONDecodeError, ValueError):
             pass
-    return events
+        consumed = match.end()
+    return events, consumed
