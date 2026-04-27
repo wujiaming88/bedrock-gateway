@@ -14,6 +14,7 @@ No SDK changes. No vendor lock-in. Just point your `OPENAI_BASE_URL` and go.
 ## Features
 
 - 🔌 **Drop-in replacement** — OpenAI-compatible `/v1/chat/completions` and `/v1/models`
+- 🔮 **Anthropic Messages API** — Native `/v1/messages` endpoint (sync + streaming)
 - 🔐 **Multiple auth modes** — Bearer Token, AK/SK (SigV4), IAM Role, AWS Profile
 - 🔄 **Full protocol translation** — messages, tools, images, streaming, thinking
 - 🏗️ **Production ready** — retry with backoff, structured logging, health checks
@@ -66,6 +67,24 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
+```
+
+Or with the Anthropic SDK:
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://127.0.0.1:4000",
+    api_key="anything",  # not used, but required by the SDK
+)
+
+message = client.messages.create(
+    model="claude-sonnet-4",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(message.content[0].text)
 ```
 
 Or with curl:
@@ -172,8 +191,33 @@ OpenAI-compatible chat completions endpoint. Supports:
 - ✅ Tool calling (function calling)
 - ✅ Multimodal (images via base64 or URL)
 - ✅ Extended thinking (`thinking` parameter)
+- ✅ Reasoning effort mapping (`reasoning_effort` → `thinking`)
 - ✅ Stop sequences
 - ✅ Temperature, top_p
+
+### POST /v1/messages
+
+Anthropic Messages API endpoint. Accepts the native Anthropic format:
+
+- ✅ Synchronous and streaming responses
+- ✅ System prompts (string or block array)
+- ✅ Multi-turn conversations
+- ✅ Tool use (native Anthropic format)
+- ✅ Extended thinking (`thinking` parameter with `thinking_delta` streaming)
+- ✅ Thinking blocks (`thinking`, `redacted_thinking`, `signature_delta`)
+- ✅ Stop sequences, temperature, top_p, top_k
+- ✅ Cache token reporting
+- ✅ Model alias resolution
+
+```bash
+curl http://127.0.0.1:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
 
 ### GET /v1/models
 

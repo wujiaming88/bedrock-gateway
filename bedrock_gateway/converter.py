@@ -321,6 +321,62 @@ def parse_bedrock_response(result: dict) -> tuple[dict, str]:
 
 
 # ---------------------------------------------------------------------------
+# Anthropic Messages API helpers
+# ---------------------------------------------------------------------------
+
+
+def format_anthropic_response(bedrock_result: dict, model: str) -> dict:
+    """
+    Format a Bedrock response as an Anthropic Messages API response.
+
+    The Bedrock response is already in Anthropic format, so this mainly
+    wraps it with the standard Messages API envelope (id, type, model).
+    """
+    usage = bedrock_result.get("usage", {})
+    return {
+        "id": f"msg_{uuid.uuid4().hex[:24]}",
+        "type": "message",
+        "role": "assistant",
+        "content": bedrock_result.get("content", []),
+        "model": model,
+        "stop_reason": bedrock_result.get("stop_reason", "end_turn"),
+        "stop_sequence": bedrock_result.get("stop_sequence"),
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "cache_creation_input_tokens": usage.get(
+                "cache_creation_input_tokens", 0
+            ),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+        },
+    }
+
+
+def format_anthropic_error(status_code: int, message: str) -> dict:
+    """Return an Anthropic-style error envelope."""
+    error_type_map = {
+        400: "invalid_request_error",
+        401: "authentication_error",
+        403: "permission_error",
+        404: "not_found_error",
+        429: "rate_limit_error",
+        529: "overloaded_error",
+    }
+    return {
+        "type": "error",
+        "error": {
+            "type": error_type_map.get(status_code, "api_error"),
+            "message": message,
+        },
+    }
+
+
+def make_anthropic_sse(event_type: str, data: dict) -> str:
+    """Build an Anthropic SSE event with ``event:`` and ``data:`` lines."""
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+# ---------------------------------------------------------------------------
 # Streaming helpers
 # ---------------------------------------------------------------------------
 

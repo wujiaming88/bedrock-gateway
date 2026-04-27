@@ -1,8 +1,10 @@
 """
 FastAPI server for Bedrock Gateway.
 
-Exposes an OpenAI-compatible API that proxies requests to AWS Bedrock:
-  - POST /v1/chat/completions  (sync + streaming)
+Exposes an OpenAI-compatible API and an Anthropic Messages API
+that proxy requests to AWS Bedrock:
+  - POST /v1/chat/completions  (OpenAI format, sync + streaming)
+  - POST /v1/messages          (Anthropic Messages format, sync + streaming)
   - GET  /v1/models
   - GET  /health
 """
@@ -12,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from typing import Any
@@ -31,6 +32,9 @@ from .converter import (
     convert_usage,
     decode_event_stream_chunk,
     extract_system_and_messages,
+    format_anthropic_error,
+    format_anthropic_response,
+    make_anthropic_sse,
     make_stream_chunk,
     map_reasoning_effort,
     parse_bedrock_error,
@@ -195,6 +199,87 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
             )
         return await _handle_sync(
+            model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
+        )
+
+    # ------------------------------------------------------------------
+    # POST /v1/messages  (Anthropic Messages API)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/messages")
+    async def messages(request: Request) -> Any:
+        # Parse body
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=format_anthropic_error(400, "Invalid JSON body"),
+            )
+
+        raw_model = body.get("model", "claude-haiku")
+        model = registry.resolve(raw_model)
+        stream = body.get("stream", False)
+
+        # max_tokens is required by the Anthropic API spec
+        max_tokens = body.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = registry.get_max_output(raw_model, 64_000)
+
+        logger.info(
+            "REQ [messages] model=%s -> %s msgs=%d stream=%s",
+            raw_model,
+            model,
+            len(body.get("messages", [])),
+            stream,
+        )
+
+        # Build Bedrock payload — mostly pass-through since Bedrock
+        # already uses the Anthropic format internally.
+        bedrock_body: dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "messages": body.get("messages", []),
+        }
+
+        # Optional fields
+        if "system" in body:
+            bedrock_body["system"] = body["system"]
+        if "temperature" in body:
+            bedrock_body["temperature"] = body["temperature"]
+        if "top_p" in body:
+            bedrock_body["top_p"] = body["top_p"]
+        if "top_k" in body:
+            bedrock_body["top_k"] = body["top_k"]
+        if "stop_sequences" in body:
+            bedrock_body["stop_sequences"] = body["stop_sequences"]
+        if "metadata" in body:
+            bedrock_body["metadata"] = body["metadata"]
+
+        # Tools
+        if "tools" in body:
+            bedrock_body["tools"] = body["tools"]
+        if "tool_choice" in body:
+            bedrock_body["tool_choice"] = body["tool_choice"]
+
+        # Extended thinking
+        thinking = body.get("thinking")
+        if thinking:
+            if thinking.get("budget_tokens", 0) < 1024 and "budget_tokens" in thinking:
+                thinking["budget_tokens"] = 1024
+            bedrock_body["thinking"] = thinking
+            bedrock_body.pop("temperature", None)
+            # Auto-fill max_tokens when thinking is enabled
+            if "max_tokens" not in body:
+                budget = thinking.get("budget_tokens", 0)
+                default_max = registry.get_max_output(raw_model, 64_000)
+                bedrock_body["max_tokens"] = budget + default_max if budget else default_max
+
+        if stream:
+            return await _handle_messages_stream(
+                model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
+            )
+        return await _handle_messages_sync(
             model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
         )
 
@@ -459,6 +544,245 @@ async def _handle_stream(
 
         yield f'data: {json.dumps({"error": {"message": "All retries failed"}})}\n\n'
         yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages API — Sync handler
+# ---------------------------------------------------------------------------
+
+async def _handle_messages_sync(
+    model: str,
+    bedrock_body: dict,
+    bedrock_base: str,
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+) -> dict | JSONResponse:
+    url = f"{bedrock_base}/model/{model}/invoke"
+    body_bytes = json.dumps(bedrock_body).encode()
+    last_error: str | None = None
+
+    for attempt in range(max_retries):
+        try:
+            headers = auth.get_headers(method="POST", url=url, body=body_bytes)
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(url, headers=headers, content=body_bytes)
+
+            if resp.status_code == 200:
+                result = resp.json()
+                usage = result.get("usage", {})
+                logger.info(
+                    "RES [messages] model=%s stop=%s in=%s out=%s attempt=%d",
+                    model,
+                    result.get("stop_reason", "?"),
+                    usage.get("input_tokens", "?"),
+                    usage.get("output_tokens", "?"),
+                    attempt + 1,
+                )
+                return format_anthropic_response(result, model)
+
+            if resp.status_code in (429, 529, 503):
+                last_error = resp.text[:200]
+                delay = retry_base_delay * (2**attempt)
+                logger.warning(
+                    "RETRY [messages] %d model=%s attempt=%d/%d delay=%.1fs",
+                    resp.status_code,
+                    model,
+                    attempt + 1,
+                    max_retries,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            error = parse_bedrock_error(resp.status_code, resp.text)
+            logger.error(
+                "ERR [messages] %d model=%s msg=%s",
+                resp.status_code,
+                model,
+                error["message"][:300],
+            )
+            return JSONResponse(
+                status_code=resp.status_code,
+                content=format_anthropic_error(
+                    resp.status_code, error["message"]
+                ),
+            )
+
+        except httpx.TimeoutException:
+            last_error = "Request timeout"
+            logger.warning(
+                "TIMEOUT [messages] model=%s attempt=%d/%d",
+                model,
+                attempt + 1,
+                max_retries,
+            )
+            await asyncio.sleep(retry_base_delay * (2**attempt))
+
+        except Exception as exc:
+            return JSONResponse(
+                status_code=500,
+                content=format_anthropic_error(500, str(exc)),
+            )
+
+    logger.error(
+        "FAILED [messages] model=%s all %d retries exhausted: %s",
+        model,
+        max_retries,
+        last_error,
+    )
+    return JSONResponse(
+        status_code=502,
+        content=format_anthropic_error(
+            502, f"All {max_retries} retries failed: {last_error}"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages API — Streaming handler
+# ---------------------------------------------------------------------------
+
+async def _handle_messages_stream(
+    model: str,
+    bedrock_body: dict,
+    bedrock_base: str,
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+) -> StreamingResponse:
+    url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
+    body_bytes = json.dumps(bedrock_body).encode()
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    async def generate():  # noqa: C901
+        for attempt in range(max_retries):
+            try:
+                headers = auth.get_headers(method="POST", url=url, body=body_bytes)
+                async with httpx.AsyncClient(timeout=300) as client:
+                    async with client.stream(
+                        "POST", url, headers=headers, content=body_bytes
+                    ) as resp:
+                        if resp.status_code in (429, 529, 503):
+                            await asyncio.sleep(retry_base_delay * (2**attempt))
+                            continue
+
+                        if resp.status_code != 200:
+                            err = ""
+                            async for chunk in resp.aiter_text():
+                                err += chunk
+                            error = parse_bedrock_error(resp.status_code, err)
+                            yield make_anthropic_sse(
+                                "error",
+                                {
+                                    "type": "error",
+                                    "error": {
+                                        "type": error["type"],
+                                        "message": error["message"],
+                                    },
+                                },
+                            )
+                            return
+
+                        buf = b""
+                        async for raw in resp.aiter_bytes():
+                            buf += raw
+                            events, consumed = decode_event_stream_chunk(buf)
+                            if consumed > 0:
+                                buf = buf[consumed:]
+                            for event in events:
+                                etype = event.get("type", "")
+
+                                if etype == "message_start":
+                                    # Enrich the message_start with our ID & model
+                                    msg_obj = event.get("message", {})
+                                    msg_obj["id"] = msg_id
+                                    msg_obj["model"] = model
+                                    msg_obj.setdefault("type", "message")
+                                    msg_obj.setdefault("role", "assistant")
+                                    msg_obj.setdefault("content", [])
+                                    msg_obj.setdefault("stop_reason", None)
+                                    msg_obj.setdefault("stop_sequence", None)
+                                    yield make_anthropic_sse(
+                                        "message_start",
+                                        {"type": "message_start", "message": msg_obj},
+                                    )
+
+                                elif etype == "content_block_start":
+                                    yield make_anthropic_sse(
+                                        "content_block_start", event
+                                    )
+
+                                elif etype == "content_block_delta":
+                                    yield make_anthropic_sse(
+                                        "content_block_delta", event
+                                    )
+
+                                elif etype == "content_block_stop":
+                                    yield make_anthropic_sse(
+                                        "content_block_stop", event
+                                    )
+
+                                elif etype == "message_delta":
+                                    yield make_anthropic_sse(
+                                        "message_delta", event
+                                    )
+
+                                elif etype == "message_stop":
+                                    yield make_anthropic_sse(
+                                        "message_stop",
+                                        {"type": "message_stop"},
+                                    )
+
+                                elif etype == "ping":
+                                    yield make_anthropic_sse(
+                                        "ping", {"type": "ping"}
+                                    )
+
+                return  # success, exit retry loop
+
+            except httpx.TimeoutException:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_base_delay * (2**attempt))
+                    continue
+                yield make_anthropic_sse(
+                    "error",
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": "Timeout after retries",
+                        },
+                    },
+                )
+                return
+
+            except Exception as exc:
+                yield make_anthropic_sse(
+                    "error",
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "api_error",
+                            "message": str(exc),
+                        },
+                    },
+                )
+                return
+
+        # All retries exhausted
+        yield make_anthropic_sse(
+            "error",
+            {
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": "All retries failed",
+                },
+            },
+        )
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
