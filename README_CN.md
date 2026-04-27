@@ -29,41 +29,131 @@
 
 ## 快速开始
 
-### 方式一：从 GitHub 安装
+### 方式一：生产部署（VPS / 云服务器）
+
+**第 1 步：安装**
 
 ```bash
-pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+# 安装系统依赖（如缺少）
+apt install -y python3.12-venv git
+
+# 创建虚拟环境并安装
+python3 -m venv /opt/bedrock-gateway
+/opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 ```
 
-> **注意：** 在 Debian/Ubuntu（Python 3.12+）上，使用虚拟环境：
-> ```bash
-> apt install -y python3.12-venv
-> python3 -m venv /opt/bedrock-gateway
-> /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
-> ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
-> ```
+**第 2 步：配置**
 
 ```bash
-export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
-bedrock-gateway
-# → 监听 http://127.0.0.1:4000
+# 生成安全的 API Key
+echo "bgw-$(openssl rand -base64 48)"
+# 记下输出内容，下面要用
 ```
+
+创建环境变量文件（替换为你的真实值）：
+
+```bash
+cat > /opt/bedrock-gateway/.env << EOF
+AWS_BEARER_TOKEN_BEDROCK=你的AWS令牌
+BEDROCK_API_KEY=bgw-刚才生成的密钥
+EOF
+
+chmod 600 /opt/bedrock-gateway/.env
+```
+
+创建配置文件：
+
+```bash
+cat > /opt/bedrock-gateway/config.yaml << 'EOF'
+auth:
+  mode: bearer_token
+  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}
+
+region: us-east-1
+
+server:
+  host: 0.0.0.0
+  port: 4000
+  log_level: info
+  api_key: ${BEDROCK_API_KEY}
+
+retry:
+  max_retries: 3
+  base_delay: 1.0
+EOF
+```
+
+**第 3 步：设置 systemd 服务**
+
+```bash
+cat > /etc/systemd/system/bedrock-gateway.service << 'EOF'
+[Unit]
+Description=Bedrock Gateway
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/bedrock-gateway/.env
+WorkingDirectory=/opt/bedrock-gateway
+ExecStart=/opt/bedrock-gateway/bin/bedrock-gateway
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable bedrock-gateway
+systemctl start bedrock-gateway
+```
+
+**第 4 步：验证**
+
+```bash
+# 健康检查（无需鉴权）
+curl http://localhost:4000/health
+
+# 使用 API Key 测试
+curl http://localhost:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: bgw-你的密钥" \
+  -d '{
+    "model": "claude-haiku",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Say hi"}]
+  }'
+```
+
+常用命令：
+
+| 操作 | 命令 |
+|------|------|
+| 查看状态 | `systemctl status bedrock-gateway` |
+| 查看日志 | `journalctl -u bedrock-gateway -f` |
+| 重启 | `systemctl restart bedrock-gateway` |
+| 停止 | `systemctl stop bedrock-gateway` |
 
 ### 方式二：Docker
 
 ```bash
 docker run -p 4000:4000 \
   -e AWS_BEARER_TOKEN_BEDROCK="你的令牌" \
+  -e BEDROCK_API_KEY="bgw-你的密钥" \
   bedrock-gateway
 ```
 
-### 方式三：源码运行
+### 方式三：本地开发
 
 ```bash
-git clone https://github.com/bedrock-gateway/bedrock-gateway.git
+git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e .
+
+export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
 python -m bedrock_gateway
+# → 监听 http://127.0.0.1:4000
 ```
 
 ### 使用示例

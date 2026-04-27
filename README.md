@@ -23,41 +23,131 @@ No SDK changes. No vendor lock-in. Just point your `OPENAI_BASE_URL` and go.
 
 ## Quick Start
 
-### Option 1: Install from GitHub
+### Option 1: Production Deployment (VPS / Cloud Server)
+
+**Step 1: Install**
 
 ```bash
-pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+# Install system dependencies (if missing)
+apt install -y python3.12-venv git
+
+# Create virtual environment and install
+python3 -m venv /opt/bedrock-gateway
+/opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 ```
 
-> **Note:** On Debian/Ubuntu with Python 3.12+, use a virtual environment:
-> ```bash
-> apt install -y python3.12-venv
-> python3 -m venv /opt/bedrock-gateway
-> /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
-> ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
-> ```
+**Step 2: Configure**
 
 ```bash
-export AWS_BEARER_TOKEN_BEDROCK="your-token-here"
-bedrock-gateway
-# → listening on http://127.0.0.1:4000
+# Generate a secure API key
+echo "bgw-$(openssl rand -base64 48)"
+# Save the output — you'll need it below
 ```
+
+Create environment file (replace with your real values):
+
+```bash
+cat > /opt/bedrock-gateway/.env << EOF
+AWS_BEARER_TOKEN_BEDROCK=your-aws-bearer-token
+BEDROCK_API_KEY=bgw-your-generated-key
+EOF
+
+chmod 600 /opt/bedrock-gateway/.env
+```
+
+Create config file:
+
+```bash
+cat > /opt/bedrock-gateway/config.yaml << 'EOF'
+auth:
+  mode: bearer_token
+  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}
+
+region: us-east-1
+
+server:
+  host: 0.0.0.0
+  port: 4000
+  log_level: info
+  api_key: ${BEDROCK_API_KEY}
+
+retry:
+  max_retries: 3
+  base_delay: 1.0
+EOF
+```
+
+**Step 3: Set up systemd service**
+
+```bash
+cat > /etc/systemd/system/bedrock-gateway.service << 'EOF'
+[Unit]
+Description=Bedrock Gateway
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/bedrock-gateway/.env
+WorkingDirectory=/opt/bedrock-gateway
+ExecStart=/opt/bedrock-gateway/bin/bedrock-gateway
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable bedrock-gateway
+systemctl start bedrock-gateway
+```
+
+**Step 4: Verify**
+
+```bash
+# Health check (no auth required)
+curl http://localhost:4000/health
+
+# Test with API key
+curl http://localhost:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: bgw-your-generated-key" \
+  -d '{
+    "model": "claude-haiku",
+    "max_tokens": 100,
+    "messages": [{"role": "user", "content": "Say hi"}]
+  }'
+```
+
+Useful commands:
+
+| Action | Command |
+|--------|---------|
+| Status | `systemctl status bedrock-gateway` |
+| Logs | `journalctl -u bedrock-gateway -f` |
+| Restart | `systemctl restart bedrock-gateway` |
+| Stop | `systemctl stop bedrock-gateway` |
 
 ### Option 2: Docker
 
 ```bash
 docker run -p 4000:4000 \
   -e AWS_BEARER_TOKEN_BEDROCK="your-token" \
+  -e BEDROCK_API_KEY="bgw-your-key" \
   bedrock-gateway
 ```
 
-### Option 3: From source
+### Option 3: Local Development
 
 ```bash
-git clone https://github.com/bedrock-gateway/bedrock-gateway.git
+git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e .
+
+export AWS_BEARER_TOKEN_BEDROCK="your-token"
 python -m bedrock_gateway
+# → listening on http://127.0.0.1:4000
 ```
 
 ### Use it
