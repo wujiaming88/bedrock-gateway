@@ -183,6 +183,13 @@ _MODEL_ALIASES: dict[str, str] = {
     "claude-3-5-sonnet-latest": "claude-sonnet-3.5",
     "claude-3-5-haiku-latest": "claude-haiku",
     "claude-sonnet-4-0-20250514": "claude-sonnet-4",
+    # Anthropic official model names (sent by Claude Code / Anthropic SDK)
+    "claude-haiku-4-5-20251001": "claude-haiku",
+    "claude-3-5-haiku-20251022": "claude-haiku",
+    "claude-sonnet-4-20250514": "claude-sonnet-4",
+    "claude-opus-4-20250115": "claude-opus-4",
+    "claude-opus-4-7-20250428": "claude-opus-4.7",
+    "claude-sonnet-4-6-20250627": "claude-sonnet-4.6",
 }
 
 
