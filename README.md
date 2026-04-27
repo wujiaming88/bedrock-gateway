@@ -29,6 +29,12 @@ No SDK changes. No vendor lock-in. Just point your `OPENAI_BASE_URL` and go.
 pip install bedrock-gateway
 ```
 
+> **Note:** On Debian/Ubuntu with Python 3.12+, use `pipx` instead:
+> ```bash
+> apt install -y pipx
+> pipx install bedrock-gateway
+> ```
+
 ```bash
 export AWS_BEARER_TOKEN_BEDROCK="your-token-here"
 bedrock-gateway

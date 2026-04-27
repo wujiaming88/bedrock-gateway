@@ -35,6 +35,12 @@
 pip install bedrock-gateway
 ```
 
+> **注意：** 在 Debian/Ubuntu（Python 3.12+）上，使用 `pipx` 代替：
+> ```bash
+> apt install -y pipx
+> pipx install bedrock-gateway
+> ```
+
 ```bash
 export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
 bedrock-gateway
