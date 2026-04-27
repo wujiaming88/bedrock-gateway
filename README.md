@@ -23,16 +23,18 @@ No SDK changes. No vendor lock-in. Just point your `OPENAI_BASE_URL` and go.
 
 ## Quick Start
 
-### Option 1: pip install
+### Option 1: Install from GitHub
 
 ```bash
-pip install bedrock-gateway
+pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 ```
 
-> **Note:** On Debian/Ubuntu with Python 3.12+, use `pipx` instead:
+> **Note:** On Debian/Ubuntu with Python 3.12+, use a virtual environment:
 > ```bash
-> apt install -y pipx
-> pipx install bedrock-gateway
+> apt install -y python3.12-venv
+> python3 -m venv /opt/bedrock-gateway
+> /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+> ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 > ```
 
 ```bash
@@ -116,7 +118,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 For `iam_role` or `profile` mode, install with boto3:
 
 ```bash
-pip install bedrock-gateway[boto3]
+pip install "bedrock-gateway[boto3] @ git+https://github.com/wujiaming88/bedrock-gateway.git"
 ```
 
 ## Supported Models

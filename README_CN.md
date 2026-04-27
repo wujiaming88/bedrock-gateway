@@ -29,16 +29,18 @@
 
 ## 快速开始
 
-### 方式一：pip 安装
+### 方式一：从 GitHub 安装
 
 ```bash
-pip install bedrock-gateway
+pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 ```
 
-> **注意：** 在 Debian/Ubuntu（Python 3.12+）上，使用 `pipx` 代替：
+> **注意：** 在 Debian/Ubuntu（Python 3.12+）上，使用虚拟环境：
 > ```bash
-> apt install -y pipx
-> pipx install bedrock-gateway
+> apt install -y python3.12-venv
+> python3 -m venv /opt/bedrock-gateway
+> /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+> ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 > ```
 
 ```bash
@@ -124,7 +126,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 使用 `iam_role` 或 `profile` 模式时，安装 boto3 依赖：
 
 ```bash
-pip install bedrock-gateway[boto3]
+pip install "bedrock-gateway[boto3] @ git+https://github.com/wujiaming88/bedrock-gateway.git"
 ```
 
 ## 支持的模型
