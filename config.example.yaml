@@ -28,6 +28,7 @@ server:
   host: 127.0.0.1
   port: 4000
   log_level: info   # debug | info | warning | error
+  # api_key: ${BEDROCK_API_KEY}  # uncomment to require authentication
 
 # ─── Retry ────────────────────────────────────────────────
 retry:

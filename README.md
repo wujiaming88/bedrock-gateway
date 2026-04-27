@@ -142,7 +142,8 @@ models:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AWS_BEARER_TOKEN_BEDROCK` | — | Bearer token for authentication |
+| `BEDROCK_API_KEY` | — | API key for gateway authentication (opt-in) |
+| `AWS_BEARER_TOKEN_BEDROCK` | — | Bearer token for AWS Bedrock authentication |
 | `AWS_REGION` | `us-east-1` | AWS region |
 | `BEDROCK_HOST` | `127.0.0.1` | Server bind address |
 | `BEDROCK_PORT` | `4000` | Server port |
@@ -165,6 +166,7 @@ server:
   host: 0.0.0.0
   port: 4000
   log_level: info
+  api_key: ${BEDROCK_API_KEY}  # optional: set to require auth for all API calls
 
 retry:
   max_retries: 3
@@ -271,6 +273,55 @@ Health check endpoint. Returns:
 
 Choose Bedrock Gateway if you only need Bedrock and want minimal overhead.
 Choose LiteLLM if you need to route across multiple LLM providers.
+
+## Security: API Key Authentication
+
+By default, the gateway accepts all requests (for local development). To protect your gateway when exposed on a network:
+
+```bash
+export BEDROCK_API_KEY="your-strong-secret-key"
+bedrock-gateway
+```
+
+Or in `config.yaml`:
+
+```yaml
+server:
+  api_key: ${BEDROCK_API_KEY}
+```
+
+When set, all API endpoints require authentication (except `/health`). Two header formats are supported:
+
+```bash
+# Authorization: Bearer
+curl -H "Authorization: Bearer your-key" http://localhost:4000/v1/models
+
+# x-api-key
+curl -H "x-api-key: your-key" http://localhost:4000/v1/models
+```
+
+**Security measures:**
+
+| Measure | Description |
+|---------|-------------|
+| `hmac.compare_digest` | Constant-time comparison prevents timing attacks |
+| `/health` whitelisted | Health probes work without auth |
+| Bearer + x-api-key | Compatible with both OpenAI and Anthropic SDKs |
+| Opt-in | No key configured = no auth required |
+
+**With Claude Code:**
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://your-vps:4000",
+    "ANTHROPIC_AUTH_TOKEN": "your-same-key",
+    "ANTHROPIC_MODEL": "claude-opus-4.7"
+  }
+}
+```
+
+Claude Code automatically sends `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer <key>`.
 
 ## Development
 

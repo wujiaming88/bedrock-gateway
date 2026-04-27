@@ -12,6 +12,7 @@ that proxy requests to AWS Bedrock:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import time
@@ -87,6 +88,57 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     app.state.config = config
     app.state.registry = registry
     app.state.auth = auth
+
+    # ------------------------------------------------------------------
+    # API key authentication middleware (opt-in)
+    # ------------------------------------------------------------------
+
+    api_key = config.server.api_key
+
+    @app.middleware("http")
+    async def api_key_auth(request: Request, call_next):
+        # Skip auth when no API key is configured
+        if not api_key:
+            return await call_next(request)
+
+        # Whitelist: health check doesn't require auth
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        # Extract key from Authorization: Bearer <key> or x-api-key header
+        key = None
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            key = auth_header[7:]
+        if not key:
+            key = request.headers.get("x-api-key")
+
+        # Constant-time comparison to prevent timing attacks
+        if not key or not hmac.compare_digest(key, api_key):
+            # Return format-appropriate error
+            if request.url.path.startswith("/v1/messages"):
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "authentication_error",
+                            "message": "Invalid API key",
+                        },
+                    },
+                )
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "message": "Invalid API key",
+                        "type": "authentication_error",
+                        "code": 401,
+                    }
+                },
+            )
+
+        return await call_next(request)
 
     # ------------------------------------------------------------------
     # GET /v1/models

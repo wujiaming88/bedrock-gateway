@@ -75,6 +75,11 @@ class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 4000
     log_level: str = "info"
+    api_key: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.api_key:
+            self.api_key = os.environ.get("BEDROCK_API_KEY", "")
 
 
 @dataclass
@@ -233,6 +238,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         host=srv_raw.get("host", os.environ.get("BEDROCK_HOST", "127.0.0.1")),
         port=int(srv_raw.get("port", os.environ.get("BEDROCK_PORT", "4000"))),
         log_level=srv_raw.get("log_level", os.environ.get("BEDROCK_LOG_LEVEL", "info")),
+        api_key=srv_raw.get("api_key", ""),
     )
 
     # Retry
