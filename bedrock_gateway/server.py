@@ -101,8 +101,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         if not api_key:
             return await call_next(request)
 
-        # Whitelist: health check doesn't require auth
-        if request.url.path == "/health":
+        # Whitelist: public endpoints (no auth required)
+        if request.url.path in ("/health", "/"):
             return await call_next(request)
 
         # Extract key from Authorization: Bearer <key> or x-api-key header
@@ -149,6 +149,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         return {"object": "list", "data": registry.list_models()}
 
     # ------------------------------------------------------------------
+    # GET / (root, for client connectivity checks like Claude Code HEAD /)
+    # ------------------------------------------------------------------
+
+    @app.api_route("/", methods=["GET", "HEAD"])
+    async def root() -> dict:
+        return {"status": "ok"}
+
     # GET /health
     # ------------------------------------------------------------------
 
