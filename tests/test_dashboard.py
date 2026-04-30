@@ -214,7 +214,7 @@ def _make_config(
             host="127.0.0.1", port=4000, log_level="warning", api_key=api_key,
         ),
         retry=RetryConfig(max_retries=1, base_delay=0.01),
-        dashboard=dashboard or DashboardConfig(),
+        dashboard=dashboard or DashboardConfig(api_key=None),
         models={
             "test-model": ModelEntry(
                 bedrock_id="us.anthropic.test-v1",
@@ -230,7 +230,7 @@ def open_client() -> TestClient:
     """Dashboard with no auth, explicitly localhost-only off (for tests)."""
     cfg = _make_config(
         dashboard=DashboardConfig(
-            enabled=True, require_auth=False, localhost_only=False,
+            enabled=True, require_auth=False, api_key=None, localhost_only=False,
             rate_limit=60, max_request_log=200,
         )
     )
@@ -239,12 +239,11 @@ def open_client() -> TestClient:
 
 @pytest.fixture
 def keyed_client() -> TestClient:
-    """Dashboard protected by an API key."""
+    """Dashboard protected by its own dashboard.api_key."""
     cfg = _make_config(
-        api_key="sk-test-123",
         dashboard=DashboardConfig(
-            enabled=True, require_auth=True, localhost_only=False,
-            rate_limit=60, max_request_log=200,
+            enabled=True, require_auth=True, api_key="sk-test-123",
+            localhost_only=False, rate_limit=60, max_request_log=200,
         ),
     )
     return TestClient(create_app(cfg))
@@ -254,9 +253,9 @@ def keyed_client() -> TestClient:
 def localhost_only_client() -> TestClient:
     """Dashboard with no API key — localhost-only by default."""
     cfg = _make_config(
-        # No api_key → localhost_only should auto-enable.
+        # No dashboard.api_key → localhost_only should auto-enable.
         dashboard=DashboardConfig(
-            enabled=True, require_auth=True, localhost_only=None,
+            enabled=True, require_auth=True, api_key=None, localhost_only=None,
             rate_limit=60, max_request_log=200,
         ),
     )
@@ -539,7 +538,7 @@ class TestDashboardAuth:
     def test_dashboard_disabled_returns_403(self):
         cfg = _make_config(
             dashboard=DashboardConfig(
-                enabled=False, require_auth=False, localhost_only=False,
+                enabled=False, require_auth=False, api_key=None, localhost_only=False,
                 rate_limit=60, max_request_log=50,
             ),
         )
@@ -550,6 +549,61 @@ class TestDashboardAuth:
         assert resp.status_code == 404
         resp2 = client.get("/dashboard/")
         assert resp2.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Security — server.api_key and dashboard.api_key are independent
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardServerKeyIsolation:
+    """The dashboard key and the model-API key are deliberately separate:
+    holders of one must not be able to use the other."""
+
+    def _app(self) -> TestClient:
+        cfg = _make_config(
+            api_key="server-key-abc",
+            dashboard=DashboardConfig(
+                enabled=True, require_auth=True, api_key="dash-key-xyz",
+                localhost_only=False, rate_limit=60, max_request_log=50,
+            ),
+        )
+        return TestClient(create_app(cfg))
+
+    def test_server_key_cannot_access_dashboard(self):
+        client = self._app()
+        resp = client.get(
+            "/api/metrics/overview",
+            headers={"Authorization": "Bearer server-key-abc"},
+        )
+        assert resp.status_code == 401
+        assert resp.json()["error"]["type"] == "authentication_error"
+
+    def test_dashboard_key_accesses_dashboard(self):
+        client = self._app()
+        resp = client.get(
+            "/api/metrics/overview",
+            headers={"Authorization": "Bearer dash-key-xyz"},
+        )
+        assert resp.status_code == 200
+
+    def test_dashboard_key_cannot_call_model_endpoints(self):
+        client = self._app()
+        # /v1/models requires server.api_key when set; dashboard key is rejected.
+        resp = client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer dash-key-xyz"},
+        )
+        assert resp.status_code == 401
+        assert resp.json()["error"]["type"] == "authentication_error"
+
+    def test_server_key_allows_model_endpoints(self):
+        client = self._app()
+        resp = client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer server-key-abc"},
+        )
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +643,7 @@ class TestRateLimiter:
     def test_api_returns_429(self):
         cfg = _make_config(
             dashboard=DashboardConfig(
-                enabled=True, require_auth=False, localhost_only=False,
+                enabled=True, require_auth=False, api_key=None, localhost_only=False,
                 rate_limit=3, max_request_log=50,
             ),
         )
@@ -732,13 +786,20 @@ class TestSanitizeRequestLog:
 
 
 class TestDashboardConfig:
-    def test_defaults(self):
+    def test_defaults(self, monkeypatch):
+        monkeypatch.delenv("BEDROCK_DASHBOARD_KEY", raising=False)
         cfg = DashboardConfig()
         assert cfg.enabled is True
         assert cfg.require_auth is True
         assert cfg.rate_limit == 60
         assert cfg.max_request_log == 200
         assert cfg.localhost_only is None  # auto
+        assert cfg.api_key is None
+
+    def test_api_key_from_env(self, monkeypatch):
+        monkeypatch.setenv("BEDROCK_DASHBOARD_KEY", "env-dash-key")
+        cfg = DashboardConfig()
+        assert cfg.api_key == "env-dash-key"
 
     def test_loaded_from_yaml(self, tmp_path):
         from bedrock_gateway.config import load_config
@@ -747,6 +808,7 @@ class TestDashboardConfig:
         config_file.write_text(
             "dashboard:\n"
             "  enabled: true\n"
+            "  api_key: yaml-dash-key\n"
             "  require_auth: false\n"
             "  localhost_only: true\n"
             "  rate_limit: 5\n"
@@ -754,6 +816,7 @@ class TestDashboardConfig:
         )
         cfg = load_config(config_file)
         assert cfg.dashboard.enabled is True
+        assert cfg.dashboard.api_key == "yaml-dash-key"
         assert cfg.dashboard.require_auth is False
         assert cfg.dashboard.localhost_only is True
         assert cfg.dashboard.rate_limit == 5
@@ -762,7 +825,7 @@ class TestDashboardConfig:
     def test_max_request_log_is_applied(self):
         cfg = _make_config(
             dashboard=DashboardConfig(
-                enabled=True, require_auth=False, localhost_only=False,
+                enabled=True, require_auth=False, api_key=None, localhost_only=False,
                 rate_limit=60, max_request_log=3,
             ),
         )

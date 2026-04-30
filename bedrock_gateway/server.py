@@ -95,11 +95,14 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     metrics = MetricsCollector(max_request_log=config.dashboard.max_request_log)
 
     # Dashboard auth + rate limiter (public-deployment hardening).
+    # dashboard.api_key is deliberately independent of server.api_key:
+    # model clients can't reach the dashboard, and dashboard admins can't
+    # call the model endpoints.
     dashboard_auth = DashboardAuth(
         enabled=config.dashboard.enabled,
-        api_key=config.server.api_key,
+        api_key=config.dashboard.api_key or "",
         require_auth=config.dashboard.require_auth,
-        # None → default ("localhost-only when no api_key configured");
+        # None → default ("localhost-only when no dashboard.api_key configured");
         # True/False → explicit operator override.
         localhost_only=config.dashboard.localhost_only,
     )

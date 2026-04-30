@@ -130,14 +130,15 @@ models:
 
 ```yaml
 dashboard:
-  enabled: true            # 是否挂载 /dashboard/ 与 /api/metrics/*
-  require_auth: true       # 配置了 server.api_key 时是否要求该 key
-  localhost_only: false    # 可选覆盖；见下文
-  rate_limit: 60           # /api/metrics/* 每 IP 每分钟限流
-  max_request_log: 200     # 请求日志面板保留的最近记录条数
+  enabled: true                       # 是否挂载 /dashboard/ 与 /api/metrics/*
+  api_key: ${BEDROCK_DASHBOARD_KEY}   # dashboard 独立鉴权，与 server.api_key 无关
+  require_auth: true                  # 配置了 dashboard.api_key 时是否要求该 key
+  localhost_only: false               # 可选覆盖；见下文
+  rate_limit: 60                      # /api/metrics/* 每 IP 每分钟限流
+  max_request_log: 200                # 请求日志面板保留的最近记录条数
 ```
 
-`localhost_only` 未配置时：没有 `server.api_key` 则默认 `true`，有则默认 `false`，需要时可显式覆盖。`enabled: false` 时完全不挂载 dashboard 路由。
+`dashboard.api_key` 与 `server.api_key` 完全独立——持有模型调用 key 的客户端无法访问 dashboard，dashboard 管理员也无法调用 `/v1/*`。`localhost_only` 未配置时：没有 `dashboard.api_key` 则默认 `true`，有则默认 `false`，需要时可显式覆盖。`enabled: false` 时完全不挂载 dashboard 路由。
 
 ### 环境变量快捷配置
 
@@ -146,6 +147,7 @@ dashboard:
 | 变量 | 默认值 | 对应字段 |
 |---|---|---|
 | `BEDROCK_API_KEY` | — | `server.api_key` |
+| `BEDROCK_DASHBOARD_KEY` | — | `dashboard.api_key` |
 | `AWS_BEARER_TOKEN_BEDROCK` | — | `auth.bearer_token` |
 | `AWS_REGION` | `us-east-1` | `region` |
 | `BEDROCK_HOST` | `127.0.0.1` | `server.host` |
@@ -180,6 +182,7 @@ ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 cat > /opt/bedrock-gateway/.env << 'EOF'
 AWS_BEARER_TOKEN_BEDROCK=你的-aws-bearer-token
 BEDROCK_API_KEY=bgw-生成的密钥
+BEDROCK_DASHBOARD_KEY=bgw-dash-生成的密钥
 EOF
 chmod 600 /opt/bedrock-gateway/.env
 
@@ -203,6 +206,7 @@ retry:
 
 dashboard:
   enabled: true
+  api_key: ${BEDROCK_DASHBOARD_KEY}
   require_auth: true
   rate_limit: 60
   max_request_log: 500
@@ -297,14 +301,14 @@ server {
 
 `/dashboard/` 下的实时请求监控界面，JSON 接口在 `/api/metrics/*`。
 
-**访问方式。** 配置了 `server.api_key` 时，四种鉴权方式任选其一：登录 cookie（通过 `/dashboard/login` 表单）、`Authorization: Bearer`、`x-api-key` 头、`?key=` query 参数。
+**访问方式。** Dashboard 使用独立的 `dashboard.api_key`，与 `server.api_key` 分开：拿到模型调用 key 无法访问 dashboard，dashboard 管理员也无法调用 `/v1/*`。配置了 `dashboard.api_key` 时，四种鉴权方式任选其一：登录 cookie（通过 `/dashboard/login` 表单）、`Authorization: Bearer`、`x-api-key` 头、`?key=` query 参数。
 
 **访问规则。**
 
 | 条件 | 行为 |
 |---|---|
-| `server.api_key` 已设 且 `dashboard.require_auth: true` | 必须用上述任一方式鉴权 |
-| `server.api_key` 未设 | 仅对 `127.0.0.1` / `::1` 开放（除非 `localhost_only: false`） |
+| `dashboard.api_key` 已设 且 `dashboard.require_auth: true` | 必须用上述任一方式鉴权 |
+| `dashboard.api_key` 未设 | 仅对 `127.0.0.1` / `::1` 开放（除非 `localhost_only: false`） |
 | `dashboard.enabled: false` | 不挂载路由 |
 
 **界面内容。** 顶部仪表盘（QPS、成功率、p50/p95 延迟、tokens/分钟）；按模型的请求与 tokens 分布；1H / 6H / 24H 流量与延迟时序；可按状态过滤的最近请求表；按状态码和错误类型分组的错误面板；顶部状态条包含版本、region、认证模式、uptime、RSS。
@@ -374,9 +378,10 @@ server {
 生产部署 checklist：
 
 - [ ] `BEDROCK_API_KEY` 设为强随机值（`bgw-$(openssl rand -base64 48)`）
+- [ ] `BEDROCK_DASHBOARD_KEY` 设为强随机值，且与 `BEDROCK_API_KEY` 不同
 - [ ] 密钥放在 `.env`（权限 `600`），不要写进 `config.yaml`
 - [ ] 绑定 `0.0.0.0` 时前面一定要有 TLS 终止（Nginx / ALB / Cloudflare）
-- [ ] `dashboard.require_auth: true`，或者直接 `dashboard.enabled: false`
+- [ ] 设置 `dashboard.api_key`（或直接 `dashboard.enabled: false`），并保持 `dashboard.require_auth: true`
 - [ ] 非 root 运行（systemd `User=` 或 Docker `appuser`）
 - [ ] 日志集中（`journalctl`、容器日志驱动）
 - [ ] Bedrock IAM 账号权限最小化，只保留必要的 `bedrock:InvokeModel*`

@@ -93,16 +93,26 @@ class RetryConfig:
 class DashboardConfig:
     """Dashboard (metrics UI + API) configuration.
 
+    ``api_key`` is the dashboard's own authentication key — deliberately
+    independent of ``server.api_key`` so that model-calling clients and
+    dashboard operators can hold separate credentials.
+
     ``localhost_only`` is a tri-state: ``None`` means "auto" — the
-    dashboard restricts itself to localhost when no ``server.api_key``
+    dashboard restricts itself to localhost when no ``dashboard.api_key``
     is configured, and is unrestricted otherwise. Set it explicitly to
     ``True`` / ``False`` in ``config.yaml`` to override.
     """
     enabled: bool = True
     require_auth: bool = True
+    api_key: str | None = None
     localhost_only: bool | None = None
     rate_limit: int = 60
     max_request_log: int = 200
+
+    def __post_init__(self) -> None:
+        if not self.api_key:
+            env_key = os.environ.get("BEDROCK_DASHBOARD_KEY", "")
+            self.api_key = env_key or None
 
 
 @dataclass
@@ -280,9 +290,11 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         localhost_only = None
     else:
         localhost_only = bool(lh_raw)
+    dash_api_key_raw = dash_raw.get("api_key", None)
     dashboard = DashboardConfig(
         enabled=bool(dash_raw.get("enabled", True)),
         require_auth=bool(dash_raw.get("require_auth", True)),
+        api_key=dash_api_key_raw if dash_api_key_raw else None,
         localhost_only=localhost_only,
         rate_limit=int(dash_raw.get("rate_limit", 60)),
         max_request_log=int(dash_raw.get("max_request_log", 200)),

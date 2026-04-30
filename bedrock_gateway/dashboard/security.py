@@ -86,6 +86,10 @@ class DashboardAuth:
     """
     Gatekeeper for dashboard URLs and metrics APIs.
 
+    ``api_key`` here is the *dashboard*'s own key (``dashboard.api_key``),
+    independent of ``server.api_key`` — holders of the server key cannot
+    reach the dashboard, and vice versa.
+
     Behaviour (evaluated in order):
 
       1. If ``enabled=False`` → always deny (dashboard disabled).
@@ -96,23 +100,24 @@ class DashboardAuth:
          allow only ``127.0.0.1`` / ``::1`` clients.
       4. Otherwise → allow.
 
-    ``localhost_only`` defaults to True when no API key is configured,
-    so a dashboard exposed without a key on ``0.0.0.0`` is still safe.
+    ``localhost_only`` defaults to True when no dashboard API key is
+    configured, so a dashboard exposed without a key on ``0.0.0.0`` is
+    still safe.
     """
 
     def __init__(
         self,
         *,
         enabled: bool = True,
-        api_key: str = "",
+        api_key: str | None = "",
         require_auth: bool = True,
         localhost_only: bool | None = None,
     ) -> None:
         self.enabled = enabled
         self.api_key = api_key or ""
         self.require_auth = require_auth
-        # When no API key is configured, default to localhost-only unless
-        # the operator has explicitly opted out via config.
+        # When no dashboard API key is configured, default to localhost-only
+        # unless the operator has explicitly opted out via config.
         if localhost_only is None:
             localhost_only = not bool(self.api_key)
         self.localhost_only = bool(localhost_only)

@@ -130,14 +130,15 @@ models:
 
 ```yaml
 dashboard:
-  enabled: true            # mount /dashboard/ and /api/metrics/*
-  require_auth: true       # require server.api_key when one is set
-  localhost_only: false    # optional override; see below
-  rate_limit: 60           # /api/metrics/* requests per IP per minute
-  max_request_log: 200     # rows kept in the recent-requests panel
+  enabled: true                       # mount /dashboard/ and /api/metrics/*
+  api_key: ${BEDROCK_DASHBOARD_KEY}   # dashboard auth, independent of server.api_key
+  require_auth: true                  # require dashboard.api_key when one is set
+  localhost_only: false               # optional override; see below
+  rate_limit: 60                      # /api/metrics/* requests per IP per minute
+  max_request_log: 200                # rows kept in the recent-requests panel
 ```
 
-`localhost_only` defaults to `true` when no `server.api_key` is configured, and `false` when one is — set it explicitly to override. Set `enabled: false` to not mount the dashboard routes at all.
+`dashboard.api_key` is deliberately independent of `server.api_key` — model clients cannot reach the dashboard, and dashboard operators cannot call the model endpoints. `localhost_only` defaults to `true` when no `dashboard.api_key` is configured, and `false` when one is — set it explicitly to override. Set `enabled: false` to not mount the dashboard routes at all.
 
 ### Environment-variable shortcuts
 
@@ -146,6 +147,7 @@ Used only when the matching `config.yaml` field is absent.
 | Variable | Default | Field |
 |---|---|---|
 | `BEDROCK_API_KEY` | — | `server.api_key` |
+| `BEDROCK_DASHBOARD_KEY` | — | `dashboard.api_key` |
 | `AWS_BEARER_TOKEN_BEDROCK` | — | `auth.bearer_token` |
 | `AWS_REGION` | `us-east-1` | `region` |
 | `BEDROCK_HOST` | `127.0.0.1` | `server.host` |
@@ -180,6 +182,7 @@ ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 cat > /opt/bedrock-gateway/.env << 'EOF'
 AWS_BEARER_TOKEN_BEDROCK=your-aws-bearer-token
 BEDROCK_API_KEY=bgw-your-generated-key
+BEDROCK_DASHBOARD_KEY=bgw-dash-your-generated-key
 EOF
 chmod 600 /opt/bedrock-gateway/.env
 
@@ -203,6 +206,7 @@ retry:
 
 dashboard:
   enabled: true
+  api_key: ${BEDROCK_DASHBOARD_KEY}
   require_auth: true
   rate_limit: 60
   max_request_log: 500
@@ -297,14 +301,14 @@ server {
 
 Live request metrics at `/dashboard/`. JSON endpoints at `/api/metrics/*`.
 
-**Access.** Four ways to authenticate when `server.api_key` is set: login cookie (via the form at `/dashboard/login`), `Authorization: Bearer`, `x-api-key` header, or `?key=` query parameter.
+**Access.** The dashboard uses its own `dashboard.api_key`, separate from `server.api_key`: someone with the model-calling key cannot reach the dashboard, and a dashboard operator cannot call `/v1/*`. Four ways to authenticate when `dashboard.api_key` is set: login cookie (via the form at `/dashboard/login`), `Authorization: Bearer`, `x-api-key` header, or `?key=` query parameter.
 
 **Auth rules.**
 
 | Condition | Behavior |
 |---|---|
-| `server.api_key` set and `dashboard.require_auth: true` | Key required by any method above |
-| `server.api_key` unset | Serves only to `127.0.0.1` / `::1` (unless `localhost_only: false`) |
+| `dashboard.api_key` set and `dashboard.require_auth: true` | Dashboard key required by any method above |
+| `dashboard.api_key` unset | Serves only to `127.0.0.1` / `::1` (unless `localhost_only: false`) |
 | `dashboard.enabled: false` | Routes not mounted |
 
 **What it shows.** Top gauges (QPS, success rate, p50/p95 latency, tokens/min); per-model request and token distribution; a 1H / 6H / 24H traffic and latency time series; recent-requests table filterable by status; errors grouped by status code and by error type; header bar with version, region, auth mode, uptime, RSS.
@@ -374,9 +378,10 @@ Common name variants (e.g. `claude-3-5-sonnet-latest`, `claude-sonnet-4-20250514
 Production checklist:
 
 - [ ] `BEDROCK_API_KEY` set to a strong random value (`bgw-$(openssl rand -base64 48)`)
+- [ ] `BEDROCK_DASHBOARD_KEY` set to a strong random value — separate from `BEDROCK_API_KEY`
 - [ ] Secrets in `.env` with mode `600`, not in `config.yaml`
 - [ ] TLS in front of the gateway when binding to `0.0.0.0` (Nginx / ALB / Cloudflare)
-- [ ] `dashboard.require_auth: true`, or `dashboard.enabled: false`
+- [ ] `dashboard.api_key` set (or `dashboard.enabled: false`), and `dashboard.require_auth: true`
 - [ ] Process runs as a non-root user (systemd `User=`, Docker `appuser`)
 - [ ] Logs centralised (`journalctl`, container log driver)
 - [ ] Bedrock IAM principal limited to the minimum `bedrock:InvokeModel*` actions
