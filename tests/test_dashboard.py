@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from bedrock_gateway.config import (
@@ -448,6 +448,179 @@ class TestDashboardMiddleware:
         assert recent[0]["status"] == 502
         assert collector.overview()["error"] == 1
 
+    def test_excludes_models_listing(self):
+        app, collector = self._build_app()
+
+        @app.get("/v1/models")
+        async def models():
+            return {"object": "list", "data": []}
+
+        client = TestClient(app)
+        client.get("/v1/models")
+        assert collector.overview()["total_requests"] == 0
+
+
+class TestMiddlewareBodyExtraction:
+    """Middleware parses request/response bodies to capture model + tokens."""
+
+    def _build_app(self) -> tuple[FastAPI, MetricsCollector]:
+        from fastapi.responses import JSONResponse, StreamingResponse
+
+        collector = MetricsCollector()
+        app = FastAPI()
+        app.middleware("http")(metrics_middleware_factory(collector))
+
+        @app.post("/v1/chat/completions")
+        async def oai(request: Request):
+            # Downstream handler should still be able to read the body
+            # even though the middleware already read it.
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "bad json"}, status_code=400)
+            if body.get("stream"):
+                async def gen():
+                    yield b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+                    yield (
+                        b'data: {"choices":[],"usage":{"prompt_tokens":12,'
+                        b'"completion_tokens":7,"total_tokens":19}}\n\n'
+                    )
+                    yield b"data: [DONE]\n\n"
+                return StreamingResponse(gen(), media_type="text/event-stream")
+            return JSONResponse(
+                {
+                    "choices": [{"message": {"content": "Hi"}}],
+                    "usage": {
+                        "prompt_tokens": 42,
+                        "completion_tokens": 13,
+                        "total_tokens": 55,
+                    },
+                }
+            )
+
+        @app.post("/v1/messages")
+        async def ant(request: Request):
+            body = await request.json()
+            if body.get("stream"):
+                async def gen():
+                    yield (
+                        b'event: message_start\n'
+                        b'data: {"type":"message_start","message":'
+                        b'{"usage":{"input_tokens":33}}}\n\n'
+                    )
+                    yield (
+                        b'event: content_block_delta\n'
+                        b'data: {"type":"content_block_delta","delta":'
+                        b'{"type":"text_delta","text":"hi"}}\n\n'
+                    )
+                    yield (
+                        b'event: message_delta\n'
+                        b'data: {"type":"message_delta","usage":'
+                        b'{"output_tokens":11}}\n\n'
+                    )
+                return StreamingResponse(gen(), media_type="text/event-stream")
+            return JSONResponse(
+                {
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 77, "output_tokens": 22},
+                }
+            )
+
+        return app, collector
+
+    def test_captures_model_and_tokens_sync_openai(self):
+        app, collector = self._build_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "claude-haiku", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        # Handler output is unchanged.
+        assert resp.json()["usage"]["prompt_tokens"] == 42
+        rec = collector.recent_requests(limit=1)[0]
+        assert rec["model"] == "claude-haiku"
+        assert rec["prompt_tokens"] == 42
+        assert rec["completion_tokens"] == 13
+
+    def test_captures_model_and_tokens_sync_anthropic(self):
+        app, collector = self._build_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/messages",
+            json={"model": "claude-sonnet", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        rec = collector.recent_requests(limit=1)[0]
+        assert rec["model"] == "claude-sonnet"
+        assert rec["prompt_tokens"] == 77
+        assert rec["completion_tokens"] == 22
+
+    def test_captures_model_and_tokens_stream_openai(self):
+        app, collector = self._build_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "claude-haiku",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        # Consume the streamed body so the wrapper's finaliser runs.
+        body = resp.text
+        assert "[DONE]" in body
+        rec = collector.recent_requests(limit=1)[0]
+        assert rec["model"] == "claude-haiku"
+        assert rec["prompt_tokens"] == 12
+        assert rec["completion_tokens"] == 7
+
+    def test_captures_model_and_tokens_stream_anthropic(self):
+        app, collector = self._build_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.text
+        assert "message_delta" in body
+        rec = collector.recent_requests(limit=1)[0]
+        assert rec["model"] == "claude-sonnet"
+        assert rec["prompt_tokens"] == 33
+        assert rec["completion_tokens"] == 11
+
+    def test_missing_model_falls_back_to_dash(self):
+        app, collector = self._build_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        rec = collector.recent_requests(limit=1)[0]
+        assert rec["model"] == "-"
+
+    def test_invalid_json_body_does_not_crash(self):
+        app, collector = self._build_app()
+        client = TestClient(app)
+        # Non-JSON body — handler will 422, but middleware must still record
+        # the request instead of exploding.
+        resp = client.post(
+            "/v1/chat/completions",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code in (400, 422)
+        rec = collector.recent_requests(limit=1)[0]
+        assert rec["model"] == "-"
+        assert rec["prompt_tokens"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Security — authentication
@@ -863,7 +1036,9 @@ class TestEndToEnd:
         data = open_client.get("/api/metrics/overview").json()
         assert data["total_requests"] == 0
 
-    def test_models_listing_records_one(self, open_client: TestClient):
+    def test_models_listing_does_not_pollute_metrics(self, open_client: TestClient):
+        # GET /v1/models is a listing endpoint, not a model invocation,
+        # so the dashboard should not record it.
         open_client.get("/v1/models")
         data = open_client.get("/api/metrics/overview").json()
-        assert data["total_requests"] == 1
+        assert data["total_requests"] == 0
