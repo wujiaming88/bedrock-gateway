@@ -35,6 +35,18 @@ retry:
   max_retries: 3
   base_delay: 1.0   # seconds, exponential backoff: delay * 2^attempt
 
+# ─── Dashboard ────────────────────────────────────────────
+# Observability UI at /dashboard/ and the /api/metrics/* JSON API.
+# When server.api_key is set the dashboard requires it (cookie, Bearer,
+# x-api-key, or ?key=). When it is not set the dashboard restricts itself
+# to localhost unless `localhost_only: false` is set explicitly.
+dashboard:
+  enabled: true            # expose the dashboard at all?
+  require_auth: true       # require API key when one is configured
+  # localhost_only: false  # set true/false to override the default
+  rate_limit: 60           # /api/metrics/* requests/minute/IP
+  max_request_log: 200     # rows retained in the request-log panel
+
 # ─── Models ───────────────────────────────────────────────
 # Map user-facing aliases to Bedrock model IDs.
 # Omit this section entirely to use the built-in defaults.

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bedrock Gateway — Cockpit</title>
+  <link rel="stylesheet" href="/dashboard/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <!-- Top status bar -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">&#9670;</span>
+      <span class="title">BEDROCK GATEWAY</span>
+      <span class="subtitle">COCKPIT</span>
+    </div>
+    <div class="status-pills">
+      <span class="pill" id="pill-version">v—</span>
+      <span class="pill" id="pill-region">region: —</span>
+      <span class="pill" id="pill-auth">auth: —</span>
+      <span class="pill" id="pill-uptime">uptime —</span>
+      <span class="pill" id="pill-memory">RSS —</span>
+      <span class="pill pill-live" id="pill-live">LIVE</span>
+    </div>
+  </header>
+
+  <!-- Four gauges -->
+  <section class="gauges">
+    <div class="gauge-card">
+      <canvas class="gauge" data-key="qps" width="200" height="200"></canvas>
+    </div>
+    <div class="gauge-card">
+      <canvas class="gauge" data-key="success" width="200" height="200"></canvas>
+    </div>
+    <div class="gauge-card">
+      <canvas class="gauge" data-key="latency" width="200" height="200"></canvas>
+    </div>
+    <div class="gauge-card">
+      <canvas class="gauge" data-key="tokens" width="200" height="200"></canvas>
+    </div>
+  </section>
+
+  <!-- Main grid -->
+  <main class="grid">
+    <!-- Left column: models -->
+    <section class="panel panel-models">
+      <header class="panel-head">
+        <h2>MODEL DISTRIBUTION</h2>
+      </header>
+      <div class="panel-body">
+        <div class="chart-box chart-box-small">
+          <canvas id="chart-models-pie"></canvas>
+        </div>
+        <div class="chart-box chart-box-small">
+          <canvas id="chart-models-tokens"></canvas>
+        </div>
+        <div class="models-legend" id="models-legend"></div>
+      </div>
+    </section>
+
+    <!-- Right column: traffic chart -->
+    <section class="panel panel-traffic">
+      <header class="panel-head">
+        <h2>TRAFFIC &amp; LATENCY</h2>
+        <div class="window-switch" id="window-switch">
+          <button type="button" class="win-btn active" data-window="1h">1H</button>
+          <button type="button" class="win-btn" data-window="6h">6H</button>
+          <button type="button" class="win-btn" data-window="24h">24H</button>
+        </div>
+      </header>
+      <div class="panel-body">
+        <div class="chart-box chart-box-large">
+          <canvas id="chart-traffic"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom left: request log -->
+    <section class="panel panel-requests">
+      <header class="panel-head">
+        <h2>RECENT REQUESTS</h2>
+        <div class="filter-switch" id="filter-switch">
+          <button type="button" class="fil-btn active" data-filter="all">ALL</button>
+          <button type="button" class="fil-btn" data-filter="success">OK</button>
+          <button type="button" class="fil-btn" data-filter="error">ERR</button>
+        </div>
+      </header>
+      <div class="panel-body panel-body-scroll">
+        <table class="req-table">
+          <thead>
+            <tr>
+              <th>TIME</th>
+              <th>METHOD</th>
+              <th>PATH</th>
+              <th>MODEL</th>
+              <th class="num">STATUS</th>
+              <th class="num">LATENCY</th>
+              <th class="num">TOKENS</th>
+            </tr>
+          </thead>
+          <tbody id="req-body">
+            <tr><td colspan="7" class="muted">waiting for data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Bottom right: errors -->
+    <section class="panel panel-errors">
+      <header class="panel-head">
+        <h2>ERRORS</h2>
+      </header>
+      <div class="panel-body panel-body-scroll">
+        <div class="error-summary" id="error-summary">
+          <div class="err-group">
+            <div class="err-group-title">BY STATUS</div>
+            <div class="err-chips" id="err-by-status"></div>
+          </div>
+          <div class="err-group">
+            <div class="err-group-title">BY TYPE</div>
+            <div class="err-chips" id="err-by-type"></div>
+          </div>
+        </div>
+        <ul class="err-list" id="err-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottombar">
+    <span id="last-updated">— last update: —</span>
+    <span>&copy; Bedrock Gateway</span>
+  </footer>
+
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

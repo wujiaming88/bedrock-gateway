@@ -41,6 +41,13 @@ from .converter import (
     parse_bedrock_error,
     parse_bedrock_response,
 )
+from .dashboard import (
+    DashboardAuth,
+    MetricsCollector,
+    RateLimiter,
+    build_dashboard_router,
+    metrics_middleware_factory,
+)
 from .models import ModelRegistry
 
 logger = logging.getLogger("bedrock_gateway")
@@ -84,10 +91,29 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     max_retries = config.retry.max_retries
     retry_base_delay = config.retry.base_delay
 
+    # Metrics collector (shared across middleware + dashboard router)
+    metrics = MetricsCollector(max_request_log=config.dashboard.max_request_log)
+
+    # Dashboard auth + rate limiter (public-deployment hardening).
+    dashboard_auth = DashboardAuth(
+        enabled=config.dashboard.enabled,
+        api_key=config.server.api_key,
+        require_auth=config.dashboard.require_auth,
+        # None → default ("localhost-only when no api_key configured");
+        # True/False → explicit operator override.
+        localhost_only=config.dashboard.localhost_only,
+    )
+    dashboard_rate_limiter = RateLimiter(
+        limit=max(1, config.dashboard.rate_limit), window_seconds=60
+    )
+
     # Store on app.state for testability
     app.state.config = config
     app.state.registry = registry
     app.state.auth = auth
+    app.state.metrics = metrics
+    app.state.dashboard_auth = dashboard_auth
+    app.state.dashboard_rate_limiter = dashboard_rate_limiter
 
     # ------------------------------------------------------------------
     # API key authentication middleware (opt-in)
@@ -102,7 +128,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             return await call_next(request)
 
         # Whitelist: public endpoints (no auth required)
-        if request.url.path in ("/health", "/"):
+        path = request.url.path
+        if path in ("/health", "/") or path.startswith(("/dashboard", "/api/metrics")):
             return await call_next(request)
 
         # Extract key from Authorization: Bearer <key> or x-api-key header
@@ -139,6 +166,23 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
 
         return await call_next(request)
+
+    # ------------------------------------------------------------------
+    # Metrics middleware (wraps every request for latency + counts)
+    # ------------------------------------------------------------------
+    app.middleware("http")(metrics_middleware_factory(metrics))
+
+    # ------------------------------------------------------------------
+    # Dashboard UI + metrics JSON API
+    # ------------------------------------------------------------------
+    if config.dashboard.enabled:
+        app.include_router(
+            build_dashboard_router(
+                metrics,
+                auth=dashboard_auth,
+                rate_limiter=dashboard_rate_limiter,
+            )
+        )
 
     # ------------------------------------------------------------------
     # GET /v1/models

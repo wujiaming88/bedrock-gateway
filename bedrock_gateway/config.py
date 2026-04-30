@@ -90,6 +90,22 @@ class RetryConfig:
 
 
 @dataclass
+class DashboardConfig:
+    """Dashboard (metrics UI + API) configuration.
+
+    ``localhost_only`` is a tri-state: ``None`` means "auto" — the
+    dashboard restricts itself to localhost when no ``server.api_key``
+    is configured, and is unrestricted otherwise. Set it explicitly to
+    ``True`` / ``False`` in ``config.yaml`` to override.
+    """
+    enabled: bool = True
+    require_auth: bool = True
+    localhost_only: bool | None = None
+    rate_limit: int = 60
+    max_request_log: int = 200
+
+
+@dataclass
 class ModelEntry:
     """A single model's metadata."""
     bedrock_id: str
@@ -104,6 +120,7 @@ class GatewayConfig:
     region: str = "us-east-1"
     server: ServerConfig = field(default_factory=ServerConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     models: dict[str, ModelEntry] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -255,6 +272,22 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         base_delay=float(retry_raw.get("base_delay", "1.0")),
     )
 
+    # Dashboard
+    dash_raw = raw.get("dashboard", {})
+    lh_raw = dash_raw.get("localhost_only", None)
+    localhost_only: bool | None
+    if lh_raw is None:
+        localhost_only = None
+    else:
+        localhost_only = bool(lh_raw)
+    dashboard = DashboardConfig(
+        enabled=bool(dash_raw.get("enabled", True)),
+        require_auth=bool(dash_raw.get("require_auth", True)),
+        localhost_only=localhost_only,
+        rate_limit=int(dash_raw.get("rate_limit", 60)),
+        max_request_log=int(dash_raw.get("max_request_log", 200)),
+    )
+
     # Models
     models = _parse_models(raw.get("models"))
 
@@ -263,5 +296,6 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         region=raw.get("region", os.environ.get("AWS_REGION", "us-east-1")),
         server=server,
         retry=retry,
+        dashboard=dashboard,
         models=models,
     )

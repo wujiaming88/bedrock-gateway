@@ -1,64 +1,189 @@
 # Bedrock Gateway
 
-**Lightweight OpenAI-compatible proxy that lets any OpenAI client access AWS Bedrock models.**
+Forward OpenAI / Anthropic API requests to AWS Bedrock.
 
-No SDK changes. No vendor lock-in. Just point your `OPENAI_BASE_URL` and go.
+[中文文档](README_CN.md)
 
-```
-┌────────────────┐     OpenAI API     ┌──────────────────┐    Bedrock API    ┌─────────────┐
-│  OpenAI Client │ ──────────────────▶ │ Bedrock Gateway  │ ────────────────▶ │ AWS Bedrock │
-│  (any library) │ ◀────────────────── │  (this project)  │ ◀──────────────── │   Claude    │
-└────────────────┘                     └──────────────────┘                    └─────────────┘
-```
-
-## Features
-
-- 🔌 **Drop-in replacement** — OpenAI-compatible `/v1/chat/completions` and `/v1/models`
-- 🔮 **Anthropic Messages API** — Native `/v1/messages` endpoint (sync + streaming)
-- 🔐 **Multiple auth modes** — Bearer Token, AK/SK (SigV4), IAM Role, AWS Profile
-- 🔄 **Full protocol translation** — messages, tools, images, streaming, thinking
-- 🏗️ **Production ready** — retry with backoff, structured logging, health checks
-- 📦 **Zero config** — works with environment variables alone, or use YAML for full control
-- 🐳 **Docker first** — single container, 50MB image
-
-## Quick Start
-
-### Option 1: Production Deployment (VPS / Cloud Server)
-
-**Step 1: Install**
+## Quick start
 
 ```bash
-# Install system dependencies (if missing)
-apt install -y python3.12-venv git
+pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 
-# Create virtual environment and install
+export AWS_BEARER_TOKEN_BEDROCK="your-aws-bearer-token"
+bedrock-gateway
+# listening on http://127.0.0.1:4000
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:4000/health
+
+curl http://127.0.0.1:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-haiku","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+Use from an SDK:
+
+```python
+# OpenAI SDK
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="anything")
+client.chat.completions.create(
+    model="claude-sonnet-4",
+    messages=[{"role": "user", "content": "hello"}],
+)
+
+# Anthropic SDK
+from anthropic import Anthropic
+client = Anthropic(base_url="http://127.0.0.1:4000", api_key="anything")
+client.messages.create(
+    model="claude-sonnet-4",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "hello"}],
+)
+```
+
+## Configuration
+
+All config lives in `config.yaml` next to the process (or at `--config /path/to/config.yaml`). String values support `${VAR}` interpolation from the process environment — missing variables expand to an empty string.
+
+### `auth`
+
+AWS credential source. Exactly one mode at a time.
+
+**`bearer_token`** — Bedrock API key (simplest; no SigV4, no boto3).
+
+```yaml
+auth:
+  mode: bearer_token
+  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}
+```
+
+**`credentials`** — static AK/SK, request is signed with SigV4 in-process.
+
+```yaml
+auth:
+  mode: credentials
+  access_key_id: ${AWS_ACCESS_KEY_ID}
+  secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+  session_token: ${AWS_SESSION_TOKEN}   # optional, temporary credentials
+```
+
+**`iam_role`** — pick up credentials from the EC2 / ECS / Lambda metadata service. Requires `boto3`: `pip install "bedrock-gateway[boto3]"`.
+
+```yaml
+auth:
+  mode: iam_role
+```
+
+**`profile`** — named profile from `~/.aws/credentials`. Also requires `boto3`.
+
+```yaml
+auth:
+  mode: profile
+  profile: default
+```
+
+### `server`
+
+```yaml
+server:
+  host: 0.0.0.0          # default 127.0.0.1
+  port: 4000             # default 4000
+  log_level: info        # debug | info | warning | error
+  api_key: ${BEDROCK_API_KEY}   # optional; if set, /v1/* requires it
+```
+
+When `api_key` is set, clients must send either `Authorization: Bearer <key>` or `x-api-key: <key>`. `/health` and `/` stay public. Key comparison uses `hmac.compare_digest`.
+
+### `region`
+
+```yaml
+region: us-east-1
+```
+
+### `retry`
+
+```yaml
+retry:
+  max_retries: 3     # total attempts before giving up
+  base_delay: 1.0    # seconds; actual delay = base_delay * 2^attempt
+```
+
+Retries fire on HTTP `429`, `503`, `529`, and timeouts. Everything else returns to the client unchanged.
+
+### `models`
+
+Maps a user-facing alias to a Bedrock model ID. Omit the whole section to use the built-in defaults (see [Model aliases](#model-aliases)). You can also always pass a raw Bedrock model ID as the `model` field — the gateway treats anything starting with `us.`, `anthropic.`, etc. as a direct passthrough.
+
+```yaml
+models:
+  my-model:
+    bedrock_id: us.my-org.my-model-v1
+    context_length: 100000
+    max_output: 8192
+```
+
+### `dashboard`
+
+```yaml
+dashboard:
+  enabled: true            # mount /dashboard/ and /api/metrics/*
+  require_auth: true       # require server.api_key when one is set
+  localhost_only: false    # optional override; see below
+  rate_limit: 60           # /api/metrics/* requests per IP per minute
+  max_request_log: 200     # rows kept in the recent-requests panel
+```
+
+`localhost_only` defaults to `true` when no `server.api_key` is configured, and `false` when one is — set it explicitly to override. Set `enabled: false` to not mount the dashboard routes at all.
+
+### Environment-variable shortcuts
+
+Used only when the matching `config.yaml` field is absent.
+
+| Variable | Default | Field |
+|---|---|---|
+| `BEDROCK_API_KEY` | — | `server.api_key` |
+| `AWS_BEARER_TOKEN_BEDROCK` | — | `auth.bearer_token` |
+| `AWS_REGION` | `us-east-1` | `region` |
+| `BEDROCK_HOST` | `127.0.0.1` | `server.host` |
+| `BEDROCK_PORT` | `4000` | `server.port` |
+| `BEDROCK_LOG_LEVEL` | `info` | `server.log_level` |
+| `BEDROCK_AUTH_MODE` | `bearer_token` | `auth.mode` |
+| `BEDROCK_MAX_RETRIES` | `3` | `retry.max_retries` |
+
+## Deployment
+
+### Local
+
+```bash
+git clone https://github.com/wujiaming88/bedrock-gateway.git
+cd bedrock-gateway
+pip install -e .
+
+export AWS_BEARER_TOKEN_BEDROCK="your-token"
+python -m bedrock_gateway
+```
+
+### systemd
+
+```bash
+# deps + venv
+apt install -y python3.12-venv git
 python3 -m venv /opt/bedrock-gateway
 /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
-```
 
-**Step 2: Configure**
-
-```bash
-# Generate a secure API key
-echo "bgw-$(openssl rand -base64 48)"
-# Save the output — you'll need it below
-```
-
-Create environment file (replace with your real values):
-
-```bash
-cat > /opt/bedrock-gateway/.env << EOF
+# secrets
+cat > /opt/bedrock-gateway/.env << 'EOF'
 AWS_BEARER_TOKEN_BEDROCK=your-aws-bearer-token
 BEDROCK_API_KEY=bgw-your-generated-key
 EOF
-
 chmod 600 /opt/bedrock-gateway/.env
-```
 
-Create config file:
-
-```bash
+# config
 cat > /opt/bedrock-gateway/config.yaml << 'EOF'
 auth:
   mode: bearer_token
@@ -75,13 +200,18 @@ server:
 retry:
   max_retries: 3
   base_delay: 1.0
+
+dashboard:
+  enabled: true
+  require_auth: true
+  rate_limit: 60
+  max_request_log: 500
 EOF
 ```
 
-**Step 3: Set up systemd service**
+`/etc/systemd/system/bedrock-gateway.service`:
 
-```bash
-cat > /etc/systemd/system/bedrock-gateway.service << 'EOF'
+```ini
 [Unit]
 Description=Bedrock Gateway
 After=network.target
@@ -93,128 +223,143 @@ WorkingDirectory=/opt/bedrock-gateway
 ExecStart=/opt/bedrock-gateway/bin/bedrock-gateway
 Restart=always
 RestartSec=3
+User=bedrock
+Group=bedrock
 
 [Install]
 WantedBy=multi-user.target
-EOF
+```
 
+```bash
+useradd --system --no-create-home bedrock
 systemctl daemon-reload
-systemctl enable bedrock-gateway
-systemctl start bedrock-gateway
+systemctl enable --now bedrock-gateway
+journalctl -u bedrock-gateway -f
 ```
 
-**Step 4: Verify**
+### Docker
 
 ```bash
-# Health check (no auth required)
-curl http://localhost:4000/health
+docker build -t bedrock-gateway .
 
-# Test with API key
-curl http://localhost:4000/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: bgw-your-generated-key" \
-  -d '{
-    "model": "claude-haiku",
-    "max_tokens": 100,
-    "messages": [{"role": "user", "content": "Say hi"}]
-  }'
-```
-
-Useful commands:
-
-| Action | Command |
-|--------|---------|
-| Status | `systemctl status bedrock-gateway` |
-| Logs | `journalctl -u bedrock-gateway -f` |
-| Restart | `systemctl restart bedrock-gateway` |
-| Stop | `systemctl stop bedrock-gateway` |
-
-### Option 2: Docker
-
-```bash
-docker run -p 4000:4000 \
+docker run -d --name bedrock-gateway \
+  -p 4000:4000 \
   -e AWS_BEARER_TOKEN_BEDROCK="your-token" \
   -e BEDROCK_API_KEY="bgw-your-key" \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
   bedrock-gateway
 ```
 
-### Option 3: Local Development
+### docker-compose
+
+The shipped `docker-compose.yml` mounts `./config.yaml` into the container and reads `AWS_BEARER_TOKEN_BEDROCK` / `AWS_REGION` from the environment.
 
 ```bash
-git clone https://github.com/wujiaming88/bedrock-gateway.git
-cd bedrock-gateway
-pip install -e .
-
 export AWS_BEARER_TOKEN_BEDROCK="your-token"
-python -m bedrock_gateway
-# → listening on http://127.0.0.1:4000
+docker compose up -d
+docker compose logs -f
 ```
 
-### Use it
+### Nginx reverse proxy
 
-```python
-from openai import OpenAI
+```nginx
+upstream bedrock_gateway {
+    server 127.0.0.1:4000;
+    keepalive 32;
+}
 
-client = OpenAI(
-    base_url="http://127.0.0.1:4000/v1",
-    api_key="anything",  # not used, but required by the SDK
-)
+server {
+    listen 443 ssl http2;
+    server_name gateway.example.com;
 
-response = client.chat.completions.create(
-    model="claude-sonnet-4",
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-print(response.choices[0].message.content)
+    ssl_certificate     /etc/ssl/gateway.crt;
+    ssl_certificate_key /etc/ssl/gateway.key;
+
+    client_max_body_size 32m;
+
+    location / {
+        proxy_pass              http://bedrock_gateway;
+        proxy_http_version      1.1;
+        proxy_set_header        Host $host;
+        proxy_set_header        X-Real-IP $remote_addr;
+        proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # streaming
+        proxy_buffering         off;
+        proxy_cache             off;
+        proxy_read_timeout      600s;
+        proxy_send_timeout      600s;
+    }
+}
 ```
 
-Or with the Anthropic SDK:
+## Dashboard
 
-```python
-from anthropic import Anthropic
+Live request metrics at `/dashboard/`. JSON endpoints at `/api/metrics/*`.
 
-client = Anthropic(
-    base_url="http://127.0.0.1:4000",
-    api_key="anything",  # not used, but required by the SDK
-)
+**Access.** Four ways to authenticate when `server.api_key` is set: login cookie (via the form at `/dashboard/login`), `Authorization: Bearer`, `x-api-key` header, or `?key=` query parameter.
 
-message = client.messages.create(
-    model="claude-sonnet-4",
-    max_tokens=1024,
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-print(message.content[0].text)
+**Auth rules.**
+
+| Condition | Behavior |
+|---|---|
+| `server.api_key` set and `dashboard.require_auth: true` | Key required by any method above |
+| `server.api_key` unset | Serves only to `127.0.0.1` / `::1` (unless `localhost_only: false`) |
+| `dashboard.enabled: false` | Routes not mounted |
+
+**What it shows.** Top gauges (QPS, success rate, p50/p95 latency, tokens/min); per-model request and token distribution; a 1H / 6H / 24H traffic and latency time series; recent-requests table filterable by status; errors grouped by status code and by error type; header bar with version, region, auth mode, uptime, RSS.
+
+All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 1; mode=block`, `Referrer-Policy: no-referrer`. `/api/metrics/*` is rate-limited per IP (default 60/min, `dashboard.rate_limit`).
+
+## API
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/v1/chat/completions` | OpenAI chat completions, sync and streaming |
+| `POST` | `/v1/messages` | Anthropic messages, sync and streaming |
+| `GET`  | `/v1/models` | Model list (OpenAI format) |
+| `GET`  | `/health` | Liveness, no auth |
+| `GET`  | `/dashboard/` | UI |
+| `GET`  | `/api/metrics/*` | Dashboard JSON |
+
+### OpenAI parameters (`/v1/chat/completions`)
+
+| Parameter | Notes |
+|---|---|
+| `messages` | `role=system` extracted to Bedrock `system` field |
+| `model` | Alias or raw Bedrock model ID |
+| `stream` | Boolean, SSE |
+| `max_tokens` / `max_completion_tokens` | Falls back to model default |
+| `temperature`, `top_p` | Passthrough |
+| `stop` | String or list → `stop_sequences` |
+| `tools`, `tool_choice` | Converted to Anthropic `tool_use` |
+| `reasoning_effort` | Mapped to `thinking` budget |
+| `thinking` | Passthrough |
+| `image_url` | base64 data URLs and remote URLs |
+
+### Anthropic parameters (`/v1/messages`)
+
+Passthrough: `messages`, `system` (string or block array), `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`, `metadata`, `tools`, `tool_choice`, `thinking`, `stream`. Extended-thinking stream events (`thinking_delta`, `signature_delta`, `redacted_thinking`) are forwarded. Cache-token usage is surfaced when the underlying model reports it.
+
+### Extended thinking
+
+```json
+{
+  "model": "claude-sonnet-4",
+  "max_tokens": 4096,
+  "thinking": {"type": "enabled", "budget_tokens": 4096},
+  "messages": [...]
+}
 ```
 
-Or with curl:
+When `thinking` is set, `temperature` is stripped (Bedrock rejects it) and `budget_tokens` is clamped to ≥ 1024. On `/v1/chat/completions`, `reasoning_effort: "low" | "medium" | "high"` maps to a `thinking` budget.
 
-```bash
-curl http://127.0.0.1:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
+### Model aliases
 
-## Authentication Modes
-
-| Mode | Config | Description |
-|------|--------|-------------|
-| `bearer_token` | `AWS_BEARER_TOKEN_BEDROCK` env var | AWS Bearer Token (ABSK). Simplest setup. |
-| `credentials` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | Standard AK/SK with SigV4 signing. |
-| `iam_role` | (automatic) | Auto-detect from EC2/ECS/Lambda metadata. Requires `boto3`. |
-| `profile` | `AWS_PROFILE` or config | Named AWS CLI profile. Requires `boto3`. |
-
-For `iam_role` or `profile` mode, install with boto3:
-
-```bash
-pip install "bedrock-gateway[boto3] @ git+https://github.com/wujiaming88/bedrock-gateway.git"
-```
-
-## Supported Models
-
-| Alias | Bedrock Model ID | Context | Max Output |
-|-------|-----------------|---------|------------|
+| Alias | Bedrock ID | Context | Max output |
+|---|---|---|---|
 | `claude-opus-4.7` | `us.anthropic.claude-opus-4-7` | 1M | 128K |
 | `claude-opus-4` | `us.anthropic.claude-opus-4-6-v1` | 1M | 128K |
 | `claude-sonnet-4.6` | `us.anthropic.claude-sonnet-4-6` | 1M | 64K |
@@ -222,219 +367,29 @@ pip install "bedrock-gateway[boto3] @ git+https://github.com/wujiaming88/bedrock
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K |
 | `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K |
 
-You can also pass a raw Bedrock model ID directly (e.g., `us.anthropic.claude-3-haiku-20240307-v1:0`).
+Common name variants (e.g. `claude-3-5-sonnet-latest`, `claude-sonnet-4-20250514`) resolve to the canonical alias, so stock Anthropic SDK defaults work as-is.
 
-Add custom models in `config.yaml`:
+## Security
 
-```yaml
-models:
-  my-custom-model:
-    bedrock_id: us.my-org.my-model-v1
-    context_length: 100000
-    max_output: 8192
-```
+Production checklist:
 
-## Configuration
-
-### Environment Variables (zero-config)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BEDROCK_API_KEY` | — | API key for gateway authentication (opt-in) |
-| `AWS_BEARER_TOKEN_BEDROCK` | — | Bearer token for AWS Bedrock authentication |
-| `AWS_REGION` | `us-east-1` | AWS region |
-| `BEDROCK_HOST` | `127.0.0.1` | Server bind address |
-| `BEDROCK_PORT` | `4000` | Server port |
-| `BEDROCK_LOG_LEVEL` | `info` | Log level (debug/info/warning/error) |
-| `BEDROCK_AUTH_MODE` | `bearer_token` | Auth mode override |
-| `BEDROCK_MAX_RETRIES` | `3` | Max retry attempts |
-
-### YAML Configuration
-
-Copy `config.example.yaml` to `config.yaml` for full control:
-
-```yaml
-auth:
-  mode: bearer_token
-  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}  # env var interpolation
-
-region: us-east-1
-
-server:
-  host: 0.0.0.0
-  port: 4000
-  log_level: info
-  api_key: ${BEDROCK_API_KEY}  # optional: set to require auth for all API calls
-
-retry:
-  max_retries: 3
-  base_delay: 1.0
-
-models:
-  claude-sonnet-4:
-    bedrock_id: us.anthropic.claude-sonnet-4-20250514-v1:0
-    context_length: 200000
-    max_output: 64000
-```
-
-YAML values support `${ENV_VAR}` syntax for environment variable interpolation.
-
-## API Reference
-
-### POST /v1/chat/completions
-
-OpenAI-compatible chat completions endpoint. Supports:
-
-- ✅ Synchronous and streaming responses
-- ✅ System messages
-- ✅ Multi-turn conversations
-- ✅ Tool calling (function calling)
-- ✅ Multimodal (images via base64 or URL)
-- ✅ Extended thinking (`thinking` parameter)
-- ✅ Reasoning effort mapping (`reasoning_effort` → `thinking`)
-- ✅ Stop sequences
-- ✅ Temperature, top_p
-
-### POST /v1/messages
-
-Anthropic Messages API endpoint. Accepts the native Anthropic format:
-
-- ✅ Synchronous and streaming responses
-- ✅ System prompts (string or block array)
-- ✅ Multi-turn conversations
-- ✅ Tool use (native Anthropic format)
-- ✅ Extended thinking (`thinking` parameter with `thinking_delta` streaming)
-- ✅ Thinking blocks (`thinking`, `redacted_thinking`, `signature_delta`)
-- ✅ Stop sequences, temperature, top_p, top_k
-- ✅ Cache token reporting
-- ✅ Model alias resolution
-
-```bash
-curl http://127.0.0.1:4000/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### GET /v1/models
-
-Returns the list of available models in OpenAI format.
-
-### GET /health
-
-Health check endpoint. Returns:
-
-```json
-{
-  "status": "ok",
-  "version": "0.1.0",
-  "auth_mode": "bearer_token",
-  "region": "us-east-1",
-  "models": 6
-}
-```
-
-## How It Works
-
-1. Receives OpenAI-format requests
-2. Converts messages, tools, and images to Anthropic/Bedrock format
-3. Authenticates and forwards to AWS Bedrock
-4. Converts the response (or stream) back to OpenAI format
-5. Retries automatically on 429/503/529 with exponential backoff
-
-### Protocol Translation Details
-
-| OpenAI | Bedrock (Anthropic) |
-|--------|-------------------|
-| `messages[role=system]` | `system` top-level field |
-| `messages[role=tool]` | `messages[role=user]` with `tool_result` block |
-| `tool_calls` | `tool_use` content blocks |
-| `tools[type=function]` | `tools` with `input_schema` |
-| `tool_choice: "required"` | `tool_choice: {type: "any"}` |
-| `image_url` (base64/URL) | `image` source block |
-| `stream: true` | `/invoke-with-response-stream` + event-stream parsing |
-
-## Bedrock Gateway vs. LiteLLM
-
-| | Bedrock Gateway | LiteLLM |
-|---|---|---|
-| **Focus** | AWS Bedrock only | 100+ providers |
-| **Dependencies** | 4 (fastapi, uvicorn, httpx, pyyaml) | 50+ |
-| **Docker image** | ~50MB | ~500MB |
-| **Auth modes** | Bearer Token, AK/SK, IAM, Profile | AK/SK, IAM |
-| **Config** | YAML + env vars | YAML + env vars |
-| **Setup time** | 30 seconds | Minutes |
-| **Best for** | Teams using Bedrock exclusively | Multi-provider routing |
-
-Choose Bedrock Gateway if you only need Bedrock and want minimal overhead.
-Choose LiteLLM if you need to route across multiple LLM providers.
-
-## Security: API Key Authentication
-
-By default, the gateway accepts all requests (for local development). To protect your gateway when exposed on a network:
-
-```bash
-export BEDROCK_API_KEY="your-strong-secret-key"
-bedrock-gateway
-```
-
-Or in `config.yaml`:
-
-```yaml
-server:
-  api_key: ${BEDROCK_API_KEY}
-```
-
-When set, all API endpoints require authentication (except `/health`). Two header formats are supported:
-
-```bash
-# Authorization: Bearer
-curl -H "Authorization: Bearer your-key" http://localhost:4000/v1/models
-
-# x-api-key
-curl -H "x-api-key: your-key" http://localhost:4000/v1/models
-```
-
-**Security measures:**
-
-| Measure | Description |
-|---------|-------------|
-| `hmac.compare_digest` | Constant-time comparison prevents timing attacks |
-| `/health` whitelisted | Health probes work without auth |
-| Bearer + x-api-key | Compatible with both OpenAI and Anthropic SDKs |
-| Opt-in | No key configured = no auth required |
-
-**With Claude Code:**
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://your-vps:4000",
-    "ANTHROPIC_AUTH_TOKEN": "your-same-key",
-    "ANTHROPIC_MODEL": "claude-opus-4.7"
-  }
-}
-```
-
-Claude Code automatically sends `ANTHROPIC_AUTH_TOKEN` as `Authorization: Bearer <key>`.
+- [ ] `BEDROCK_API_KEY` set to a strong random value (`bgw-$(openssl rand -base64 48)`)
+- [ ] Secrets in `.env` with mode `600`, not in `config.yaml`
+- [ ] TLS in front of the gateway when binding to `0.0.0.0` (Nginx / ALB / Cloudflare)
+- [ ] `dashboard.require_auth: true`, or `dashboard.enabled: false`
+- [ ] Process runs as a non-root user (systemd `User=`, Docker `appuser`)
+- [ ] Logs centralised (`journalctl`, container log driver)
+- [ ] Bedrock IAM principal limited to the minimum `bedrock:InvokeModel*` actions
 
 ## Development
 
 ```bash
-git clone https://github.com/bedrock-gateway/bedrock-gateway.git
+git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e ".[dev]"
 
-# Run tests
 pytest -v
-
-# Lint
 ruff check bedrock_gateway/ tests/
-
-# Type check
 mypy bedrock_gateway/ --ignore-missing-imports
 ```
 

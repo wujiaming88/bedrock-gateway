@@ -1,70 +1,189 @@
 # Bedrock Gateway
 
-**轻量级 OpenAI 兼容代理，让任何 OpenAI / Anthropic 客户端无缝访问 AWS Bedrock。**
+把 OpenAI / Anthropic API 请求转发到 AWS Bedrock。
 
-无需修改 SDK，无需厂商锁定，只需设置 `OPENAI_BASE_URL` 或 `ANTHROPIC_BASE_URL` 即可开始使用。
-
-```
-┌────────────────┐     OpenAI API     ┌──────────────────┐    Bedrock API    ┌─────────────┐
-│  OpenAI 客户端  │ ──────────────────▶ │ Bedrock Gateway  │ ────────────────▶ │ AWS Bedrock │
-│  (任意 SDK)     │ ◀────────────────── │   (本项目)        │ ◀──────────────── │   Claude    │
-└────────────────┘                     └──────────────────┘                    └─────────────┘
-
-┌────────────────┐   Anthropic API    ┌──────────────────┐    Bedrock API    ┌─────────────┐
-│ Anthropic 客户端│ ──────────────────▶ │ Bedrock Gateway  │ ────────────────▶ │ AWS Bedrock │
-│ (Claude Code等) │ ◀────────────────── │   (本项目)        │ ◀──────────────── │   Claude    │
-└────────────────┘                     └──────────────────┘                    └─────────────┘
-```
-
-## 特性
-
-- 🔌 **即插即用** — 完全兼容 OpenAI `/v1/chat/completions` 和 `/v1/models` 接口
-- 🔮 **Anthropic Messages API** — 原生 `/v1/messages` 端点（同步 + 流式）
-- 🔐 **多种认证** — Bearer Token、AK/SK (SigV4)、IAM Role、AWS Profile
-- 🔒 **API Key 鉴权** — 可选的网关鉴权，防止未授权访问
-- 🔄 **完整协议转换** — 消息、工具调用、图片、流式、思考模式全支持
-- 🏗️ **生产就绪** — 自动重试退避、结构化日志、健康检查
-- 📦 **零配置启动** — 仅需环境变量即可运行，或使用 YAML 精细控制
-- 🐳 **容器优先** — 单容器部署，镜像仅 50MB
+[English](README.md)
 
 ## 快速开始
 
-### 方式一：生产部署（VPS / 云服务器）
+```bash
+pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 
-**第 1 步：安装**
+export AWS_BEARER_TOKEN_BEDROCK="你的-aws-bearer-token"
+bedrock-gateway
+# listening on http://127.0.0.1:4000
+```
+
+验证：
 
 ```bash
-# 安装系统依赖（如缺少）
-apt install -y python3.12-venv git
+curl http://127.0.0.1:4000/health
 
-# 创建虚拟环境并安装
+curl http://127.0.0.1:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-haiku","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+SDK 调用：
+
+```python
+# OpenAI SDK
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="anything")
+client.chat.completions.create(
+    model="claude-sonnet-4",
+    messages=[{"role": "user", "content": "hello"}],
+)
+
+# Anthropic SDK
+from anthropic import Anthropic
+client = Anthropic(base_url="http://127.0.0.1:4000", api_key="anything")
+client.messages.create(
+    model="claude-sonnet-4",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "hello"}],
+)
+```
+
+## 配置
+
+所有配置项在进程同目录下的 `config.yaml`（或 `--config /path/to/config.yaml`）。字符串值支持 `${VAR}` 从环境变量插值——变量不存在时展开为空字符串。
+
+### `auth`
+
+AWS 凭证来源。同一时间只能启用一种模式。
+
+**`bearer_token`** — Bedrock API key（最简单；不走 SigV4，不需要 boto3）。
+
+```yaml
+auth:
+  mode: bearer_token
+  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}
+```
+
+**`credentials`** — 静态 AK/SK，进程内用 SigV4 签名。
+
+```yaml
+auth:
+  mode: credentials
+  access_key_id: ${AWS_ACCESS_KEY_ID}
+  secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+  session_token: ${AWS_SESSION_TOKEN}   # 可选，临时凭证用
+```
+
+**`iam_role`** — 从 EC2 / ECS / Lambda 元数据服务获取凭证。需要 `boto3`：`pip install "bedrock-gateway[boto3]"`。
+
+```yaml
+auth:
+  mode: iam_role
+```
+
+**`profile`** — 使用 `~/.aws/credentials` 中的命名 profile。同样需要 `boto3`。
+
+```yaml
+auth:
+  mode: profile
+  profile: default
+```
+
+### `server`
+
+```yaml
+server:
+  host: 0.0.0.0          # 默认 127.0.0.1
+  port: 4000             # 默认 4000
+  log_level: info        # debug | info | warning | error
+  api_key: ${BEDROCK_API_KEY}   # 可选；设置后 /v1/* 需要鉴权
+```
+
+`api_key` 设置后，客户端需带 `Authorization: Bearer <key>` 或 `x-api-key: <key>`。`/health` 和 `/` 始终公开。比较用 `hmac.compare_digest`。
+
+### `region`
+
+```yaml
+region: us-east-1
+```
+
+### `retry`
+
+```yaml
+retry:
+  max_retries: 3     # 总尝试次数
+  base_delay: 1.0    # 秒；实际延迟 = base_delay * 2^attempt
+```
+
+HTTP `429`、`503`、`529` 和超时会触发重试，其他状态码原样返回客户端。
+
+### `models`
+
+用户别名到 Bedrock 模型 ID 的映射。省略整段则使用内置默认（见[模型别名](#模型别名)）。`model` 字段也可以直接传原始 Bedrock 模型 ID——以 `us.`、`anthropic.` 等开头的会按 passthrough 处理。
+
+```yaml
+models:
+  my-model:
+    bedrock_id: us.my-org.my-model-v1
+    context_length: 100000
+    max_output: 8192
+```
+
+### `dashboard`
+
+```yaml
+dashboard:
+  enabled: true            # 是否挂载 /dashboard/ 与 /api/metrics/*
+  require_auth: true       # 配置了 server.api_key 时是否要求该 key
+  localhost_only: false    # 可选覆盖；见下文
+  rate_limit: 60           # /api/metrics/* 每 IP 每分钟限流
+  max_request_log: 200     # 请求日志面板保留的最近记录条数
+```
+
+`localhost_only` 未配置时：没有 `server.api_key` 则默认 `true`，有则默认 `false`，需要时可显式覆盖。`enabled: false` 时完全不挂载 dashboard 路由。
+
+### 环境变量快捷配置
+
+仅当 `config.yaml` 中对应字段缺省时生效。
+
+| 变量 | 默认值 | 对应字段 |
+|---|---|---|
+| `BEDROCK_API_KEY` | — | `server.api_key` |
+| `AWS_BEARER_TOKEN_BEDROCK` | — | `auth.bearer_token` |
+| `AWS_REGION` | `us-east-1` | `region` |
+| `BEDROCK_HOST` | `127.0.0.1` | `server.host` |
+| `BEDROCK_PORT` | `4000` | `server.port` |
+| `BEDROCK_LOG_LEVEL` | `info` | `server.log_level` |
+| `BEDROCK_AUTH_MODE` | `bearer_token` | `auth.mode` |
+| `BEDROCK_MAX_RETRIES` | `3` | `retry.max_retries` |
+
+## 部署
+
+### 本地
+
+```bash
+git clone https://github.com/wujiaming88/bedrock-gateway.git
+cd bedrock-gateway
+pip install -e .
+
+export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
+python -m bedrock_gateway
+```
+
+### systemd
+
+```bash
+# 依赖 + 虚拟环境
+apt install -y python3.12-venv git
 python3 -m venv /opt/bedrock-gateway
 /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
-```
 
-**第 2 步：配置**
-
-```bash
-# 生成安全的 API Key
-echo "bgw-$(openssl rand -base64 48)"
-# 记下输出内容，下面要用
-```
-
-创建环境变量文件（替换为你的真实值）：
-
-```bash
-cat > /opt/bedrock-gateway/.env << EOF
-AWS_BEARER_TOKEN_BEDROCK=你的AWS令牌
-BEDROCK_API_KEY=bgw-刚才生成的密钥
+# 密钥
+cat > /opt/bedrock-gateway/.env << 'EOF'
+AWS_BEARER_TOKEN_BEDROCK=你的-aws-bearer-token
+BEDROCK_API_KEY=bgw-生成的密钥
 EOF
-
 chmod 600 /opt/bedrock-gateway/.env
-```
 
-创建配置文件：
-
-```bash
+# 配置
 cat > /opt/bedrock-gateway/config.yaml << 'EOF'
 auth:
   mode: bearer_token
@@ -81,13 +200,18 @@ server:
 retry:
   max_retries: 3
   base_delay: 1.0
+
+dashboard:
+  enabled: true
+  require_auth: true
+  rate_limit: 60
+  max_request_log: 500
 EOF
 ```
 
-**第 3 步：设置 systemd 服务**
+`/etc/systemd/system/bedrock-gateway.service`：
 
-```bash
-cat > /etc/systemd/system/bedrock-gateway.service << 'EOF'
+```ini
 [Unit]
 Description=Bedrock Gateway
 After=network.target
@@ -99,130 +223,143 @@ WorkingDirectory=/opt/bedrock-gateway
 ExecStart=/opt/bedrock-gateway/bin/bedrock-gateway
 Restart=always
 RestartSec=3
+User=bedrock
+Group=bedrock
 
 [Install]
 WantedBy=multi-user.target
-EOF
+```
 
+```bash
+useradd --system --no-create-home bedrock
 systemctl daemon-reload
-systemctl enable bedrock-gateway
-systemctl start bedrock-gateway
+systemctl enable --now bedrock-gateway
+journalctl -u bedrock-gateway -f
 ```
 
-**第 4 步：验证**
+### Docker
 
 ```bash
-# 健康检查（无需鉴权）
-curl http://localhost:4000/health
+docker build -t bedrock-gateway .
 
-# 使用 API Key 测试
-curl http://localhost:4000/v1/messages \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: bgw-你的密钥" \
-  -d '{
-    "model": "claude-haiku",
-    "max_tokens": 100,
-    "messages": [{"role": "user", "content": "Say hi"}]
-  }'
-```
-
-常用命令：
-
-| 操作 | 命令 |
-|------|------|
-| 查看状态 | `systemctl status bedrock-gateway` |
-| 查看日志 | `journalctl -u bedrock-gateway -f` |
-| 重启 | `systemctl restart bedrock-gateway` |
-| 停止 | `systemctl stop bedrock-gateway` |
-
-### 方式二：Docker
-
-```bash
-docker run -p 4000:4000 \
+docker run -d --name bedrock-gateway \
+  -p 4000:4000 \
   -e AWS_BEARER_TOKEN_BEDROCK="你的令牌" \
   -e BEDROCK_API_KEY="bgw-你的密钥" \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
   bedrock-gateway
 ```
 
-### 方式三：本地开发
+### docker-compose
+
+仓库自带的 `docker-compose.yml` 会挂载 `./config.yaml` 到容器，并从环境读取 `AWS_BEARER_TOKEN_BEDROCK` / `AWS_REGION`。
 
 ```bash
-git clone https://github.com/wujiaming88/bedrock-gateway.git
-cd bedrock-gateway
-pip install -e .
-
 export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
-python -m bedrock_gateway
-# → 监听 http://127.0.0.1:4000
+docker compose up -d
+docker compose logs -f
 ```
 
-### 使用示例
+### Nginx 反代
 
-**OpenAI SDK：**
+```nginx
+upstream bedrock_gateway {
+    server 127.0.0.1:4000;
+    keepalive 32;
+}
 
-```python
-from openai import OpenAI
+server {
+    listen 443 ssl http2;
+    server_name gateway.example.com;
 
-client = OpenAI(
-    base_url="http://127.0.0.1:4000/v1",
-    api_key="任意值",  # SDK 要求但不使用
-)
+    ssl_certificate     /etc/ssl/gateway.crt;
+    ssl_certificate_key /etc/ssl/gateway.key;
 
-response = client.chat.completions.create(
-    model="claude-sonnet-4",
-    messages=[{"role": "user", "content": "你好！"}],
-)
-print(response.choices[0].message.content)
+    client_max_body_size 32m;
+
+    location / {
+        proxy_pass              http://bedrock_gateway;
+        proxy_http_version      1.1;
+        proxy_set_header        Host $host;
+        proxy_set_header        X-Real-IP $remote_addr;
+        proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+
+        # 流式
+        proxy_buffering         off;
+        proxy_cache             off;
+        proxy_read_timeout      600s;
+        proxy_send_timeout      600s;
+    }
+}
 ```
 
-**Anthropic SDK：**
+## Dashboard
 
-```python
-from anthropic import Anthropic
+`/dashboard/` 下的实时请求监控界面，JSON 接口在 `/api/metrics/*`。
 
-client = Anthropic(
-    base_url="http://127.0.0.1:4000",
-    api_key="任意值",  # SDK 要求但不使用
-)
+**访问方式。** 配置了 `server.api_key` 时，四种鉴权方式任选其一：登录 cookie（通过 `/dashboard/login` 表单）、`Authorization: Bearer`、`x-api-key` 头、`?key=` query 参数。
 
-message = client.messages.create(
-    model="claude-sonnet-4",
-    max_tokens=1024,
-    messages=[{"role": "user", "content": "你好！"}],
-)
-print(message.content[0].text)
+**访问规则。**
+
+| 条件 | 行为 |
+|---|---|
+| `server.api_key` 已设 且 `dashboard.require_auth: true` | 必须用上述任一方式鉴权 |
+| `server.api_key` 未设 | 仅对 `127.0.0.1` / `::1` 开放（除非 `localhost_only: false`） |
+| `dashboard.enabled: false` | 不挂载路由 |
+
+**界面内容。** 顶部仪表盘（QPS、成功率、p50/p95 延迟、tokens/分钟）；按模型的请求与 tokens 分布；1H / 6H / 24H 流量与延迟时序；可按状态过滤的最近请求表；按状态码和错误类型分组的错误面板；顶部状态条包含版本、region、认证模式、uptime、RSS。
+
+所有 dashboard 响应带 `Content-Security-Policy`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: no-referrer`。`/api/metrics/*` 按 IP 限流（默认 60/分钟，`dashboard.rate_limit`）。
+
+## API
+
+### 端点
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/v1/chat/completions` | OpenAI 聊天补全，同步与流式 |
+| `POST` | `/v1/messages` | Anthropic messages，同步与流式 |
+| `GET`  | `/v1/models` | 模型列表（OpenAI 格式） |
+| `GET`  | `/health` | 健康检查，无需鉴权 |
+| `GET`  | `/dashboard/` | UI |
+| `GET`  | `/api/metrics/*` | Dashboard JSON |
+
+### OpenAI 参数（`/v1/chat/completions`）
+
+| 参数 | 说明 |
+|---|---|
+| `messages` | `role=system` 提取到 Bedrock `system` 字段 |
+| `model` | 别名或原始 Bedrock 模型 ID |
+| `stream` | 布尔值，SSE |
+| `max_tokens` / `max_completion_tokens` | 未提供时用模型默认值 |
+| `temperature`、`top_p` | 透传 |
+| `stop` | 字符串或数组 → `stop_sequences` |
+| `tools`、`tool_choice` | 转换为 Anthropic `tool_use` |
+| `reasoning_effort` | 映射为 `thinking` budget |
+| `thinking` | 透传 |
+| `image_url` | base64 data URL 与远程 URL 都支持 |
+
+### Anthropic 参数（`/v1/messages`）
+
+透传：`messages`、`system`（字符串或 block 数组）、`max_tokens`、`temperature`、`top_p`、`top_k`、`stop_sequences`、`metadata`、`tools`、`tool_choice`、`thinking`、`stream`。扩展思考流事件（`thinking_delta`、`signature_delta`、`redacted_thinking`）会原样转发。底层模型返回 cache-token usage 时也会透传。
+
+### 扩展思考
+
+```json
+{
+  "model": "claude-sonnet-4",
+  "max_tokens": 4096,
+  "thinking": {"type": "enabled", "budget_tokens": 4096},
+  "messages": [...]
+}
 ```
 
-**curl：**
+开启 `thinking` 后，`temperature` 会被移除（Bedrock 不接受）、`budget_tokens` 被钳制到 ≥ 1024。`/v1/chat/completions` 下，`reasoning_effort: "low" | "medium" | "high"` 会映射为对应 `thinking` budget。
 
-```bash
-curl http://127.0.0.1:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4",
-    "messages": [{"role": "user", "content": "你好！"}]
-  }'
-```
+### 模型别名
 
-## 认证方式
-
-| 模式 | 配置 | 说明 |
-|------|------|------|
-| `bearer_token` | `AWS_BEARER_TOKEN_BEDROCK` 环境变量 | AWS Bearer Token (ABSK)，最简单的方式 |
-| `credentials` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | 标准 AK/SK，SigV4 签名 |
-| `iam_role` | （自动获取） | 从 EC2/ECS/Lambda 元数据自动获取，需要 `boto3` |
-| `profile` | `AWS_PROFILE` 或配置文件 | AWS CLI 命名 Profile，需要 `boto3` |
-
-使用 `iam_role` 或 `profile` 模式时，安装 boto3 依赖：
-
-```bash
-pip install "bedrock-gateway[boto3] @ git+https://github.com/wujiaming88/bedrock-gateway.git"
-```
-
-## 支持的模型
-
-| 别名 | Bedrock 模型 ID | 上下文 | 最大输出 |
-|------|-----------------|--------|----------|
+| 别名 | Bedrock ID | 上下文 | 最大输出 |
+|---|---|---|---|
 | `claude-opus-4.7` | `us.anthropic.claude-opus-4-7` | 1M | 128K |
 | `claude-opus-4` | `us.anthropic.claude-opus-4-6-v1` | 1M | 128K |
 | `claude-sonnet-4.6` | `us.anthropic.claude-sonnet-4-6` | 1M | 64K |
@@ -230,187 +367,32 @@ pip install "bedrock-gateway[boto3] @ git+https://github.com/wujiaming88/bedrock
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K |
 | `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K |
 
-也可以直接传入原始的 Bedrock 模型 ID。在 `config.yaml` 中添加自定义模型：
+常见变体（如 `claude-3-5-sonnet-latest`、`claude-sonnet-4-20250514`）会自动解析到规范别名，Anthropic SDK 默认模型名可以直接用。
 
-```yaml
-models:
-  my-custom-model:
-    bedrock_id: us.my-org.my-model-v1
-    context_length: 100000
-    max_output: 8192
-```
+## 安全
 
-## 配置
+生产部署 checklist：
 
-### 环境变量（零配置）
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `BEDROCK_API_KEY` | — | 网关 API Key 鉴权（可选，设置后启用鉴权） |
-| `AWS_BEARER_TOKEN_BEDROCK` | — | AWS Bedrock 认证令牌 |
-| `AWS_REGION` | `us-east-1` | AWS 区域 |
-| `BEDROCK_HOST` | `127.0.0.1` | 服务绑定地址 |
-| `BEDROCK_PORT` | `4000` | 服务端口 |
-| `BEDROCK_LOG_LEVEL` | `info` | 日志级别 |
-| `BEDROCK_AUTH_MODE` | `bearer_token` | 认证模式 |
-| `BEDROCK_MAX_RETRIES` | `3` | 最大重试次数 |
-
-### YAML 配置文件
-
-复制 `config.example.yaml` 为 `config.yaml` 进行精细配置：
-
-```yaml
-auth:
-  mode: bearer_token
-  bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}  # 支持环境变量引用
-
-region: us-east-1
-
-server:
-  host: 0.0.0.0
-  port: 4000
-  log_level: info
-  api_key: ${BEDROCK_API_KEY}  # 可选：设置后需要鉴权才能访问 API
-
-retry:
-  max_retries: 3
-  base_delay: 1.0
-
-models:
-  claude-sonnet-4:
-    bedrock_id: us.anthropic.claude-sonnet-4-20250514-v1:0
-    context_length: 200000
-    max_output: 64000
-```
-
-## API 参考
-
-### POST /v1/chat/completions
-
-OpenAI 兼容的聊天补全接口，支持：
-
-- ✅ 同步和流式响应
-- ✅ System 消息
-- ✅ 多轮对话
-- ✅ 工具调用（Function Calling）
-- ✅ 多模态（Base64 和 URL 图片）
-- ✅ 扩展思考（`thinking` 参数）
-- ✅ 推理力度映射（`reasoning_effort` → `thinking`）
-- ✅ 停止序列、温度、top_p 等参数
-
-### POST /v1/messages
-
-Anthropic Messages API 端点，接受原生 Anthropic 格式：
-
-- ✅ 同步和流式响应
-- ✅ System 提示词（字符串或块数组）
-- ✅ 多轮对话
-- ✅ 工具调用（原生 Anthropic 格式）
-- ✅ 扩展思考（`thinking` 参数，流式 `thinking_delta`）
-- ✅ 思考块（`thinking`、`redacted_thinking`、`signature_delta`）
-- ✅ 停止序列、温度、top_p、top_k
-- ✅ 缓存 Token 统计
-- ✅ 模型别名解析
-
-```bash
-curl http://127.0.0.1:4000/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "你好！"}]
-  }'
-```
-
-### GET /v1/models
-
-返回可用模型列表（OpenAI 格式）。
-
-### GET /health
-
-健康检查端点。
-
-## 安全：API Key 鉴权
-
-默认情况下，网关接受所有请求（适用于本地开发）。当网关暴露在网络上时，建议启用鉴权：
-
-```bash
-export BEDROCK_API_KEY="你的强密码"
-bedrock-gateway
-```
-
-或在 `config.yaml` 中配置：
-
-```yaml
-server:
-  api_key: ${BEDROCK_API_KEY}
-```
-
-启用后，所有 API 端点都需要鉴权（`/health` 除外）。支持两种 Header 格式：
-
-```bash
-# Authorization: Bearer 方式
-curl -H "Authorization: Bearer 你的密钥" http://localhost:4000/v1/models
-
-# x-api-key 方式
-curl -H "x-api-key: 你的密钥" http://localhost:4000/v1/models
-```
-
-**安全措施：**
-
-| 措施 | 说明 |
-|------|------|
-| `hmac.compare_digest` | 恒定时间比较，防止时序攻击 |
-| `/health` 白名单 | 监控探针无需鉴权 |
-| Bearer + x-api-key 双支持 | 兼容 OpenAI SDK 和 Anthropic SDK |
-| 按需启用 | 不配置 Key 则不需要鉴权 |
-
-**配合 Claude Code 使用：**
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://你的VPS:4000",
-    "ANTHROPIC_AUTH_TOKEN": "你设置的同一个密钥",
-    "ANTHROPIC_MODEL": "claude-opus-4.7"
-  }
-}
-```
-
-Claude Code 会自动将 `ANTHROPIC_AUTH_TOKEN` 作为 `Authorization: Bearer <key>` 发送。
-
-## Bedrock Gateway vs. LiteLLM
-
-| | Bedrock Gateway | LiteLLM |
-|---|---|---|
-| **定位** | 专注 AWS Bedrock | 100+ 提供商 |
-| **依赖** | 4 个 | 50+ |
-| **镜像大小** | ~50MB | ~500MB |
-| **认证方式** | Bearer Token、AK/SK、IAM、Profile | AK/SK、IAM |
-| **API 兼容** | OpenAI + Anthropic 双协议 | OpenAI |
-| **启动时间** | 30 秒 | 分钟级 |
-| **适用场景** | 专用 Bedrock 的团队 | 多供应商路由 |
-
-如果你只用 Bedrock，选择 Bedrock Gateway 获得最小开销。
-如果需要在多个 LLM 提供商之间路由，选择 LiteLLM。
+- [ ] `BEDROCK_API_KEY` 设为强随机值（`bgw-$(openssl rand -base64 48)`）
+- [ ] 密钥放在 `.env`（权限 `600`），不要写进 `config.yaml`
+- [ ] 绑定 `0.0.0.0` 时前面一定要有 TLS 终止（Nginx / ALB / Cloudflare）
+- [ ] `dashboard.require_auth: true`，或者直接 `dashboard.enabled: false`
+- [ ] 非 root 运行（systemd `User=` 或 Docker `appuser`）
+- [ ] 日志集中（`journalctl`、容器日志驱动）
+- [ ] Bedrock IAM 账号权限最小化，只保留必要的 `bedrock:InvokeModel*`
 
 ## 开发
 
 ```bash
-git clone https://github.com/bedrock-gateway/bedrock-gateway.git
+git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e ".[dev]"
 
-# 运行测试
 pytest -v
-
-# 代码检查
 ruff check bedrock_gateway/ tests/
-
-# 类型检查
 mypy bedrock_gateway/ --ignore-missing-imports
 ```
 
-## 许可证
+## License
 
-MIT — 详见 [LICENSE](LICENSE)。
+MIT — 见 [LICENSE](LICENSE)。
