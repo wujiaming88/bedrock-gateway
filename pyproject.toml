@@ -53,6 +53,9 @@ Issues = "https://github.com/bedrock-gateway/bedrock-gateway/issues"
 [tool.setuptools.packages.find]
 include = ["bedrock_gateway*"]
 
+[tool.setuptools.package-data]
+bedrock_gateway = ["dashboard/static/**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
