@@ -409,6 +409,10 @@ class TestDashboardMiddleware:
         async def health():
             return {"ok": True}
 
+        @app.post("/v1/messages/count_tokens")
+        async def count_tokens():
+            return {"input_tokens": 1}
+
         return app, collector
 
     def test_records_real_traffic(self):
@@ -426,6 +430,14 @@ class TestDashboardMiddleware:
         client.get("/dashboard/ignored")
         client.get("/api/metrics/ignored")
         client.get("/health")
+        assert collector.overview()["total_requests"] == 0
+
+    def test_excludes_count_tokens(self):
+        """SDK-internal count_tokens pre-flights must not pollute metrics."""
+        app, collector = self._build_app()
+        client = TestClient(app)
+        resp = client.post("/v1/messages/count_tokens", json={"messages": []})
+        assert resp.status_code == 200
         assert collector.overview()["total_requests"] == 0
 
     def test_records_error_status(self):

@@ -334,7 +334,7 @@ body {
     var(--card-grad-a) 0%,
     var(--card-grad-b) 100%
   );
-  border: 1px solid var(--border);
+  border: 1px solid rgba(0, 255, 136, 0.1);
   border-radius: 12px;
   display: flex;
   flex-direction: column;
@@ -348,7 +348,7 @@ body {
 }
 
 .panel:hover {
-  border-color: rgba(0, 255, 136, 0.18);
+  border-color: rgba(0, 255, 136, 0.22);
 }
 
 .panel-head {

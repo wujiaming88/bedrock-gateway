@@ -15,7 +15,9 @@ Handlers may set any of the following keys:
   * ``error_message``     — str, for non-HTTP errors
 
 Paths under ``/dashboard``, ``/api/metrics``, ``/health`` and ``/`` are
-excluded so the dashboard doesn't pollute its own metrics.
+excluded so the dashboard doesn't pollute its own metrics. The
+``/v1/messages/count_tokens`` endpoint — an internal SDK pre-flight that
+users never initiate directly — is also excluded.
 """
 
 from __future__ import annotations
@@ -30,7 +32,12 @@ from .metrics import MetricsCollector
 
 
 _EXCLUDED_PREFIXES = ("/dashboard", "/api/metrics")
-_EXCLUDED_EXACT = {"/health", "/", "/favicon.ico"}
+_EXCLUDED_EXACT = {
+    "/health",
+    "/",
+    "/favicon.ico",
+    "/v1/messages/count_tokens",
+}
 
 
 def metrics_middleware_factory(collector: MetricsCollector):

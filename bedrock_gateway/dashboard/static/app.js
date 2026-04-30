@@ -328,12 +328,15 @@
     var canvasTokens = $('canvas[data-key="tokens"]');
 
     if (canvasQps) {
+      // QPS: 0 is healthy (no traffic). Ramp to amber at 50, red at 100.
+      var qpsColor = qps < 50 ? "#00ff88" : qps < 100 ? "#ffaa00" : "#ff4444";
+      var qpsColor2 = qps < 50 ? "#00aaff" : qps < 100 ? "#ffcc44" : "#ff8844";
       drawGauge(canvasQps, {
         value: qps,
         max: Math.max(5, qps * 1.4),
         label: "QPS",
-        color: "#00ff88",
-        color2: "#00aaff",
+        color: qpsColor,
+        color2: qpsColor2,
         format: function (v) {
           return v.toFixed(2);
         }
@@ -341,12 +344,26 @@
     }
 
     if (canvasSuccess) {
+      // Success %: green >99, amber >95, red ≤95. With no traffic successRate
+      // is 0 → treat as healthy/green so an empty dashboard isn't all red.
+      var hasTraffic = safeGet(overview, "total_requests", 0) > 0;
+      var sColor, sColor2;
+      if (!hasTraffic || successRate > 99) {
+        sColor = "#00ff88";
+        sColor2 = "#00aaff";
+      } else if (successRate > 95) {
+        sColor = "#ffaa00";
+        sColor2 = "#ffcc44";
+      } else {
+        sColor = "#ff4444";
+        sColor2 = "#ff8844";
+      }
       drawGauge(canvasSuccess, {
         value: successRate,
         max: 100,
         label: "SUCCESS %",
-        color: successRate >= 99 ? "#00ff88" : successRate >= 90 ? "#ffaa00" : "#ff4444",
-        color2: successRate >= 99 ? "#00aaff" : successRate >= 90 ? "#ffcc44" : "#ff8844",
+        color: sColor,
+        color2: sColor2,
         format: function (v) {
           return v.toFixed(1);
         },
@@ -355,13 +372,15 @@
     }
 
     if (canvasLatency) {
-      var lColor = p95 < 500 ? "#00ff88" : p95 < 2000 ? "#ffaa00" : "#ff4444";
+      // P95: <1000ms green, <3000ms amber, ≥3000ms red.
+      var lColor = p95 < 1000 ? "#00ff88" : p95 < 3000 ? "#ffaa00" : "#ff4444";
+      var lColor2 = p95 < 1000 ? "#00aaff" : p95 < 3000 ? "#ffcc44" : "#ff8844";
       drawGauge(canvasLatency, {
         value: p95,
         max: Math.max(2000, p95 * 1.3),
         label: "P95 LATENCY",
         color: lColor,
-        color2: "#00aaff",
+        color2: lColor2,
         format: function (v) {
           return Math.round(v);
         },
@@ -370,12 +389,13 @@
     }
 
     if (canvasTokens) {
+      // Pure information — no threshold colouring.
       drawGauge(canvasTokens, {
         value: tokensPerHour,
         max: Math.max(1000, tokensPerHour * 1.3),
         label: "TOKENS / H",
-        color: "#aa66ff",
-        color2: "#00aaff",
+        color: "#00aaff",
+        color2: "#44ddff",
         format: function (v) {
           return formatNumber(v);
         }
