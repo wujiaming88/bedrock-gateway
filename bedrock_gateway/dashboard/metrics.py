@@ -29,9 +29,15 @@ from .storage import AsyncWriter, BucketRow, MetricsStorage, RequestRow
 logger = logging.getLogger("bedrock_gateway.dashboard.metrics")
 
 
-# Per-minute buckets kept for 24h
+# Per-minute buckets kept in memory (24h). Dashboard queries reaching further
+# back pull additional minute-buckets on demand from the SQLite storage layer.
 _BUCKETS = 24 * 60
 _BUCKET_SECONDS = 60
+
+# Upper bound on the ``minutes`` parameter accepted by ``timeseries`` /
+# ``memory_timeseries``. Matches the dashboard's longest window (7d) and
+# assumes the caller has a storage layer deep enough to back it.
+_MAX_WINDOW_MINUTES = 7 * 24 * 60
 
 # Max recent requests retained for the log table
 _MAX_RECENT_REQUESTS = 200
@@ -628,47 +634,137 @@ class MetricsCollector:
             return 0.0, 0.0
         return (retries / total * 100.0), (timeouts / total * 100.0)
 
-    def timeseries(self, minutes: int = 60) -> dict[str, Any]:
+    def _collect_minute_buckets(
+        self, since_ts: int, until_ts: int
+    ) -> dict[int, dict[str, Any]]:
         """
-        Return per-minute QPS / success / error / latency percentiles
-        for the last *minutes* minutes.
-        """
-        minutes = max(1, min(minutes, _BUCKETS))
-        with self._lock:
-            labels: list[int] = []
-            qps: list[float] = []
-            success: list[int] = []
-            errors: list[int] = []
-            p50: list[float] = []
-            p95: list[float] = []
-            p99: list[float] = []
+        Gather minute-bucket aggregates across the retained in-memory range
+        and (when the window extends further back) the SQLite storage layer.
 
-            now = time.time()
-            now_minute = int(now // _BUCKET_SECONDS) * _BUCKET_SECONDS
-            for i in range(minutes - 1, -1, -1):
-                ts = now_minute - i * _BUCKET_SECONDS
-                b = self._buckets.get(ts)
-                labels.append(ts)
-                if b is None:
-                    qps.append(0.0)
-                    success.append(0)
-                    errors.append(0)
-                    p50.append(0.0)
-                    p95.append(0.0)
-                    p99.append(0.0)
-                else:
-                    # The in-progress minute's average QPS uses elapsed time
-                    # so the latest point doesn't look artificially low.
-                    if ts == now_minute:
-                        elapsed = max(1.0, now - ts)
-                        qps.append(round(b.total / elapsed, 3))
-                    else:
-                        qps.append(round(b.total / _BUCKET_SECONDS, 3))
-                    success.append(b.success)
-                    errors.append(b.error)
-                    p50.append(round(_percentile(b.latencies, 50), 2))
-                    p95.append(round(_percentile(b.latencies, 95), 2))
-                    p99.append(round(_percentile(b.latencies, 99), 2))
+        Returns a ``{minute_ts: fields}`` map. In-memory buckets carry raw
+        latency samples; storage-only buckets supply pre-computed p50/p95/p99.
+        """
+        out: dict[int, dict[str, Any]] = {}
+        with self._lock:
+            for ts, b in self._buckets.items():
+                if since_ts <= ts <= until_ts:
+                    out[ts] = {
+                        "total": b.total,
+                        "success": b.success,
+                        "error": b.error,
+                        "latencies": list(b.latencies),
+                        "memory_rss_kb": b.memory_rss_kb,
+                    }
+        # Fill older minutes from persistent storage when the requested
+        # window extends past the in-memory retention.
+        retained_from = int(time.time()) - _BUCKETS * _BUCKET_SECONDS
+        if self._storage is not None and since_ts < retained_from:
+            try:
+                rows = self._storage.load_buckets(since_ts)
+            except Exception:  # noqa: BLE001 — never crash on IO
+                logger.warning("failed to load buckets from storage", exc_info=True)
+                rows = []
+            for row in rows:
+                if row.ts > until_ts:
+                    continue
+                if row.ts in out:
+                    # In-memory wins: it carries the original latency samples.
+                    continue
+                out[row.ts] = {
+                    "total": row.total,
+                    "success": row.success,
+                    "error": row.error,
+                    "latencies": [],
+                    "memory_rss_kb": row.memory_rss_kb,
+                    "p50": row.p50,
+                    "p95": row.p95,
+                    "p99": row.p99,
+                }
+        return out
+
+    def timeseries(
+        self, minutes: int = 60, bin_seconds: int = _BUCKET_SECONDS
+    ) -> dict[str, Any]:
+        """
+        Return QPS / success / error / latency percentiles aggregated into
+        ``bin_seconds``-wide bins over the last *minutes* minutes.
+
+        ``bin_seconds`` is rounded down to a multiple of one minute so bins
+        align with the underlying minute-bucket grid. For windows larger
+        than the in-memory 24h retention the extra minute-buckets are
+        pulled from SQLite storage when available.
+        """
+        minutes = max(1, min(minutes, _MAX_WINDOW_MINUTES))
+        bin_seconds = max(_BUCKET_SECONDS, int(bin_seconds))
+        bin_seconds = (bin_seconds // _BUCKET_SECONDS) * _BUCKET_SECONDS or _BUCKET_SECONDS
+
+        now = time.time()
+        now_bin = int(now // bin_seconds) * bin_seconds
+        span_seconds = minutes * _BUCKET_SECONDS
+        total_bins = max(1, span_seconds // bin_seconds)
+        start_bin = now_bin - (total_bins - 1) * bin_seconds
+
+        minute_buckets = self._collect_minute_buckets(
+            since_ts=start_bin, until_ts=now_bin + bin_seconds - 1
+        )
+
+        labels: list[int] = []
+        qps: list[float] = []
+        success: list[int] = []
+        errors: list[int] = []
+        p50: list[float] = []
+        p95: list[float] = []
+        p99: list[float] = []
+
+        for i in range(total_bins):
+            bin_start = start_bin + i * bin_seconds
+            labels.append(bin_start)
+
+            total = 0
+            succ = 0
+            err = 0
+            raw_latencies: list[float] = []
+            agg_p50: list[float] = []
+            agg_p95: list[float] = []
+            agg_p99: list[float] = []
+
+            for ts in range(bin_start, bin_start + bin_seconds, _BUCKET_SECONDS):
+                mb = minute_buckets.get(ts)
+                if mb is None:
+                    continue
+                total += mb["total"]
+                succ += mb["success"]
+                err += mb["error"]
+                if mb["latencies"]:
+                    raw_latencies.extend(mb["latencies"])
+                elif "p95" in mb:
+                    agg_p50.append(mb["p50"])
+                    agg_p95.append(mb["p95"])
+                    agg_p99.append(mb["p99"])
+
+            # QPS: divide counts by bin duration; use elapsed for the open bin.
+            if bin_start == now_bin:
+                elapsed = max(1.0, now - bin_start)
+                qps.append(round(total / elapsed, 3))
+            else:
+                qps.append(round(total / bin_seconds, 3))
+            success.append(succ)
+            errors.append(err)
+
+            if raw_latencies:
+                p50.append(round(_percentile(raw_latencies, 50), 2))
+                p95.append(round(_percentile(raw_latencies, 95), 2))
+                p99.append(round(_percentile(raw_latencies, 99), 2))
+            elif agg_p95:
+                # Fall back to the max stored percentile across the bin so
+                # the worst minute isn't smoothed away.
+                p50.append(round(max(agg_p50), 2))
+                p95.append(round(max(agg_p95), 2))
+                p99.append(round(max(agg_p99), 2))
+            else:
+                p50.append(0.0)
+                p95.append(0.0)
+                p99.append(0.0)
 
         return {
             "labels": labels,
@@ -711,22 +807,43 @@ class MetricsCollector:
         ]
         return {"sources": sources, "total": total}
 
-    def memory_timeseries(self, minutes: int = 60) -> dict[str, Any]:
-        """Return a per-minute series of process RSS (MB) across *minutes* buckets."""
-        minutes = max(1, min(minutes, _BUCKETS))
-        with self._lock:
-            now = time.time()
-            now_minute = int(now // _BUCKET_SECONDS) * _BUCKET_SECONDS
-            labels: list[int] = []
-            values: list[float | None] = []
-            for i in range(minutes - 1, -1, -1):
-                ts = now_minute - i * _BUCKET_SECONDS
-                b = self._buckets.get(ts)
-                labels.append(ts)
-                if b is not None and b.memory_rss_kb > 0:
-                    values.append(round(b.memory_rss_kb / 1024.0, 1))
-                else:
-                    values.append(None)
+    def memory_timeseries(
+        self, minutes: int = 60, bin_seconds: int = _BUCKET_SECONDS
+    ) -> dict[str, Any]:
+        """Return a process-RSS (MB) series aggregated into ``bin_seconds``
+        bins across the last *minutes* minutes.
+
+        Within each bin we take the peak RSS across the constituent minute
+        buckets; gaps in coverage are surfaced as ``None``.
+        """
+        minutes = max(1, min(minutes, _MAX_WINDOW_MINUTES))
+        bin_seconds = max(_BUCKET_SECONDS, int(bin_seconds))
+        bin_seconds = (bin_seconds // _BUCKET_SECONDS) * _BUCKET_SECONDS or _BUCKET_SECONDS
+
+        now = time.time()
+        now_bin = int(now // bin_seconds) * bin_seconds
+        span_seconds = minutes * _BUCKET_SECONDS
+        total_bins = max(1, span_seconds // bin_seconds)
+        start_bin = now_bin - (total_bins - 1) * bin_seconds
+
+        minute_buckets = self._collect_minute_buckets(
+            since_ts=start_bin, until_ts=now_bin + bin_seconds - 1
+        )
+
+        labels: list[int] = []
+        values: list[float | None] = []
+        for i in range(total_bins):
+            bin_start = start_bin + i * bin_seconds
+            labels.append(bin_start)
+            peak_kb = 0
+            for ts in range(bin_start, bin_start + bin_seconds, _BUCKET_SECONDS):
+                mb = minute_buckets.get(ts)
+                if mb is not None and mb.get("memory_rss_kb", 0) > peak_kb:
+                    peak_kb = mb["memory_rss_kb"]
+            if peak_kb > 0:
+                values.append(round(peak_kb / 1024.0, 1))
+            else:
+                values.append(None)
         return {"labels": labels, "memory_mb": values}
 
     def model_stats(self) -> dict[str, Any]:

@@ -522,6 +522,27 @@
     return out;
   }
 
+  // Format x-axis labels to suit the active window. Short windows stay as
+  // "HH:MM"; multi-day windows prefix "MM-DD" so the day boundary is visible.
+  function labelsForWindow(labels, win) {
+    var out = [];
+    for (var i = 0; i < labels.length; i++) {
+      var d = new Date(labels[i] * 1000);
+      var mo = String(d.getMonth() + 1).padStart(2, "0");
+      var dy = String(d.getDate()).padStart(2, "0");
+      var hh = String(d.getHours()).padStart(2, "0");
+      var mm = String(d.getMinutes()).padStart(2, "0");
+      if (win === "7d") {
+        out.push(mo + "-" + dy);
+      } else if (win === "3d") {
+        out.push(mo + "-" + dy + " " + hh + ":" + mm);
+      } else {
+        out.push(hh + ":" + mm);
+      }
+    }
+    return out;
+  }
+
   function downsample(arr, maxPoints) {
     if (!arr || arr.length <= maxPoints) {
       return arr || [];
@@ -592,7 +613,7 @@
     var p50 = downsample(traffic.p50 || [], maxPoints);
     var p95 = downsample(traffic.p95 || [], maxPoints);
     var p99 = downsample(traffic.p99 || [], maxPoints);
-    var labels = labelsToHHMM(labelsTs);
+    var labels = labelsForWindow(labelsTs, traffic.window || currentWindow);
 
     var datasets = [
       {
@@ -1209,7 +1230,7 @@
     }
     var labelsTs = (data && data.labels) || [];
     var values = (data && data.memory_mb) || [];
-    var labels = labelsToHHMM(labelsTs);
+    var labels = labelsForWindow(labelsTs, (data && data.window) || currentWindow);
 
     var dataset = {
       type: "line",

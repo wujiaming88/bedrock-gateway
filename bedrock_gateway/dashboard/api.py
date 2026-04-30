@@ -49,12 +49,17 @@ from .security import (
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-# Window label → minutes of history
-_WINDOW_MINUTES: dict[str, int] = {
-    "1h": 60,
-    "6h": 6 * 60,
-    "24h": 24 * 60,
+# Window label → (minutes of history, bin granularity in seconds). Larger
+# windows aggregate per-minute buckets into coarser bins so the chart has a
+# manageable number of points and stays responsive in the browser.
+_WINDOW_SPECS: dict[str, tuple[int, int]] = {
+    "1h": (60, 60),            # 60 points · 1 min
+    "6h": (6 * 60, 60),        # 360 points · 1 min
+    "24h": (24 * 60, 5 * 60),  # 288 points · 5 min
+    "3d": (3 * 24 * 60, 15 * 60),  # 288 points · 15 min
+    "7d": (7 * 24 * 60, 60 * 60),  # 168 points · 1 hour
 }
+_WINDOW_PATTERN = "^(1h|6h|24h|3d|7d)$"
 
 
 _COOKIE_NAME = "bedrock_gw_key"
@@ -271,13 +276,13 @@ def build_dashboard_router(
     @router.get("/api/metrics/traffic")
     async def traffic(
         request: Request,
-        window: str = Query("1h", pattern="^(1h|6h|24h)$"),
+        window: str = Query("1h", pattern=_WINDOW_PATTERN),
     ) -> Response:
         blocked = _guard_api(request)
         if blocked is not None:
             return blocked
-        minutes = _WINDOW_MINUTES.get(window, 60)
-        data = collector.timeseries(minutes=minutes)
+        minutes, bin_seconds = _WINDOW_SPECS.get(window, (60, 60))
+        data = collector.timeseries(minutes=minutes, bin_seconds=bin_seconds)
         data["window"] = window
         return _apply_security_headers(JSONResponse(content=data))
 
@@ -338,13 +343,15 @@ def build_dashboard_router(
     @router.get("/api/metrics/memory")
     async def memory(
         request: Request,
-        window: str = Query("1h", pattern="^(1h|6h|24h)$"),
+        window: str = Query("1h", pattern=_WINDOW_PATTERN),
     ) -> Response:
         blocked = _guard_api(request)
         if blocked is not None:
             return blocked
-        minutes = _WINDOW_MINUTES.get(window, 60)
-        data = collector.memory_timeseries(minutes=minutes)
+        minutes, bin_seconds = _WINDOW_SPECS.get(window, (60, 60))
+        data = collector.memory_timeseries(
+            minutes=minutes, bin_seconds=bin_seconds
+        )
         data["window"] = window
         return _apply_security_headers(JSONResponse(content=data))
 

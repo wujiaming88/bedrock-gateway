@@ -194,9 +194,31 @@ class TestTimeseriesWindow:
         m = MetricsCollector()
         ts = m.timeseries(minutes=0)
         assert len(ts["labels"]) == 1
-        # Way above the retained window → clamped
+        # Way above the accepted window → clamped to the 7d ceiling.
         huge = m.timeseries(minutes=10**6)
-        assert len(huge["labels"]) == 24 * 60
+        assert len(huge["labels"]) == 7 * 24 * 60
+
+    def test_timeseries_aggregates_bins(self):
+        """A bin_seconds wider than 60s pools several minute-buckets."""
+        m = MetricsCollector()
+        from bedrock_gateway.dashboard.metrics import _Bucket
+
+        # Align to the last 5-minute bin so all 5 seeded minute-buckets
+        # land in a single aggregation bin deterministically.
+        now = time.time()
+        bin_start = int(now // 300) * 300
+        with m._lock:
+            for i in range(5):
+                ts = bin_start + i * 60
+                b = _Bucket(ts=ts, total=4, success=4)
+                b.latencies = [10.0, 20.0, 30.0, 40.0]
+                m._buckets[ts] = b
+
+        # 24h at 5-minute granularity → 288 bins.
+        series = m.timeseries(minutes=24 * 60, bin_seconds=5 * 60)
+        assert len(series["labels"]) == 288
+        # The final bin covers the 5 seeded minutes (5 × 4 = 20 requests).
+        assert series["success"][-1] == 20
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +318,32 @@ class TestMetricsAPI:
         assert len(data["labels"]) == 60
         assert len(data["qps"]) == 60
         assert len(data["p95"]) == 60
+
+    @pytest.mark.parametrize(
+        "window,expected_points",
+        [
+            ("1h", 60),
+            ("6h", 360),
+            ("24h", 288),   # 5-minute bins
+            ("3d", 288),    # 15-minute bins
+            ("7d", 168),    # 1-hour bins
+        ],
+    )
+    def test_traffic_window_bin_counts(
+        self, open_client: TestClient, window: str, expected_points: int
+    ):
+        resp = open_client.get(f"/api/metrics/traffic?window={window}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["window"] == window
+        assert len(data["labels"]) == expected_points
+        assert len(data["qps"]) == expected_points
+
+    @pytest.mark.parametrize("window", ["1h", "6h", "24h", "3d", "7d"])
+    def test_memory_window_accepted(self, open_client: TestClient, window: str):
+        resp = open_client.get(f"/api/metrics/memory?window={window}")
+        assert resp.status_code == 200
+        assert resp.json()["window"] == window
 
     def test_traffic_rejects_invalid_window(self, open_client: TestClient):
         resp = open_client.get("/api/metrics/traffic?window=bogus")
@@ -873,12 +921,12 @@ class TestSecurityHeaders:
 
 
 class TestInputValidation:
-    @pytest.mark.parametrize("window", ["1h", "6h", "24h"])
+    @pytest.mark.parametrize("window", ["1h", "6h", "24h", "3d", "7d"])
     def test_traffic_windows_accepted(self, open_client: TestClient, window: str):
         resp = open_client.get(f"/api/metrics/traffic?window={window}")
         assert resp.status_code == 200
 
-    @pytest.mark.parametrize("window", ["2h", "5m", "", "1h;drop"])
+    @pytest.mark.parametrize("window", ["2h", "5m", "", "1h;drop", "30d"])
     def test_traffic_bad_windows(self, open_client: TestClient, window: str):
         resp = open_client.get(f"/api/metrics/traffic?window={window}")
         assert resp.status_code == 422
