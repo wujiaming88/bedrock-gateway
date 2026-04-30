@@ -66,6 +66,34 @@ def _oai_error(status: int, message: str, etype: str = "api_error") -> JSONRespo
     )
 
 
+def _note_retry(request: Request | None) -> None:
+    """Bump ``request.state.metrics_info['retry_count']`` by 1, if possible."""
+    if request is None:
+        return
+    try:
+        info = getattr(request.state, "metrics_info", None)
+        if info is None:
+            info = {}
+            request.state.metrics_info = info
+        info["retry_count"] = int(info.get("retry_count") or 0) + 1
+    except Exception:  # noqa: BLE001 — never let metrics accounting break a handler
+        pass
+
+
+def _note_timeout(request: Request | None) -> None:
+    """Flag this request as having timed out for metrics purposes."""
+    if request is None:
+        return
+    try:
+        info = getattr(request.state, "metrics_info", None)
+        if info is None:
+            info = {}
+            request.state.metrics_info = info
+        info["timeout"] = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -318,10 +346,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         if stream:
             return await _handle_stream(
-                model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
+                model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
+                request=request,
             )
         return await _handle_sync(
-            model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
+            model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
+            request=request,
         )
 
     # ------------------------------------------------------------------
@@ -399,10 +429,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         if stream:
             return await _handle_messages_stream(
-                model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
+                model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
+                request=request,
             )
         return await _handle_messages_sync(
-            model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
+            model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
+            request=request,
         )
 
     # ------------------------------------------------------------------
@@ -473,6 +505,8 @@ async def _handle_sync(
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
+    *,
+    request: Request | None = None,
 ) -> dict | JSONResponse:
     url = f"{bedrock_base}/model/{model}/invoke"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -518,6 +552,7 @@ async def _handle_sync(
                     max_retries,
                     delay,
                 )
+                _note_retry(request)
                 await asyncio.sleep(delay)
                 continue
 
@@ -540,6 +575,8 @@ async def _handle_sync(
                 attempt + 1,
                 max_retries,
             )
+            _note_retry(request)
+            _note_timeout(request)
             await asyncio.sleep(retry_base_delay * (2**attempt))
 
         except Exception as exc:
@@ -565,6 +602,8 @@ async def _handle_stream(
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
+    *,
+    request: Request | None = None,
 ) -> StreamingResponse:
     url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -579,6 +618,7 @@ async def _handle_stream(
                         "POST", url, headers=headers, content=body_bytes
                     ) as resp:
                         if resp.status_code in (429, 529, 503):
+                            _note_retry(request)
                             await asyncio.sleep(retry_base_delay * (2**attempt))
                             continue
 
@@ -706,7 +746,9 @@ async def _handle_stream(
                 return
 
             except httpx.TimeoutException:
+                _note_timeout(request)
                 if attempt < max_retries - 1:
+                    _note_retry(request)
                     await asyncio.sleep(retry_base_delay * (2**attempt))
                     continue
                 yield f'data: {json.dumps({"error": {"message": "Timeout after retries"}})}\n\n'
@@ -735,6 +777,8 @@ async def _handle_messages_sync(
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
+    *,
+    request: Request | None = None,
 ) -> dict | JSONResponse:
     url = f"{bedrock_base}/model/{model}/invoke"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -770,6 +814,7 @@ async def _handle_messages_sync(
                     max_retries,
                     delay,
                 )
+                _note_retry(request)
                 await asyncio.sleep(delay)
                 continue
 
@@ -795,6 +840,8 @@ async def _handle_messages_sync(
                 attempt + 1,
                 max_retries,
             )
+            _note_retry(request)
+            _note_timeout(request)
             await asyncio.sleep(retry_base_delay * (2**attempt))
 
         except Exception as exc:
@@ -828,6 +875,8 @@ async def _handle_messages_stream(
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
+    *,
+    request: Request | None = None,
 ) -> StreamingResponse:
     url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -842,6 +891,7 @@ async def _handle_messages_stream(
                         "POST", url, headers=headers, content=body_bytes
                     ) as resp:
                         if resp.status_code in (429, 529, 503):
+                            _note_retry(request)
                             await asyncio.sleep(retry_base_delay * (2**attempt))
                             continue
 
@@ -920,7 +970,9 @@ async def _handle_messages_stream(
                 return  # success, exit retry loop
 
             except httpx.TimeoutException:
+                _note_timeout(request)
                 if attempt < max_retries - 1:
+                    _note_retry(request)
                     await asyncio.sleep(retry_base_delay * (2**attempt))
                     continue
                 yield make_anthropic_sse(

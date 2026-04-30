@@ -132,6 +132,26 @@ def _parse_json_usage(body: bytes) -> tuple[int, int]:
         return 0, 0
 
 
+def _extract_client_ip(request: Request) -> str | None:
+    """Return the best-guess client IP for *request*.
+
+    Prefers the first hop in ``X-Forwarded-For`` (typical when running
+    behind a proxy), falling back to Starlette's ``request.client.host``.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    real_ip = request.headers.get("x-real-ip", "")
+    if real_ip:
+        return real_ip.strip()
+    client = request.client
+    if client and client.host:
+        return client.host
+    return None
+
+
 def metrics_middleware_factory(collector: MetricsCollector):
     """Return an ASGI-style middleware function bound to *collector*."""
 
@@ -147,6 +167,8 @@ def metrics_middleware_factory(collector: MetricsCollector):
 
         # Give handlers a place to stash enrichment data.
         request.state.metrics_info = {}
+
+        client_ip = _extract_client_ip(request)
 
         # Extract the model from the request body for LLM paths. Starlette's
         # BaseHTTPMiddleware wraps the request in a ``_CachedRequest`` so
@@ -176,6 +198,8 @@ def metrics_middleware_factory(collector: MetricsCollector):
             completion_tokens: int = 0,
             error_type: str | None = None,
             error_message: str | None = None,
+            ttft_ms: float | None = None,
+            is_timeout: bool = False,
         ) -> None:
             latency_ms = (time.perf_counter() - start) * 1000
             info = getattr(request.state, "metrics_info", {}) or {}
@@ -184,6 +208,15 @@ def metrics_middleware_factory(collector: MetricsCollector):
             ct = int(info.get("completion_tokens") or completion_tokens or 0)
             etype = error_type or info.get("error_type")
             emsg = error_message or info.get("error_message")
+            retry_count = int(info.get("retry_count") or 0)
+            ttft = info.get("ttft_ms", ttft_ms)
+            # ``ttft_ms`` from metrics_info wins when set; keep our measured
+            # value as a fallback.
+            if ttft is None:
+                ttft = ttft_ms
+            tps: float | None = None
+            if ct > 0 and latency_ms > 0:
+                tps = ct / (latency_ms / 1000.0)
             collector.record_request(
                 method=request.method,
                 path=path,
@@ -194,6 +227,11 @@ def metrics_middleware_factory(collector: MetricsCollector):
                 completion_tokens=ct,
                 error_type=etype,
                 error_message=emsg,
+                ttft_ms=ttft,
+                tokens_per_sec=tps,
+                retry_count=retry_count,
+                client_ip=client_ip,
+                is_timeout=is_timeout or bool(info.get("timeout")),
             )
 
         try:
@@ -222,8 +260,15 @@ def metrics_middleware_factory(collector: MetricsCollector):
             async def wrapped() -> AsyncIterator[bytes]:
                 in_t = 0
                 out_t = 0
+                first_chunk_ms: float | None = None
                 try:
                     async for chunk in original_iter:
+                        # Record TTFT on the first non-empty chunk that
+                        # carries content bytes.
+                        if first_chunk_ms is None and chunk:
+                            first_chunk_ms = (
+                                time.perf_counter() - start
+                            ) * 1000
                         ci, co = _scan_chunk_usage(chunk)
                         if ci:
                             in_t = ci
@@ -231,7 +276,7 @@ def metrics_middleware_factory(collector: MetricsCollector):
                             out_t = co
                         yield chunk
                 finally:
-                    _record(status, in_t, out_t)
+                    _record(status, in_t, out_t, ttft_ms=first_chunk_ms)
 
             headers = {
                 k: v for k, v in response.headers.items()

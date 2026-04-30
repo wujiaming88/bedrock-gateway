@@ -45,6 +45,10 @@ class RequestRow:
     completion_tokens: int = 0
     error_type: str | None = None
     error_message: str | None = None
+    ttft_ms: float | None = None
+    tokens_per_sec: float | None = None
+    retry_count: int = 0
+    client_ip: str | None = None
 
 
 @dataclass
@@ -62,6 +66,11 @@ class BucketRow:
     completion_tokens: int = 0
     status_counts: dict[int, int] = field(default_factory=dict)
     model_counts: dict[str, int] = field(default_factory=dict)
+    retry_count: int = 0
+    timeout_count: int = 0
+    memory_rss_kb: int = 0
+    ttft_sum: float = 0.0
+    ttft_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +114,11 @@ class MetricsStorage:
                     prompt_tokens INTEGER DEFAULT 0,
                     completion_tokens INTEGER DEFAULT 0,
                     error_type TEXT,
-                    error_message TEXT
+                    error_message TEXT,
+                    ttft_ms REAL,
+                    tokens_per_sec REAL,
+                    retry_count INTEGER DEFAULT 0,
+                    client_ip TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS minute_buckets (
@@ -121,13 +134,53 @@ class MetricsStorage:
                     prompt_tokens INTEGER DEFAULT 0,
                     completion_tokens INTEGER DEFAULT 0,
                     status_counts_json TEXT DEFAULT '{}',
-                    model_counts_json TEXT DEFAULT '{}'
+                    model_counts_json TEXT DEFAULT '{}',
+                    retry_count INTEGER DEFAULT 0,
+                    timeout_count INTEGER DEFAULT 0,
+                    memory_rss_kb INTEGER DEFAULT 0,
+                    ttft_sum REAL DEFAULT 0,
+                    ttft_count INTEGER DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
                 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
                 """
             )
+            # Migrate existing databases — add columns that pre-date this
+            # schema. SQLite's ALTER TABLE is idempotent-hostile, so we
+            # introspect PRAGMA first and add only what's missing.
+            self._add_missing_columns(
+                conn,
+                "requests",
+                [
+                    ("ttft_ms", "REAL"),
+                    ("tokens_per_sec", "REAL"),
+                    ("retry_count", "INTEGER DEFAULT 0"),
+                    ("client_ip", "TEXT"),
+                ],
+            )
+            self._add_missing_columns(
+                conn,
+                "minute_buckets",
+                [
+                    ("retry_count", "INTEGER DEFAULT 0"),
+                    ("timeout_count", "INTEGER DEFAULT 0"),
+                    ("memory_rss_kb", "INTEGER DEFAULT 0"),
+                    ("ttft_sum", "REAL DEFAULT 0"),
+                    ("ttft_count", "INTEGER DEFAULT 0"),
+                ],
+            )
+
+    @staticmethod
+    def _add_missing_columns(
+        conn: Any, table: str, columns: list[tuple[str, str]]
+    ) -> None:
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     # --- writes ------------------------------------------------------------
 
@@ -139,13 +192,15 @@ class MetricsStorage:
             conn.executemany(
                 "INSERT INTO requests "
                 "(ts, method, path, model, status, latency_ms, "
-                "prompt_tokens, completion_tokens, error_type, error_message) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "prompt_tokens, completion_tokens, error_type, error_message, "
+                "ttft_ms, tokens_per_sec, retry_count, client_ip) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         r.ts, r.method, r.path, r.model, r.status, r.latency_ms,
                         r.prompt_tokens, r.completion_tokens,
                         r.error_type, r.error_message,
+                        r.ttft_ms, r.tokens_per_sec, r.retry_count, r.client_ip,
                     )
                     for r in rows
                 ],
@@ -157,8 +212,10 @@ class MetricsStorage:
                 "INSERT INTO minute_buckets "
                 "(ts, total, success, error, latency_sum, latency_count, "
                 "p50, p95, p99, prompt_tokens, completion_tokens, "
-                "status_counts_json, model_counts_json) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "status_counts_json, model_counts_json, "
+                "retry_count, timeout_count, memory_rss_kb, "
+                "ttft_sum, ttft_count) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(ts) DO UPDATE SET "
                 "total=excluded.total, success=excluded.success, error=excluded.error, "
                 "latency_sum=excluded.latency_sum, latency_count=excluded.latency_count, "
@@ -166,7 +223,11 @@ class MetricsStorage:
                 "prompt_tokens=excluded.prompt_tokens, "
                 "completion_tokens=excluded.completion_tokens, "
                 "status_counts_json=excluded.status_counts_json, "
-                "model_counts_json=excluded.model_counts_json",
+                "model_counts_json=excluded.model_counts_json, "
+                "retry_count=excluded.retry_count, "
+                "timeout_count=excluded.timeout_count, "
+                "memory_rss_kb=excluded.memory_rss_kb, "
+                "ttft_sum=excluded.ttft_sum, ttft_count=excluded.ttft_count",
                 (
                     bucket.ts, bucket.total, bucket.success, bucket.error,
                     bucket.latency_sum, bucket.latency_count,
@@ -174,6 +235,9 @@ class MetricsStorage:
                     bucket.prompt_tokens, bucket.completion_tokens,
                     json.dumps({str(k): v for k, v in bucket.status_counts.items()}),
                     json.dumps(bucket.model_counts),
+                    bucket.retry_count, bucket.timeout_count,
+                    bucket.memory_rss_kb,
+                    bucket.ttft_sum, bucket.ttft_count,
                 ),
             )
 
@@ -183,27 +247,38 @@ class MetricsStorage:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT ts, method, path, model, status, latency_ms, "
-                "prompt_tokens, completion_tokens, error_type, error_message "
+                "prompt_tokens, completion_tokens, error_type, error_message, "
+                "ttft_ms, tokens_per_sec, retry_count, client_ip "
                 "FROM requests ORDER BY ts DESC LIMIT ?",
                 (int(limit),),
             ).fetchall()
-        return [
-            RequestRow(
-                ts=float(r[0]), method=r[1] or "", path=r[2] or "",
-                model=r[3] or "-", status=int(r[4] or 0),
-                latency_ms=float(r[5] or 0.0),
-                prompt_tokens=int(r[6] or 0), completion_tokens=int(r[7] or 0),
-                error_type=r[8], error_message=r[9],
+        out: list[RequestRow] = []
+        for r in rows:
+            ttft = r[10]
+            tps = r[11]
+            out.append(
+                RequestRow(
+                    ts=float(r[0]), method=r[1] or "", path=r[2] or "",
+                    model=r[3] or "-", status=int(r[4] or 0),
+                    latency_ms=float(r[5] or 0.0),
+                    prompt_tokens=int(r[6] or 0), completion_tokens=int(r[7] or 0),
+                    error_type=r[8], error_message=r[9],
+                    ttft_ms=float(ttft) if ttft is not None else None,
+                    tokens_per_sec=float(tps) if tps is not None else None,
+                    retry_count=int(r[12] or 0),
+                    client_ip=r[13],
+                )
             )
-            for r in rows
-        ]
+        return out
 
     def load_buckets(self, since_ts: int) -> list[BucketRow]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 "SELECT ts, total, success, error, latency_sum, latency_count, "
                 "p50, p95, p99, prompt_tokens, completion_tokens, "
-                "status_counts_json, model_counts_json "
+                "status_counts_json, model_counts_json, "
+                "retry_count, timeout_count, memory_rss_kb, "
+                "ttft_sum, ttft_count "
                 "FROM minute_buckets WHERE ts >= ? ORDER BY ts ASC",
                 (int(since_ts),),
             ).fetchall()
@@ -232,6 +307,11 @@ class MetricsStorage:
                     completion_tokens=int(r[10] or 0),
                     status_counts=status_counts,
                     model_counts=model_counts,
+                    retry_count=int(r[13] or 0),
+                    timeout_count=int(r[14] or 0),
+                    memory_rss_kb=int(r[15] or 0),
+                    ttft_sum=float(r[16] or 0.0),
+                    ttft_count=int(r[17] or 0),
                 )
             )
         return out

@@ -31,8 +31,8 @@
     </div>
   </header>
 
-  <!-- Four gauges -->
-  <section class="gauges">
+  <!-- Gauges (two rows of three) -->
+  <section class="gauges gauges-row">
     <div class="gauge-card">
       <canvas class="gauge" data-key="qps" width="200" height="200"></canvas>
       <p class="panel-desc">Requests per second (last minute avg) / 每秒请求数（最近一分钟均值）</p>
@@ -48,6 +48,38 @@
     <div class="gauge-card">
       <canvas class="gauge" data-key="tokens" width="200" height="200"></canvas>
       <p class="panel-desc">Tokens consumed in the last 60 minutes / 最近 60 分钟消耗的 Token 数</p>
+    </div>
+    <div class="gauge-card">
+      <canvas class="gauge" data-key="ttft" width="200" height="200"></canvas>
+      <p class="panel-desc">Time to first token for streaming requests / 流式请求首 Token 延迟</p>
+    </div>
+    <div class="gauge-card">
+      <canvas class="gauge" data-key="tps" width="200" height="200"></canvas>
+      <p class="panel-desc">Output tokens per second (generation speed) / 输出吞吐（生成速度 tok/s）</p>
+    </div>
+  </section>
+
+  <!-- Secondary metric tiles (retry/timeout rates) -->
+  <section class="mini-tiles">
+    <div class="mini-tile">
+      <div class="mini-tile-label">RETRY RATE</div>
+      <div class="mini-tile-value" id="tile-retry">—</div>
+      <div class="mini-tile-desc">Requests that required internal retry / 触发内部重试的请求占比</div>
+    </div>
+    <div class="mini-tile">
+      <div class="mini-tile-label">TIMEOUT RATE</div>
+      <div class="mini-tile-value" id="tile-timeout">—</div>
+      <div class="mini-tile-desc">Requests that timed out / 超时请求占比</div>
+    </div>
+    <div class="mini-tile">
+      <div class="mini-tile-label">P50 LATENCY</div>
+      <div class="mini-tile-value" id="tile-p50">—</div>
+      <div class="mini-tile-desc">Median latency (rolling 5m window) / 中位数延迟（最近 5 分钟）</div>
+    </div>
+    <div class="mini-tile">
+      <div class="mini-tile-label">P99 LATENCY</div>
+      <div class="mini-tile-value" id="tile-p99">—</div>
+      <div class="mini-tile-desc">99th-percentile latency (rolling 5m) / 99 分位延迟（最近 5 分钟）</div>
     </div>
   </section>
 
@@ -81,9 +113,35 @@
         </div>
       </header>
       <div class="panel-body">
-        <p class="panel-desc">QPS (left axis) and latency percentiles in ms (right axis), per-minute granularity / QPS（左轴）与延迟百分位毫秒（右轴），分钟粒度</p>
+        <p class="panel-desc">QPS (bars) with P50 / P95 / P99 latency overlays in ms / QPS（柱状）叠加 P50/P95/P99 延迟毫秒，分钟粒度</p>
         <div class="chart-box chart-box-large">
           <canvas id="chart-traffic"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Request sources (Top IPs) -->
+    <section class="panel panel-sources">
+      <header class="panel-head">
+        <h2>REQUEST SOURCES</h2>
+      </header>
+      <div class="panel-body">
+        <p class="panel-desc">Top request sources by IP (last octet masked) / 请求来源 Top 10（按 IP，末段脱敏）</p>
+        <ul class="sources-list" id="sources-list">
+          <li class="muted">no traffic yet</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Process memory trend -->
+    <section class="panel panel-memory">
+      <header class="panel-head">
+        <h2>PROCESS MEMORY</h2>
+      </header>
+      <div class="panel-body">
+        <p class="panel-desc">Process RSS memory over time / 进程内存(RSS)随时间变化趋势</p>
+        <div class="chart-box chart-box-small">
+          <canvas id="chart-memory"></canvas>
         </div>
       </div>
     </section>

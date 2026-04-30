@@ -63,6 +63,10 @@ class RequestRecord:
     completion_tokens: int = 0
     error_type: str | None = None
     error_message: str | None = None
+    ttft_ms: float | None = None
+    tokens_per_sec: float | None = None
+    retry_count: int = 0
+    client_ip: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +80,16 @@ class RequestRecord:
             "completion_tokens": self.completion_tokens,
             "error_type": self.error_type,
             "error_message": self.error_message,
+            "ttft_ms": (
+                round(self.ttft_ms, 2) if self.ttft_ms is not None else None
+            ),
+            "tokens_per_sec": (
+                round(self.tokens_per_sec, 2)
+                if self.tokens_per_sec is not None else None
+            ),
+            "retry_count": self.retry_count,
+            # ``client_ip`` intentionally omitted here — the API layer is
+            # responsible for masking + surfacing IPs via its own channels.
         }
 
 
@@ -91,6 +105,10 @@ class _Bucket:
     model_counts: dict[str, int] = field(default_factory=dict)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    ttft_values: list[float] = field(default_factory=list)
+    retry_count: int = 0
+    timeout_count: int = 0
+    memory_rss_kb: int = 0
     # Set to True once this bucket has been persisted after rotating out of
     # the "current minute" — keeps us from writing it to disk every second.
     flushed: bool = False
@@ -107,6 +125,21 @@ def _percentile(values: list[float], p: float) -> float:
     if f == c:
         return s[int(k)]
     return s[f] + (s[c] - s[f]) * (k - f)
+
+
+def _read_rss_kb() -> int | None:
+    """Best-effort read of the current process RSS (in KB) from /proc."""
+    try:
+        with open(f"/proc/{os.getpid()}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        return int(parts[1])
+                    break
+    except OSError:
+        return None
+    return None
 
 
 def _classify_error(status: int, error_type: str | None) -> str:
@@ -167,6 +200,10 @@ class MetricsCollector:
         self._model_totals: dict[str, int] = {}
         self._model_tokens: dict[str, int] = {}
 
+        # Top sources by client IP (lifetime). Capped in size to keep
+        # memory bounded under adversarial input.
+        self._ip_counts: dict[str, int] = {}
+
         self._storage = storage
         self._retain_days = max(1, int(retain_days))
         self._writer: AsyncWriter | None = None
@@ -190,6 +227,8 @@ class MetricsCollector:
                     prompt_tokens=r.prompt_tokens,
                     completion_tokens=r.completion_tokens,
                     error_type=r.error_type, error_message=r.error_message,
+                    ttft_ms=r.ttft_ms, tokens_per_sec=r.tokens_per_sec,
+                    retry_count=r.retry_count, client_ip=r.client_ip,
                 )
             )
             if r.status >= 400:
@@ -210,6 +249,9 @@ class MetricsCollector:
                 model_counts=dict(row.model_counts),
                 prompt_tokens=row.prompt_tokens,
                 completion_tokens=row.completion_tokens,
+                retry_count=row.retry_count,
+                timeout_count=row.timeout_count,
+                memory_rss_kb=row.memory_rss_kb,
                 flushed=True,
             )
             # Recreate a representative latency population so _percentile
@@ -220,6 +262,10 @@ class MetricsCollector:
             if row.latency_count > 0 and row.latency_sum > 0:
                 avg = row.latency_sum / row.latency_count
                 b.latencies = [avg] * min(row.latency_count, 200)
+            # Same idea for TTFT — only the sum/count is durable on disk.
+            if row.ttft_count > 0 and row.ttft_sum > 0:
+                avg_ttft = row.ttft_sum / row.ttft_count
+                b.ttft_values = [avg_ttft] * min(row.ttft_count, 200)
             self._buckets[row.ts] = b
 
             self._total_requests += row.total
@@ -246,6 +292,11 @@ class MetricsCollector:
         completion_tokens: int = 0,
         error_type: str | None = None,
         error_message: str | None = None,
+        ttft_ms: float | None = None,
+        tokens_per_sec: float | None = None,
+        retry_count: int = 0,
+        client_ip: str | None = None,
+        is_timeout: bool = False,
     ) -> None:
         """Record a completed request."""
         now = time.time()
@@ -267,6 +318,10 @@ class MetricsCollector:
             completion_tokens=completion_tokens,
             error_type=normalised_error_type,
             error_message=error_message,
+            ttft_ms=ttft_ms,
+            tokens_per_sec=tokens_per_sec,
+            retry_count=int(retry_count or 0),
+            client_ip=client_ip,
         )
 
         to_flush: list[_Bucket] = []
@@ -293,6 +348,19 @@ class MetricsCollector:
                 bucket.model_counts[model] = bucket.model_counts.get(model, 0) + 1
             bucket.prompt_tokens += prompt_tokens
             bucket.completion_tokens += completion_tokens
+            if ttft_ms is not None and ttft_ms >= 0:
+                bucket.ttft_values.append(float(ttft_ms))
+            if retry_count:
+                bucket.retry_count += int(retry_count)
+            if is_timeout or status == 408:
+                bucket.timeout_count += 1
+            # Stamp the bucket with the current process RSS once per bucket
+            # (first request in the minute). Subsequent requests don't need
+            # to pay the syscall cost.
+            if bucket.memory_rss_kb == 0:
+                rss = _read_rss_kb()
+                if rss is not None:
+                    bucket.memory_rss_kb = rss
 
             if is_err:
                 bucket.error += 1
@@ -316,6 +384,15 @@ class MetricsCollector:
                     self._model_tokens.get(model, 0)
                     + prompt_tokens + completion_tokens
                 )
+            if client_ip:
+                self._ip_counts[client_ip] = self._ip_counts.get(client_ip, 0) + 1
+                # Trim if the map grows pathologically large (unique IPs
+                # from a scanner shouldn't exhaust memory).
+                if len(self._ip_counts) > 5000:
+                    keep = sorted(
+                        self._ip_counts.items(), key=lambda kv: kv[1], reverse=True
+                    )[:1000]
+                    self._ip_counts = dict(keep)
 
         # Persistence is best-effort; drop on overflow rather than blocking.
         if self._writer is not None:
@@ -327,6 +404,10 @@ class MetricsCollector:
                     completion_tokens=completion_tokens,
                     error_type=normalised_error_type,
                     error_message=error_message,
+                    ttft_ms=ttft_ms,
+                    tokens_per_sec=tokens_per_sec,
+                    retry_count=int(retry_count or 0),
+                    client_ip=client_ip,
                 )
             )
         if self._storage is not None:
@@ -350,6 +431,11 @@ class MetricsCollector:
                     completion_tokens=bucket.completion_tokens,
                     status_counts=dict(bucket.status_counts),
                     model_counts=dict(bucket.model_counts),
+                    retry_count=bucket.retry_count,
+                    timeout_count=bucket.timeout_count,
+                    memory_rss_kb=bucket.memory_rss_kb,
+                    ttft_sum=sum(bucket.ttft_values),
+                    ttft_count=len(bucket.ttft_values),
                 )
             )
         except Exception:  # noqa: BLE001
@@ -400,11 +486,24 @@ class MetricsCollector:
             # Recent-window QPS: average over the last few minutes, compensating
             # for the current minute being partially elapsed.
             qps_recent = self._recent_qps_locked()
-            # Recent-window P95: pool latencies across the last 5 minutes so the
-            # gauge isn't noisy when the current minute has only 1-2 requests.
+            # Recent-window P50/P95/P99: pool latencies across the last
+            # few minutes so the gauge isn't noisy when the current minute
+            # has only 1-2 requests.
+            p50_recent = self._recent_percentile_locked(50, _GAUGE_WINDOW_MINUTES)
             p95_recent = self._recent_percentile_locked(95, _GAUGE_WINDOW_MINUTES)
+            p99_recent = self._recent_percentile_locked(99, _GAUGE_WINDOW_MINUTES)
             # Tokens/h from a rolling 60-minute window, not lifetime.
             tokens_per_hour = self._recent_tokens_per_hour_locked()
+            # Recent-window TTFT / tokens-per-sec / retry / timeout rates.
+            ttft_p50 = self._recent_ttft_percentile_locked(
+                50, _GAUGE_WINDOW_MINUTES
+            )
+            tokens_per_sec = self._recent_tokens_per_sec_locked(
+                _GAUGE_WINDOW_MINUTES
+            )
+            retry_rate, timeout_rate = self._recent_failure_rates_locked(
+                _GAUGE_WINDOW_MINUTES
+            )
 
         return {
             "total_requests": total,
@@ -418,8 +517,14 @@ class MetricsCollector:
             "completion_tokens": self._total_completion_tokens,
             "sparkline": sparkline,
             "qps": round(qps_recent, 3),
+            "p50_ms": round(p50_recent, 2),
             "p95_ms": round(p95_recent, 2),
+            "p99_ms": round(p99_recent, 2),
             "tokens_per_hour": int(tokens_per_hour),
+            "ttft_p50_ms": round(ttft_p50, 2),
+            "tokens_per_sec_avg": round(tokens_per_sec, 2),
+            "retry_rate": round(retry_rate, 2),
+            "timeout_rate": round(timeout_rate, 2),
         }
 
     def _recent_qps_locked(self) -> float:
@@ -463,6 +568,53 @@ class MetricsCollector:
             if b is not None:
                 total += b.prompt_tokens + b.completion_tokens
         return float(total)
+
+    def _recent_ttft_percentile_locked(self, p: float, minutes: int) -> float:
+        """Pooled TTFT percentile across the last *minutes* buckets."""
+        now_minute = int(time.time() // _BUCKET_SECONDS) * _BUCKET_SECONDS
+        samples: list[float] = []
+        for i in range(minutes):
+            b = self._buckets.get(now_minute - i * _BUCKET_SECONDS)
+            if b is not None and b.ttft_values:
+                samples.extend(b.ttft_values)
+        return _percentile(samples, p)
+
+    def _recent_tokens_per_sec_locked(self, minutes: int) -> float:
+        """Average output tokens/s across the last *minutes* buckets.
+
+        Computed as ``sum(completion_tokens) / sum(latency_seconds)`` so a
+        single slow request doesn't dominate the mean the way a naive
+        average-of-per-request-rates would.
+        """
+        now_minute = int(time.time() // _BUCKET_SECONDS) * _BUCKET_SECONDS
+        out_tokens = 0
+        latency_s = 0.0
+        for i in range(minutes):
+            b = self._buckets.get(now_minute - i * _BUCKET_SECONDS)
+            if b is None:
+                continue
+            out_tokens += b.completion_tokens
+            latency_s += sum(b.latencies) / 1000.0
+        if latency_s <= 0:
+            return 0.0
+        return out_tokens / latency_s
+
+    def _recent_failure_rates_locked(self, minutes: int) -> tuple[float, float]:
+        """Return ``(retry_rate_pct, timeout_rate_pct)`` over the window."""
+        now_minute = int(time.time() // _BUCKET_SECONDS) * _BUCKET_SECONDS
+        total = 0
+        retries = 0
+        timeouts = 0
+        for i in range(minutes):
+            b = self._buckets.get(now_minute - i * _BUCKET_SECONDS)
+            if b is None:
+                continue
+            total += b.total
+            retries += b.retry_count
+            timeouts += b.timeout_count
+        if total <= 0:
+            return 0.0, 0.0
+        return (retries / total * 100.0), (timeouts / total * 100.0)
 
     def timeseries(self, minutes: int = 60) -> dict[str, Any]:
         """
@@ -524,6 +676,41 @@ class MetricsCollector:
             b = self._buckets.get(ts)
             out.append(float(fn(b)) if b else 0.0)
         return out
+
+    def sources_stats(self, *, top_n: int = 10) -> dict[str, Any]:
+        """Return the top-*top_n* client IPs by request count."""
+        with self._lock:
+            items = list(self._ip_counts.items())
+            total = sum(self._ip_counts.values())
+        items.sort(key=lambda kv: kv[1], reverse=True)
+        top = items[: max(1, int(top_n))]
+        sources = [
+            {
+                "ip": ip,
+                "count": count,
+                "percentage": round((count / total * 100.0), 2) if total else 0.0,
+            }
+            for ip, count in top
+        ]
+        return {"sources": sources, "total": total}
+
+    def memory_timeseries(self, minutes: int = 60) -> dict[str, Any]:
+        """Return a per-minute series of process RSS (MB) across *minutes* buckets."""
+        minutes = max(1, min(minutes, _BUCKETS))
+        with self._lock:
+            now = time.time()
+            now_minute = int(now // _BUCKET_SECONDS) * _BUCKET_SECONDS
+            labels: list[int] = []
+            values: list[float | None] = []
+            for i in range(minutes - 1, -1, -1):
+                ts = now_minute - i * _BUCKET_SECONDS
+                b = self._buckets.get(ts)
+                labels.append(ts)
+                if b is not None and b.memory_rss_kb > 0:
+                    values.append(round(b.memory_rss_kb / 1024.0, 1))
+                else:
+                    values.append(None)
+        return {"labels": labels, "memory_mb": values}
 
     def model_stats(self) -> dict[str, Any]:
         """Return per-model usage (requests + tokens)."""

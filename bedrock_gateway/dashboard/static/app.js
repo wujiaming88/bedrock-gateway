@@ -41,7 +41,8 @@
   var charts = {
     traffic: null,
     modelsPie: null,
-    modelsTokens: null
+    modelsTokens: null,
+    memory: null
   };
   var lastSuccessfulTick = 0;
 
@@ -433,6 +434,81 @@
           return formatNumber(v);
         }
       });
+    }
+
+    // TTFT — first-token latency gauge (streaming only).
+    var canvasTtft = $('canvas[data-key="ttft"]');
+    if (canvasTtft) {
+      var ttft = safeGet(overview, "ttft_p50_ms", 0) || 0;
+      var tColor = ttft < 500 ? "#00ff88" : ttft < 1500 ? "#ffaa00" : "#ff4444";
+      var tColor2 = ttft < 500 ? "#00aaff" : ttft < 1500 ? "#ffcc44" : "#ff8844";
+      drawGauge(canvasTtft, {
+        value: ttft,
+        max: Math.max(1500, ttft * 1.3),
+        label: "TTFT",
+        color: tColor,
+        color2: tColor2,
+        format: function (v) {
+          return Math.round(v);
+        },
+        unit: "ms"
+      });
+    }
+
+    // Tokens / second — output throughput. Informational blue.
+    var canvasTps = $('canvas[data-key="tps"]');
+    if (canvasTps) {
+      var tps = safeGet(overview, "tokens_per_sec_avg", 0) || 0;
+      drawGauge(canvasTps, {
+        value: tps,
+        max: Math.max(50, tps * 1.3),
+        label: "TOKENS / S",
+        color: "#00aaff",
+        color2: "#44ddff",
+        format: function (v) {
+          return v.toFixed(1);
+        }
+      });
+    }
+  }
+
+  function renderMiniTiles(overview) {
+    var retry = safeGet(overview, "retry_rate", null);
+    var timeout = safeGet(overview, "timeout_rate", null);
+    var p50 = safeGet(overview, "p50_ms", null);
+    var p99 = safeGet(overview, "p99_ms", null);
+
+    var retryEl = $("#tile-retry");
+    var timeoutEl = $("#tile-timeout");
+    var p50El = $("#tile-p50");
+    var p99El = $("#tile-p99");
+
+    if (retryEl) {
+      retryEl.textContent = retry === null ? "—" : retry.toFixed(2) + "%";
+      retryEl.classList.remove("warn", "bad");
+      if (retry !== null) {
+        if (retry >= 5) retryEl.classList.add("bad");
+        else if (retry >= 1) retryEl.classList.add("warn");
+      }
+    }
+    if (timeoutEl) {
+      timeoutEl.textContent = timeout === null ? "—" : timeout.toFixed(2) + "%";
+      timeoutEl.classList.remove("warn", "bad");
+      if (timeout !== null) {
+        if (timeout >= 2) timeoutEl.classList.add("bad");
+        else if (timeout >= 0.5) timeoutEl.classList.add("warn");
+      }
+    }
+    if (p50El) {
+      p50El.textContent = p50 === null ? "—" : Math.round(p50) + " ms";
+    }
+    if (p99El) {
+      p99El.textContent = p99 === null ? "—" : Math.round(p99) + " ms";
+      p99El.classList.remove("warn", "bad");
+      if (p99 !== null) {
+        if (p99 >= 3000) p99El.classList.add("bad");
+        else if (p99 >= 1000) p99El.classList.add("warn");
+      }
     }
   }
 
@@ -952,6 +1028,143 @@
     }
   }
 
+  // ----- Request sources -------------------------------------------
+  function renderSources(data) {
+    var el = $("#sources-list");
+    if (!el) {
+      return;
+    }
+    var items = (data && data.sources) || [];
+    el.innerHTML = "";
+    if (!items.length) {
+      var empty = document.createElement("li");
+      empty.className = "muted";
+      empty.textContent = "no traffic yet";
+      el.appendChild(empty);
+      return;
+    }
+    var maxCount = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].count > maxCount) {
+        maxCount = items[i].count;
+      }
+    }
+    for (var j = 0; j < items.length; j++) {
+      var it = items[j];
+      var li = document.createElement("li");
+      var ip = document.createElement("span");
+      ip.className = "src-ip";
+      ip.textContent = it.ip || "—";
+      var cnt = document.createElement("span");
+      cnt.className = "src-count";
+      cnt.textContent = formatNumber(it.count);
+      var pct = document.createElement("span");
+      pct.className = "src-pct";
+      pct.textContent = (it.percentage || 0).toFixed(1) + "%";
+      var bar = document.createElement("span");
+      bar.className = "src-bar";
+      var pctWidth = maxCount > 0 ? (it.count / maxCount) * 100 : 0;
+      bar.style.width = pctWidth.toFixed(1) + "%";
+      li.appendChild(ip);
+      li.appendChild(cnt);
+      li.appendChild(pct);
+      li.appendChild(bar);
+      el.appendChild(li);
+    }
+  }
+
+  // ----- Memory time series ----------------------------------------
+  function renderMemory(data) {
+    var el = $("#chart-memory");
+    if (!el || !window.Chart) {
+      return;
+    }
+    var labelsTs = (data && data.labels) || [];
+    var values = (data && data.memory_mb) || [];
+    var labels = labelsToHHMM(labelsTs);
+
+    var dataset = {
+      type: "line",
+      label: "RSS (MB)",
+      data: values,
+      borderColor: "#aa66ff",
+      backgroundColor: function (ctx) {
+        return makeLineGradient(
+          ctx.chart.ctx, ctx.chart.chartArea, "#aa66ff", 0.22, 0
+        );
+      },
+      fill: true,
+      borderWidth: 2.5,
+      tension: 0.3,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHoverBackgroundColor: "#aa66ff",
+      pointHoverBorderColor: "#0e131c",
+      pointHoverBorderWidth: 2,
+      spanGaps: true
+    };
+
+    if (charts.memory) {
+      charts.memory.data.labels = labels;
+      charts.memory.data.datasets = [dataset];
+      charts.memory.update("none");
+      return;
+    }
+
+    charts.memory = new Chart(el.getContext("2d"), {
+      type: "line",
+      data: { labels: labels, datasets: [dataset] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(10, 14, 20, 0.92)",
+            borderColor: "rgba(170, 102, 255, 0.3)",
+            borderWidth: 1,
+            titleFont: { family: MONO_STACK, size: 11, weight: "600" },
+            bodyFont: { family: MONO_STACK, size: 11 },
+            callbacks: {
+              label: function (ctx) {
+                var v = ctx.parsed.y;
+                return v === null || v === undefined ? "—" : v.toFixed(1) + " MB";
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: "rgba(255,255,255,0.45)",
+              font: { family: MONO_STACK, size: 10 },
+              maxRotation: 0,
+              autoSkip: true,
+              maxTicksLimit: 8
+            },
+            grid: { color: "rgba(255,255,255,0.03)", drawTicks: false },
+            border: { color: "rgba(255,255,255,0.06)" }
+          },
+          y: {
+            beginAtZero: false,
+            ticks: {
+              color: "rgba(170, 102, 255, 0.75)",
+              font: { family: MONO_STACK, size: 10 },
+              callback: function (v) {
+                return v + " MB";
+              }
+            },
+            grid: { color: "rgba(255,255,255,0.03)", drawTicks: false },
+            border: { display: false }
+          }
+        }
+      }
+    });
+  }
+
   // ----- System / status bar ---------------------------------------
   function renderSystem(system) {
     if (!system) {
@@ -1011,7 +1224,9 @@
       fetchJSON("/api/metrics/models"),
       fetchJSON("/api/metrics/requests?limit=50&filter=" + encodeURIComponent(currentFilter)),
       fetchJSON("/api/metrics/errors"),
-      fetchJSON("/api/metrics/system")
+      fetchJSON("/api/metrics/system"),
+      fetchJSON("/api/metrics/sources?limit=10"),
+      fetchJSON("/api/metrics/memory?window=" + encodeURIComponent(currentWindow))
     ];
 
     Promise.all(urls)
@@ -1022,13 +1237,18 @@
         var requests = results[3];
         var errors = results[4];
         var system = results[5];
+        var sources = results[6];
+        var memory = results[7];
 
         renderGauges(overview, traffic);
+        renderMiniTiles(overview);
         renderTraffic(traffic);
         renderModels(models);
         renderRequests(requests);
         renderErrors(errors);
         renderSystem(system);
+        renderSources(sources);
+        renderMemory(memory);
 
         lastSuccessfulTick = Date.now();
       })

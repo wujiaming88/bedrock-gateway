@@ -40,6 +40,7 @@ from .security import (
     SECURITY_HEADERS,
     DashboardAuth,
     RateLimiter,
+    mask_ip,
     sanitize_request_log,
 )
 
@@ -308,6 +309,34 @@ def build_dashboard_router(
             collector.recent_errors(limit=20)
         )
         return _apply_security_headers(JSONResponse(content=breakdown))
+
+    @router.get("/api/metrics/sources")
+    async def sources(
+        request: Request,
+        limit: int = Query(10, ge=1, le=50),
+    ) -> Response:
+        blocked = _guard_api(request)
+        if blocked is not None:
+            return blocked
+        data = collector.sources_stats(top_n=limit)
+        # Mask IPs before returning — dashboards don't need the last octet.
+        data["sources"] = [
+            {**row, "ip": mask_ip(row["ip"])} for row in data["sources"]
+        ]
+        return _apply_security_headers(JSONResponse(content=data))
+
+    @router.get("/api/metrics/memory")
+    async def memory(
+        request: Request,
+        window: str = Query("1h", pattern="^(1h|6h|24h)$"),
+    ) -> Response:
+        blocked = _guard_api(request)
+        if blocked is not None:
+            return blocked
+        minutes = _WINDOW_MINUTES.get(window, 60)
+        data = collector.memory_timeseries(minutes=minutes)
+        data["window"] = window
+        return _apply_security_headers(JSONResponse(content=data))
 
     @router.get("/api/metrics/system")
     async def system(request: Request) -> Response:
