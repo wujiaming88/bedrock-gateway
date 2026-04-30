@@ -21,6 +21,7 @@ subject to a per-IP rate limit.
 
 from __future__ import annotations
 
+import hmac
 import html
 from collections.abc import Callable
 from pathlib import Path
@@ -215,20 +216,29 @@ def build_dashboard_router(
                 return _unauthorized_json()
             return _forbidden_json(reason)
         if rate_limiter is not None:
-            ok, retry_after = rate_limiter.check(_client_key(request))
-            if not ok:
-                resp = JSONResponse(
-                    status_code=429,
-                    content={
-                        "error": {
-                            "message": "Rate limit exceeded",
-                            "type": "rate_limit_error",
-                            "code": 429,
-                        }
-                    },
-                    headers={"Retry-After": str(retry_after)},
-                )
-                return _apply_security_headers(resp)
+            # Skip rate limiting for dashboard's own frontend polling
+            # (identified by Referer from /dashboard or valid dashboard cookie)
+            referer = request.headers.get("referer", "")
+            is_dashboard_poll = "/dashboard" in referer
+            if not is_dashboard_poll:
+                cookie_key = request.cookies.get("bedrock_gw_key", "")
+                if cookie_key and auth.api_key and hmac.compare_digest(cookie_key, auth.api_key):
+                    is_dashboard_poll = True
+            if not is_dashboard_poll:
+                ok, retry_after = rate_limiter.check(_client_key(request))
+                if not ok:
+                    resp = JSONResponse(
+                        status_code=429,
+                        content={
+                            "error": {
+                                "message": "Rate limit exceeded",
+                                "type": "rate_limit_error",
+                                "code": 429,
+                            }
+                        },
+                        headers={"Retry-After": str(retry_after)},
+                    )
+                    return _apply_security_headers(resp)
         return None
 
     def _guard_ui(request: Request) -> Response | None:
@@ -350,6 +360,32 @@ def build_dashboard_router(
             region=info.get("region", "-"),
             model_count=int(info.get("model_count", 0)),
         )
+        return _apply_security_headers(JSONResponse(content=payload))
+
+    @router.get("/api/metrics/health")
+    async def health_panel(request: Request) -> Response:
+        """Gateway self-health indicators (active conns, FDs, loop lag, etc.)."""
+        blocked = _guard_api(request)
+        if blocked is not None:
+            return blocked
+        monitor = getattr(request.app.state, "health", None)
+        if monitor is None:
+            # Dashboard can run standalone (tests use build_dashboard_router
+            # directly without the full app). Return a degenerate payload.
+            payload = {
+                "active_connections": 0,
+                "upstream_pool": {"active": 0, "idle": 0, "total": 0},
+                "open_fds": {"current": None, "limit": None},
+                "auth": {"mode": "-", "status": "unknown", "expires_at": None},
+                "consecutive_errors": collector.consecutive_errors(),
+                "event_loop_lag_ms": 0.0,
+                "upstream": {
+                    "reachable": None, "latency_ms": None,
+                    "last_check": None, "last_success": None,
+                },
+            }
+        else:
+            payload = monitor.snapshot(metrics=collector)
         return _apply_security_headers(JSONResponse(content=payload))
 
     # ------------------------------------------------------------------

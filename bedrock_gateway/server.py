@@ -17,6 +17,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -43,6 +44,7 @@ from .converter import (
 )
 from .dashboard import (
     DashboardAuth,
+    HealthMonitor,
     MetricsCollector,
     RateLimiter,
     build_dashboard_router,
@@ -78,6 +80,16 @@ def _note_retry(request: Request | None) -> None:
         info["retry_count"] = int(info.get("retry_count") or 0) + 1
     except Exception:  # noqa: BLE001 — never let metrics accounting break a handler
         pass
+
+
+@asynccontextmanager
+async def _track_upstream(health: HealthMonitor | None):
+    """Optional upstream-counter bump — no-op when health is None."""
+    if health is None:
+        yield
+        return
+    async with health.track_upstream():
+        yield
 
 
 def _note_timeout(request: Request | None) -> None:
@@ -138,6 +150,14 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         retain_days=config.dashboard.storage.retain_days,
     )
 
+    # Self-health monitor (active conns, upstream probe, event loop lag, …).
+    # Background tasks are started in the app's ``startup`` handler below.
+    health = HealthMonitor(
+        region=config.region,
+        auth_mode=auth.mode,
+        auth_provider=auth,
+    )
+
     # Dashboard auth + rate limiter (public-deployment hardening).
     # dashboard.api_key is deliberately independent of server.api_key:
     # model clients can't reach the dashboard, and dashboard admins can't
@@ -159,8 +179,18 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     app.state.registry = registry
     app.state.auth = auth
     app.state.metrics = metrics
+    app.state.health = health
     app.state.dashboard_auth = dashboard_auth
     app.state.dashboard_rate_limiter = dashboard_rate_limiter
+
+    # Start/stop background health tasks with the app lifecycle.
+    @app.on_event("startup")
+    async def _health_startup() -> None:
+        health.start()
+
+    @app.on_event("shutdown")
+    async def _health_shutdown() -> None:
+        await health.stop()
 
     # ------------------------------------------------------------------
     # API key authentication middleware (opt-in)
@@ -217,7 +247,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # Metrics middleware (wraps every request for latency + counts)
     # ------------------------------------------------------------------
-    app.middleware("http")(metrics_middleware_factory(metrics))
+    app.middleware("http")(metrics_middleware_factory(metrics, health=health))
 
     # ------------------------------------------------------------------
     # Dashboard UI + metrics JSON API
@@ -251,7 +281,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     # ------------------------------------------------------------------
 
     @app.get("/health")
-    async def health() -> dict:
+    async def health_route() -> dict:
         return {
             "status": "ok",
             "version": __version__,
@@ -347,11 +377,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         if stream:
             return await _handle_stream(
                 model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
-                request=request,
+                request=request, health=health,
             )
         return await _handle_sync(
             model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
-            request=request,
+            request=request, health=health,
         )
 
     # ------------------------------------------------------------------
@@ -430,11 +460,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         if stream:
             return await _handle_messages_stream(
                 model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
-                request=request,
+                request=request, health=health,
             )
         return await _handle_messages_sync(
             model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
-            request=request,
+            request=request, health=health,
         )
 
     # ------------------------------------------------------------------
@@ -507,6 +537,7 @@ async def _handle_sync(
     retry_base_delay: float,
     *,
     request: Request | None = None,
+    health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
     url = f"{bedrock_base}/model/{model}/invoke"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -515,7 +546,7 @@ async def _handle_sync(
     for attempt in range(max_retries):
         try:
             headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
@@ -604,6 +635,7 @@ async def _handle_stream(
     retry_base_delay: float,
     *,
     request: Request | None = None,
+    health: HealthMonitor | None = None,
 ) -> StreamingResponse:
     url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -613,7 +645,7 @@ async def _handle_stream(
         for attempt in range(max_retries):
             try:
                 headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-                async with httpx.AsyncClient(timeout=300) as client:
+                async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
                     async with client.stream(
                         "POST", url, headers=headers, content=body_bytes
                     ) as resp:
@@ -779,6 +811,7 @@ async def _handle_messages_sync(
     retry_base_delay: float,
     *,
     request: Request | None = None,
+    health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
     url = f"{bedrock_base}/model/{model}/invoke"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -787,7 +820,7 @@ async def _handle_messages_sync(
     for attempt in range(max_retries):
         try:
             headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
@@ -877,6 +910,7 @@ async def _handle_messages_stream(
     retry_base_delay: float,
     *,
     request: Request | None = None,
+    health: HealthMonitor | None = None,
 ) -> StreamingResponse:
     url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
     body_bytes = json.dumps(bedrock_body).encode()
@@ -886,7 +920,7 @@ async def _handle_messages_stream(
         for attempt in range(max_retries):
             try:
                 headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-                async with httpx.AsyncClient(timeout=300) as client:
+                async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
                     async with client.stream(
                         "POST", url, headers=headers, content=body_bytes
                     ) as resp:

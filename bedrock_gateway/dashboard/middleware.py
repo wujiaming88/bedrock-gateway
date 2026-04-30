@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 from fastapi import Request
 from starlette.responses import Response, StreamingResponse
@@ -152,8 +153,12 @@ def _extract_client_ip(request: Request) -> str | None:
     return None
 
 
-def metrics_middleware_factory(collector: MetricsCollector):
-    """Return an ASGI-style middleware function bound to *collector*."""
+def metrics_middleware_factory(collector: MetricsCollector, health: Any = None):
+    """Return an ASGI-style middleware function bound to *collector*.
+
+    When *health* is a :class:`HealthMonitor`, the middleware also bumps
+    the active-connection counter for the duration of each request.
+    """
 
     async def middleware(
         request: Request,
@@ -164,6 +169,10 @@ def metrics_middleware_factory(collector: MetricsCollector):
             path.startswith(p) for p in _EXCLUDED_PREFIXES
         ):
             return await call_next(request)
+
+        # Active-connection counter (in-flight, visible to the health API).
+        if health is not None:
+            health.inc_active()
 
         # Give handlers a place to stash enrichment data.
         request.state.metrics_info = {}
@@ -192,6 +201,14 @@ def metrics_middleware_factory(collector: MetricsCollector):
 
         start = time.perf_counter()
 
+        active_released = False
+
+        def _release_active() -> None:
+            nonlocal active_released
+            if not active_released and health is not None:
+                health.dec_active()
+                active_released = True
+
         def _record(
             status: int,
             prompt_tokens: int = 0,
@@ -201,6 +218,7 @@ def metrics_middleware_factory(collector: MetricsCollector):
             ttft_ms: float | None = None,
             is_timeout: bool = False,
         ) -> None:
+            _release_active()
             latency_ms = (time.perf_counter() - start) * 1000
             info = getattr(request.state, "metrics_info", {}) or {}
             model = info.get("model") or model_from_body or "-"

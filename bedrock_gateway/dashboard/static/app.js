@@ -1073,6 +1073,134 @@
     }
   }
 
+  // ----- System health --------------------------------------------
+  function classForThresholds(value, warnAt, badAt) {
+    if (value === null || value === undefined || isNaN(value)) {
+      return "";
+    }
+    if (value >= badAt) return "h-bad";
+    if (value >= warnAt) return "h-warn";
+    return "h-ok";
+  }
+
+  function formatAgeSeconds(iso) {
+    if (!iso) return "never";
+    var ts = Date.parse(iso);
+    if (!ts) return "—";
+    var age = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (age < 90) return age + "s ago";
+    if (age < 3600) return Math.floor(age / 60) + "m ago";
+    return Math.floor(age / 3600) + "h ago";
+  }
+
+  function addHealthRow(list, label, value, tone, sub) {
+    var li = document.createElement("li");
+    if (tone) li.className = tone;
+    var lbl = document.createElement("span");
+    lbl.className = "h-label";
+    lbl.textContent = label;
+    var val = document.createElement("span");
+    val.className = "h-value";
+    val.textContent = value;
+    if (sub) {
+      var s = document.createElement("span");
+      s.className = "h-sub";
+      s.textContent = sub;
+      val.appendChild(s);
+    }
+    li.appendChild(lbl);
+    li.appendChild(val);
+    list.appendChild(li);
+  }
+
+  function renderHealth(data) {
+    var el = $("#health-list");
+    if (!el) return;
+    el.innerHTML = "";
+    if (!data) {
+      var li = document.createElement("li");
+      li.className = "muted";
+      li.textContent = "no health data";
+      el.appendChild(li);
+      return;
+    }
+
+    // Active connections
+    var active = safeGet(data, "active_connections", 0);
+    addHealthRow(
+      el, "Active Connections", String(active),
+      classForThresholds(active, 50, 100)
+    );
+
+    // Upstream pool
+    var up = data.upstream_pool || {};
+    var upVal =
+      safeGet(up, "active", 0) + " active / " +
+      safeGet(up, "idle", 0) + " idle / " +
+      safeGet(up, "total", 0) + " total";
+    addHealthRow(el, "Upstream Pool", upVal, "h-ok");
+
+    // Open FDs
+    var fd = data.open_fds || {};
+    var cur = safeGet(fd, "current", null);
+    var lim = safeGet(fd, "limit", null);
+    var fdVal = (cur === null ? "—" : cur) + " / " + (lim === null ? "∞" : lim);
+    var fdTone = "h-ok";
+    if (cur !== null && lim !== null && lim > 0) {
+      var pct = cur / lim;
+      if (pct >= 0.9) fdTone = "h-bad";
+      else if (pct >= 0.75) fdTone = "h-warn";
+    }
+    addHealthRow(el, "Open FDs", fdVal, fdTone);
+
+    // Auth
+    var auth = data.auth || {};
+    var mode = safeGet(auth, "mode", "-");
+    var status = safeGet(auth, "status", "unknown");
+    var expires = safeGet(auth, "expires_at", null);
+    var authTone = "h-ok";
+    if (status === "expired") authTone = "h-bad";
+    else if (status === "expiring_soon") authTone = "h-warn";
+    else if (status === "unknown") authTone = "";
+    var authVal = mode + " · " + status;
+    var authSub = expires ? "expires " + expires : null;
+    addHealthRow(el, "Auth", authVal, authTone, authSub);
+
+    // Consecutive errors
+    var ce = safeGet(data, "consecutive_errors", 0);
+    var ceTone = ce === 0 ? "h-ok" : ce >= 5 ? "h-bad" : "h-warn";
+    addHealthRow(el, "Consecutive Errors", String(ce), ceTone);
+
+    // Event loop lag
+    var lag = safeGet(data, "event_loop_lag_ms", 0);
+    var lagTone = lag < 10 ? "h-ok" : lag < 50 ? "h-warn" : "h-bad";
+    addHealthRow(el, "Event Loop Lag", lag.toFixed(1) + " ms", lagTone);
+
+    // Upstream reachability
+    var ups = data.upstream || {};
+    var reach = safeGet(ups, "reachable", null);
+    var lat = safeGet(ups, "latency_ms", null);
+    var lastCheck = safeGet(ups, "last_check", null);
+    var lastSuccess = safeGet(ups, "last_success", null);
+    var upsTone, upsVal, upsSub;
+    if (reach === null) {
+      upsTone = "";
+      upsVal = "probing…";
+      upsSub = null;
+    } else if (reach) {
+      upsTone = "h-ok";
+      upsVal = "reachable (" + (lat !== null ? Math.round(lat) + " ms" : "—") + ")";
+      upsSub = lastCheck ? "last check " + formatAgeSeconds(lastCheck) : null;
+    } else {
+      upsTone = "h-bad";
+      upsVal = "unreachable";
+      upsSub = lastSuccess
+        ? "last seen " + formatAgeSeconds(lastSuccess)
+        : "never seen";
+    }
+    addHealthRow(el, "Upstream", upsVal, upsTone, upsSub);
+  }
+
   // ----- Memory time series ----------------------------------------
   function renderMemory(data) {
     var el = $("#chart-memory");
@@ -1226,7 +1354,8 @@
       fetchJSON("/api/metrics/errors"),
       fetchJSON("/api/metrics/system"),
       fetchJSON("/api/metrics/sources?limit=10"),
-      fetchJSON("/api/metrics/memory?window=" + encodeURIComponent(currentWindow))
+      fetchJSON("/api/metrics/memory?window=" + encodeURIComponent(currentWindow)),
+      fetchJSON("/api/metrics/health")
     ];
 
     Promise.all(urls)
@@ -1239,6 +1368,7 @@
         var system = results[5];
         var sources = results[6];
         var memory = results[7];
+        var health = results[8];
 
         renderGauges(overview, traffic);
         renderMiniTiles(overview);
@@ -1249,6 +1379,7 @@
         renderSystem(system);
         renderSources(sources);
         renderMemory(memory);
+        renderHealth(health);
 
         lastSuccessfulTick = Date.now();
       })

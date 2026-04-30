@@ -204,6 +204,10 @@ class MetricsCollector:
         # memory bounded under adversarial input.
         self._ip_counts: dict[str, int] = {}
 
+        # Consecutive 5xx (upstream) errors — resets on any 2xx/3xx.
+        # Surfaced by the SYSTEM HEALTH panel.
+        self._consecutive_errors: int = 0
+
         self._storage = storage
         self._retain_days = max(1, int(retain_days))
         self._writer: AsyncWriter | None = None
@@ -366,6 +370,14 @@ class MetricsCollector:
                 bucket.error += 1
             else:
                 bucket.success += 1
+
+            # Consecutive-errors counter: any 5xx bumps it; any successful
+            # (< 400) response resets it. 4xx is client-side and doesn't
+            # imply the upstream is unhealthy, so we leave the count alone.
+            if status >= 500:
+                self._consecutive_errors += 1
+            elif status < 400:
+                self._consecutive_errors = 0
 
             self._recent.append(rec)
             if is_err:
@@ -676,6 +688,11 @@ class MetricsCollector:
             b = self._buckets.get(ts)
             out.append(float(fn(b)) if b else 0.0)
         return out
+
+    def consecutive_errors(self) -> int:
+        """Current run of consecutive 5xx responses (resets on any 2xx/3xx)."""
+        with self._lock:
+            return self._consecutive_errors
 
     def sources_stats(self, *, top_n: int = 10) -> dict[str, Any]:
         """Return the top-*top_n* client IPs by request count."""

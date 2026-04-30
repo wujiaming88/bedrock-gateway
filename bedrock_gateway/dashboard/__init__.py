@@ -12,6 +12,7 @@ Exposes:
 from __future__ import annotations
 
 from .api import build_dashboard_router
+from .health import HealthMonitor
 from .metrics import MetricsCollector
 from .middleware import metrics_middleware_factory
 from .security import DashboardAuth, RateLimiter
@@ -19,6 +20,7 @@ from .storage import MetricsStorage
 
 __all__ = [
     "DashboardAuth",
+    "HealthMonitor",
     "MetricsCollector",
     "MetricsStorage",
     "RateLimiter",
