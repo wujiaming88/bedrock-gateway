@@ -19,6 +19,9 @@
 
   // ----- Configuration ---------------------------------------------
   var POLL_MS = 5000;
+  var MONO_STACK =
+    "'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', " +
+    "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace";
   var MODEL_COLORS = [
     "#00ff88",
     "#00aaff",
@@ -171,83 +174,129 @@
     var ctx = canvas.getContext("2d");
     var dpr = window.devicePixelRatio || 1;
 
-    // Handle HiDPI once per resize
-    if (canvas.width !== canvas.clientWidth * dpr || canvas.height !== canvas.clientHeight * dpr) {
-      canvas.width = Math.max(1, canvas.clientWidth) * dpr;
-      canvas.height = Math.max(1, canvas.clientHeight) * dpr;
+    // Ensure canvas has a CSS size (fall back to attribute size when layout
+    // hasn't happened yet).
+    var cssW = canvas.clientWidth || canvas.width || 200;
+    var cssH = canvas.clientHeight || canvas.height || 200;
+
+    // Set the CSS size explicitly so the backing-store scaling we apply below
+    // never inflates the displayed element.
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+
+    var targetW = Math.max(1, Math.round(cssW * dpr));
+    var targetH = Math.max(1, Math.round(cssH * dpr));
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
     }
 
-    var w = canvas.width;
-    var h = canvas.height;
+    // Draw in CSS-pixel coordinates, let scale() handle DPR.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
 
+    var w = cssW;
+    var h = cssH;
     var cx = w / 2;
-    var cy = h / 2 + h * 0.08;
+    var cy = h / 2 + h * 0.06;
     var radius = Math.min(w, h) * 0.38;
-    var thickness = Math.max(6, radius * 0.14);
+    var thickness = Math.max(10, radius * 0.18);
 
     var value = typeof opts.value === "number" && isFinite(opts.value) ? opts.value : 0;
     var max = opts.max > 0 ? opts.max : 1;
     var ratio = Math.max(0, Math.min(1, value / max));
 
+    var primary = opts.color || "#00ff88";
+    var secondary = opts.color2 || "#00aaff";
+    var mono = opts.mono || MONO_STACK;
+
     // Arc spans 225° → 315° (bottom-left to bottom-right going over the top)
     var startAngle = Math.PI * 0.75;
     var endAngle = Math.PI * 2.25;
 
-    // Track
+    // Soft glow halo under the track
+    var halo = ctx.createRadialGradient(cx, cy, radius * 0.4, cx, cy, radius * 1.25);
+    halo.addColorStop(0, "rgba(0, 0, 0, 0)");
+    halo.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = halo;
+
+    // Track (background arc — very subtle)
     ctx.lineWidth = thickness;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.arc(cx, cy, radius, startAngle, endAngle, false);
     ctx.stroke();
 
-    // Gradient fill arc
+    // Gradient fill arc with glow
     var grad = ctx.createLinearGradient(cx - radius, cy, cx + radius, cy);
-    grad.addColorStop(0, opts.color || "#00ff88");
-    grad.addColorStop(1, opts.color2 || "#00aaff");
+    grad.addColorStop(0, primary);
+    grad.addColorStop(1, secondary);
     ctx.strokeStyle = grad;
-    ctx.shadowColor = opts.color || "#00ff88";
-    ctx.shadowBlur = 12;
+    ctx.shadowColor = primary;
+    ctx.shadowBlur = 18;
     ctx.beginPath();
-    ctx.arc(cx, cy, radius, startAngle, startAngle + (endAngle - startAngle) * ratio, false);
+    ctx.arc(
+      cx,
+      cy,
+      radius,
+      startAngle,
+      startAngle + (endAngle - startAngle) * ratio,
+      false
+    );
     ctx.stroke();
     ctx.shadowBlur = 0;
 
     // Tick marks
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
     ctx.lineWidth = 1;
     var ticks = 10;
     for (var i = 0; i <= ticks; i++) {
       var t = i / ticks;
       var ang = startAngle + (endAngle - startAngle) * t;
-      var inner = radius + thickness / 2 + 2;
-      var outer = inner + (i % 5 === 0 ? 8 : 4);
+      var inner = radius + thickness / 2 + 3;
+      var outer = inner + (i % 5 === 0 ? 9 : 4);
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(ang) * inner, cy + Math.sin(ang) * inner);
       ctx.lineTo(cx + Math.cos(ang) * outer, cy + Math.sin(ang) * outer);
       ctx.stroke();
     }
 
+    // Reflection below the gauge — a subtle highlight streak
+    var reflect = ctx.createLinearGradient(
+      cx - radius,
+      cy + radius * 0.9,
+      cx + radius,
+      cy + radius * 0.9
+    );
+    reflect.addColorStop(0, "rgba(255,255,255,0)");
+    reflect.addColorStop(0.5, "rgba(255,255,255,0.04)");
+    reflect.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = reflect;
+    ctx.fillRect(cx - radius, cy + radius * 0.82, radius * 2, 2);
+
     // Center value
-    ctx.fillStyle = opts.color || "#00ff88";
-    ctx.font = "bold " + Math.floor(radius * 0.55) + "px " + (opts.mono || "SFMono-Regular, Consolas, monospace");
+    ctx.fillStyle = primary;
+    ctx.shadowColor = primary;
+    ctx.shadowBlur = 8;
+    ctx.font = "600 " + Math.floor(radius * 0.52) + "px " + mono;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     var display = opts.format ? opts.format(value) : formatNumber(value);
     ctx.fillText(display, cx, cy - radius * 0.1);
+    ctx.shadowBlur = 0;
 
     // Unit suffix
     if (opts.unit) {
-      ctx.fillStyle = "#8a93a6";
-      ctx.font = Math.floor(radius * 0.22) + "px " + (opts.mono || "SFMono-Regular, Consolas, monospace");
-      ctx.fillText(opts.unit, cx, cy + radius * 0.25);
+      ctx.fillStyle = "rgba(138, 147, 166, 0.9)";
+      ctx.font = "500 " + Math.floor(radius * 0.2) + "px " + mono;
+      ctx.fillText(opts.unit, cx, cy + radius * 0.24);
     }
 
     // Label
-    ctx.fillStyle = "#8a93a6";
-    ctx.font = "bold " + Math.floor(radius * 0.18) + "px " + (opts.mono || "SFMono-Regular, Consolas, monospace");
+    ctx.fillStyle = "rgba(138, 147, 166, 0.7)";
+    ctx.font = "600 " + Math.floor(radius * 0.16) + "px " + mono;
     ctx.fillText((opts.label || "").toUpperCase(), cx, cy + radius * 0.62);
   }
 
@@ -374,6 +423,33 @@
     return out;
   }
 
+  function makeLineGradient(ctx, chartArea, hex, alphaTop, alphaBottom) {
+    if (!chartArea) {
+      return "rgba(0,0,0,0)";
+    }
+    var top = chartArea.top;
+    var bottom = chartArea.bottom;
+    var g = ctx.createLinearGradient(0, top, 0, bottom);
+    g.addColorStop(0, hexToRgba(hex, alphaTop));
+    g.addColorStop(1, hexToRgba(hex, alphaBottom));
+    return g;
+  }
+
+  function hexToRgba(hex, alpha) {
+    // Accept #rgb / #rrggbb; fall back to the raw input if it's already rgba().
+    if (!hex || hex[0] !== "#") {
+      return hex;
+    }
+    var h = hex.slice(1);
+    if (h.length === 3) {
+      h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    }
+    var r = parseInt(h.slice(0, 2), 16);
+    var g = parseInt(h.slice(2, 4), 16);
+    var b = parseInt(h.slice(4, 6), 16);
+    return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
+  }
+
   function renderTraffic(traffic) {
     var el = $("#chart-traffic");
     if (!el || !window.Chart) {
@@ -394,48 +470,69 @@
         type: "bar",
         label: "QPS",
         data: qps,
-        backgroundColor: "rgba(0, 255, 136, 0.35)",
-        borderColor: "#00ff88",
-        borderWidth: 1,
+        backgroundColor: function (ctx) {
+          return makeLineGradient(ctx.chart.ctx, ctx.chart.chartArea, "#00ff88", 0.55, 0.05);
+        },
+        borderColor: "rgba(0, 255, 136, 0.8)",
+        borderWidth: 0,
+        borderRadius: 3,
         yAxisID: "yQps",
-        order: 3
+        order: 4
       },
       {
         type: "line",
         label: "p50",
         data: p50,
         borderColor: "#00aaff",
-        backgroundColor: "transparent",
-        borderWidth: 1.5,
-        tension: 0.3,
+        backgroundColor: function (ctx) {
+          return makeLineGradient(ctx.chart.ctx, ctx.chart.chartArea, "#00aaff", 0.25, 0);
+        },
+        fill: true,
+        borderWidth: 2.5,
+        tension: 0.35,
         pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: "#00aaff",
+        pointHoverBorderColor: "#0e131c",
+        pointHoverBorderWidth: 2,
         yAxisID: "yMs",
-        order: 2
+        order: 3
       },
       {
         type: "line",
         label: "p95",
         data: p95,
         borderColor: "#ffaa00",
-        backgroundColor: "transparent",
-        borderWidth: 1.5,
-        tension: 0.3,
+        backgroundColor: function (ctx) {
+          return makeLineGradient(ctx.chart.ctx, ctx.chart.chartArea, "#ffaa00", 0.18, 0);
+        },
+        fill: true,
+        borderWidth: 2.5,
+        tension: 0.35,
         pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: "#ffaa00",
+        pointHoverBorderColor: "#0e131c",
+        pointHoverBorderWidth: 2,
         yAxisID: "yMs",
-        order: 1
+        order: 2
       },
       {
         type: "line",
         label: "p99",
         data: p99,
-        borderColor: "#ff4444",
+        borderColor: "#ff4488",
         backgroundColor: "transparent",
-        borderWidth: 1.2,
-        borderDash: [4, 3],
-        tension: 0.3,
+        borderWidth: 2,
+        borderDash: [5, 4],
+        tension: 0.35,
         pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: "#ff4488",
+        pointHoverBorderColor: "#0e131c",
+        pointHoverBorderWidth: 2,
         yAxisID: "yMs",
-        order: 0
+        order: 1
       }
     ];
 
@@ -453,56 +550,73 @@
         responsive: true,
         maintainAspectRatio: false,
         animation: false,
+        devicePixelRatio: window.devicePixelRatio || 1,
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: {
             labels: {
-              color: "#8a93a6",
-              font: { family: "SFMono-Regular, Consolas, monospace", size: 11 }
+              color: "rgba(255,255,255,0.6)",
+              font: { family: MONO_STACK, size: 11, weight: "500" },
+              usePointStyle: true,
+              pointStyle: "rectRounded",
+              padding: 14
             }
           },
           tooltip: {
-            backgroundColor: "#0e131c",
+            backgroundColor: "rgba(10, 14, 20, 0.92)",
             titleColor: "#d6dbe3",
             bodyColor: "#d6dbe3",
-            borderColor: "#222a3b",
-            borderWidth: 1
+            borderColor: "rgba(0, 255, 136, 0.2)",
+            borderWidth: 1,
+            padding: 10,
+            titleFont: { family: MONO_STACK, size: 11, weight: "600" },
+            bodyFont: { family: MONO_STACK, size: 11 }
           }
         },
         scales: {
           x: {
             ticks: {
-              color: "#5a6278",
+              color: "rgba(255,255,255,0.45)",
+              font: { family: MONO_STACK, size: 10 },
               maxRotation: 0,
               autoSkip: true,
               maxTicksLimit: 10
             },
-            grid: { color: "rgba(255,255,255,0.04)" }
+            grid: { color: "rgba(255,255,255,0.03)", drawTicks: false },
+            border: { color: "rgba(255,255,255,0.06)" }
           },
           yQps: {
             type: "linear",
             position: "left",
             beginAtZero: true,
-            ticks: { color: "#00ff88" },
-            grid: { color: "rgba(255,255,255,0.04)" },
+            ticks: {
+              color: "rgba(0, 255, 136, 0.75)",
+              font: { family: MONO_STACK, size: 10 }
+            },
+            grid: { color: "rgba(255,255,255,0.03)", drawTicks: false },
+            border: { display: false },
             title: {
               display: true,
               text: "QPS",
-              color: "#00ff88",
-              font: { family: "SFMono-Regular, Consolas, monospace", size: 10 }
+              color: "rgba(0, 255, 136, 0.75)",
+              font: { family: MONO_STACK, size: 10, weight: "600" }
             }
           },
           yMs: {
             type: "linear",
             position: "right",
             beginAtZero: true,
-            ticks: { color: "#ffaa00" },
+            ticks: {
+              color: "rgba(255, 170, 0, 0.75)",
+              font: { family: MONO_STACK, size: 10 }
+            },
             grid: { display: false },
+            border: { display: false },
             title: {
               display: true,
               text: "ms",
-              color: "#ffaa00",
-              font: { family: "SFMono-Regular, Consolas, monospace", size: 10 }
+              color: "rgba(255, 170, 0, 0.75)",
+              font: { family: MONO_STACK, size: 10, weight: "600" }
             }
           }
         }
@@ -571,13 +685,34 @@
 
     if (pieEl && window.Chart) {
       var pieCfg = {
-        data: { labels: labels, datasets: [{ data: reqs, backgroundColor: colors, borderColor: "#0e131c", borderWidth: 2 }] },
+        data: {
+          labels: labels,
+          datasets: [{
+            data: reqs,
+            backgroundColor: colors,
+            borderColor: "rgba(10, 14, 20, 0.95)",
+            borderWidth: 3,
+            hoverOffset: 6,
+            hoverBorderColor: "rgba(10, 14, 20, 1)"
+          }]
+        },
         options: {
           responsive: true,
           maintainAspectRatio: false,
           animation: false,
-          cutout: "60%",
-          plugins: { legend: { display: false }, tooltip: { enabled: true } }
+          devicePixelRatio: window.devicePixelRatio || 1,
+          cutout: "68%",
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              enabled: true,
+              backgroundColor: "rgba(10, 14, 20, 0.92)",
+              borderColor: "rgba(0, 255, 136, 0.2)",
+              borderWidth: 1,
+              titleFont: { family: MONO_STACK, size: 11, weight: "600" },
+              bodyFont: { family: MONO_STACK, size: 11 }
+            }
+          }
         }
       };
       if (charts.modelsPie) {
@@ -597,7 +732,10 @@
               label: "tokens",
               data: tokens,
               backgroundColor: colors,
-              borderWidth: 0
+              borderWidth: 0,
+              borderRadius: 3,
+              barThickness: "flex",
+              maxBarThickness: 14
             }
           ]
         },
@@ -606,16 +744,34 @@
           responsive: true,
           maintainAspectRatio: false,
           animation: false,
-          plugins: { legend: { display: false } },
+          devicePixelRatio: window.devicePixelRatio || 1,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: "rgba(10, 14, 20, 0.92)",
+              borderColor: "rgba(0, 255, 136, 0.2)",
+              borderWidth: 1,
+              titleFont: { family: MONO_STACK, size: 11, weight: "600" },
+              bodyFont: { family: MONO_STACK, size: 11 }
+            }
+          },
           scales: {
             x: {
               beginAtZero: true,
-              ticks: { color: "#5a6278" },
-              grid: { color: "rgba(255,255,255,0.04)" }
+              ticks: {
+                color: "rgba(255,255,255,0.45)",
+                font: { family: MONO_STACK, size: 10 }
+              },
+              grid: { color: "rgba(255,255,255,0.03)", drawTicks: false },
+              border: { display: false }
             },
             y: {
-              ticks: { color: "#8a93a6", font: { size: 10 } },
-              grid: { display: false }
+              ticks: {
+                color: "rgba(255,255,255,0.6)",
+                font: { family: MONO_STACK, size: 10 }
+              },
+              grid: { display: false },
+              border: { display: false }
             }
           }
         }
@@ -645,13 +801,17 @@
     for (var i = 0; i < items.length; i++) {
       var r = items[i];
       var tokens = (r.prompt_tokens || 0) + (r.completion_tokens || 0);
+      var statusTxt = r.status ? String(r.status) : "—";
+      var statusBadge = r.status
+        ? '<span class="status-badge ' + statusClass(r.status) + '">' + escapeHtml(statusTxt) + "</span>"
+        : '<span class="muted">—</span>';
       rows.push(
         "<tr>" +
           "<td>" + escapeHtml(formatTime(r.ts)) + "</td>" +
-          "<td>" + escapeHtml(r.method || "-") + "</td>" +
+          '<td><span class="method-badge">' + escapeHtml(r.method || "-") + "</span></td>" +
           "<td title=\"" + escapeHtml(r.path || "") + "\">" + escapeHtml(r.path || "-") + "</td>" +
           "<td title=\"" + escapeHtml(r.model || "") + "\">" + escapeHtml(r.model || "-") + "</td>" +
-          "<td class=\"num " + statusClass(r.status) + "\">" + escapeHtml(String(r.status || "—")) + "</td>" +
+          '<td class="num">' + statusBadge + "</td>" +
           "<td class=\"num " + latencyClass(r.latency_ms) + "\">" + escapeHtml(formatNumber(r.latency_ms)) + " ms</td>" +
           "<td class=\"num\">" + escapeHtml(formatNumber(tokens)) + "</td>" +
           "</tr>"
@@ -863,9 +1023,13 @@
     }
 
     // Redraw gauges on resize so they stay crisp on DPR changes.
+    // Debounce so dragging a window edge doesn't hammer the API.
+    var resizeTimer = null;
     window.addEventListener("resize", function () {
-      // Trigger a cheap redraw with last overview/traffic — easiest: poll now.
-      tick();
+      if (resizeTimer) {
+        clearTimeout(resizeTimer);
+      }
+      resizeTimer = setTimeout(tick, 150);
     });
   }
 

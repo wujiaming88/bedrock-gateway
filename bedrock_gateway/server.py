@@ -389,6 +389,60 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay
         )
 
+    # ------------------------------------------------------------------
+    # POST /v1/messages/count_tokens  (Anthropic SDK token pre-flight)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/messages/count_tokens")
+    async def count_tokens(request: Request) -> JSONResponse:
+        # Bedrock doesn't expose a token counter, so we return a rough
+        # character-based estimate (~4 chars/token). Good enough for the
+        # SDK's budget checks, which is all this endpoint needs to satisfy.
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content=format_anthropic_error(400, "Invalid JSON body"),
+            )
+
+        def _content_chars(content: Any) -> int:
+            if content is None:
+                return 0
+            if isinstance(content, str):
+                return len(content)
+            if isinstance(content, list):
+                total = 0
+                for block in content:
+                    if isinstance(block, dict):
+                        # text blocks
+                        if "text" in block:
+                            total += len(str(block["text"]))
+                        # tool_result blocks carry their own content payload
+                        elif "content" in block:
+                            total += _content_chars(block["content"])
+                        else:
+                            total += len(json.dumps(block))
+                    else:
+                        total += len(str(block))
+                return total
+            return len(str(content))
+
+        total_chars = 0
+        for msg in body.get("messages", []) or []:
+            if isinstance(msg, dict):
+                total_chars += _content_chars(msg.get("content"))
+
+        system = body.get("system")
+        total_chars += _content_chars(system)
+
+        # Tools add to the prompt too — include their schemas.
+        for tool in body.get("tools", []) or []:
+            total_chars += len(json.dumps(tool))
+
+        input_tokens = max(1, total_chars // 4)
+        return JSONResponse({"input_tokens": input_tokens})
+
     return app
 
 
