@@ -38,6 +38,10 @@
   // ----- State -----------------------------------------------------
   var currentWindow = "1h";
   var currentFilter = "all";
+  // Rendered window options — (re)built from /api/metrics/system retain_days.
+  // Always starts with the 1h/6h/24h trio; longer windows appear as retention
+  // allows.
+  var windowOptions = ["1h", "6h", "24h"];
   var charts = {
     traffic: null,
     modelsPie: null,
@@ -1319,6 +1323,13 @@
     if (!system) {
       return;
     }
+    // If the server's retain_days reshapes the window set, rebuild buttons.
+    var retain = safeGet(system, "retain_days", null);
+    var nextOptions = buildWindowOptions(retain);
+    if (nextOptions.join("|") !== windowOptions.join("|")) {
+      windowOptions = nextOptions;
+      renderWindowButtons(windowOptions);
+    }
     var v = $("#pill-version");
     var r = $("#pill-region");
     var a = $("#pill-auth");
@@ -1412,8 +1423,48 @@
       });
   }
 
-  // ----- Event wiring ----------------------------------------------
-  function bindControls() {
+  // ----- Window switch ---------------------------------------------
+  // Generate the set of window options the backend can serve given the
+  // configured retention horizon. 1h/6h/24h are always available;
+  // multi-day windows are additive as retention allows.
+  function buildWindowOptions(retainDays) {
+    var opts = ["1h", "6h", "24h"];
+    var n = parseInt(retainDays, 10);
+    if (!isFinite(n) || n <= 0) {
+      return opts;
+    }
+    var candidates = [3, 7, 14, 30];
+    for (var i = 0; i < candidates.length; i++) {
+      if (n >= candidates[i]) {
+        opts.push(candidates[i] + "d");
+      }
+    }
+    return opts;
+  }
+
+  function renderWindowButtons(options) {
+    var host = $("#window-switch");
+    if (!host) {
+      return;
+    }
+    if (options.indexOf(currentWindow) === -1) {
+      // The previously selected window is no longer offered — fall back.
+      currentWindow = options[0];
+    }
+    host.innerHTML = "";
+    for (var i = 0; i < options.length; i++) {
+      var w = options[i];
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "win-btn" + (w === currentWindow ? " active" : "");
+      btn.setAttribute("data-window", w);
+      btn.textContent = w.toUpperCase();
+      host.appendChild(btn);
+    }
+    wireWindowButtons();
+  }
+
+  function wireWindowButtons() {
     var winButtons = $$("#window-switch .win-btn");
     for (var i = 0; i < winButtons.length; i++) {
       (function (btn) {
@@ -1430,7 +1481,10 @@
         });
       })(winButtons[i]);
     }
+  }
 
+  // ----- Event wiring ----------------------------------------------
+  function bindControls() {
     var filButtons = $$("#filter-switch .fil-btn");
     for (var j = 0; j < filButtons.length; j++) {
       (function (btn) {
@@ -1461,6 +1515,10 @@
 
   // ----- Bootstrap -------------------------------------------------
   function boot() {
+    // Render the safe default 1h/6h/24h set immediately so the header
+    // isn't empty while we wait for the first poll. renderSystem() will
+    // refresh the set once the real retain_days is known.
+    renderWindowButtons(windowOptions);
     bindControls();
     tick();
     setInterval(tick, POLL_MS);

@@ -35,9 +35,11 @@ _BUCKETS = 24 * 60
 _BUCKET_SECONDS = 60
 
 # Upper bound on the ``minutes`` parameter accepted by ``timeseries`` /
-# ``memory_timeseries``. Matches the dashboard's longest window (7d) and
-# assumes the caller has a storage layer deep enough to back it.
-_MAX_WINDOW_MINUTES = 7 * 24 * 60
+# ``memory_timeseries``. Matches the longest window the dashboard UI
+# can offer (30d) and assumes the caller has a storage layer deep
+# enough to back it. The API layer still enforces the configured
+# ``retain_days`` on top of this, so this is purely a safety cap.
+_MAX_WINDOW_MINUTES = 30 * 24 * 60
 
 # Max recent requests retained for the log table
 _MAX_RECENT_REQUESTS = 200
@@ -478,6 +480,11 @@ class MetricsCollector:
         if self._storage is None:
             return 0
         return self._storage.cleanup(retain_days=self._retain_days)
+
+    @property
+    def retain_days(self) -> int:
+        """Configured retention horizon, in days."""
+        return self._retain_days
 
     # ------------------------------------------------------------------
     # Queries
@@ -922,4 +929,5 @@ class MetricsCollector:
             "uptime_seconds": int(uptime),
             "memory_rss_mb": rss_mb,
             "pid": os.getpid(),
+            "retain_days": self._retain_days,
         }

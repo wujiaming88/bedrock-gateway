@@ -194,9 +194,9 @@ class TestTimeseriesWindow:
         m = MetricsCollector()
         ts = m.timeseries(minutes=0)
         assert len(ts["labels"]) == 1
-        # Way above the accepted window → clamped to the 7d ceiling.
+        # Way above the accepted window → clamped to the 30d ceiling.
         huge = m.timeseries(minutes=10**6)
-        assert len(huge["labels"]) == 7 * 24 * 60
+        assert len(huge["labels"]) == 30 * 24 * 60
 
     def test_timeseries_aggregates_bins(self):
         """A bin_seconds wider than 60s pools several minute-buckets."""
@@ -347,8 +347,9 @@ class TestMetricsAPI:
 
     def test_traffic_rejects_invalid_window(self, open_client: TestClient):
         resp = open_client.get("/api/metrics/traffic?window=bogus")
-        # FastAPI's Query pattern returns 422 for regex failure
-        assert resp.status_code == 422
+        # Malformed window is rejected by our own parser with 400
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
 
     def test_models(self, open_client: TestClient):
         coll = open_client.app.state.metrics  # type: ignore[attr-defined]
@@ -416,10 +417,16 @@ class TestMetricsAPI:
         resp = open_client.get("/api/metrics/system")
         assert resp.status_code == 200
         data = resp.json()
-        for key in ("version", "auth_mode", "region", "model_count", "uptime_seconds"):
+        for key in (
+            "version", "auth_mode", "region", "model_count",
+            "uptime_seconds", "retain_days",
+        ):
             assert key in data
         assert data["region"] == "us-east-1"
         assert data["model_count"] == 1
+        # Default StorageConfig.retain_days is 7; it must be surfaced to
+        # the frontend so it can render the right window buttons.
+        assert data["retain_days"] == 7
 
     def test_dashboard_html(self, open_client: TestClient):
         resp = open_client.get("/dashboard/")
@@ -926,10 +933,29 @@ class TestInputValidation:
         resp = open_client.get(f"/api/metrics/traffic?window={window}")
         assert resp.status_code == 200
 
-    @pytest.mark.parametrize("window", ["2h", "5m", "", "1h;drop", "30d"])
+    @pytest.mark.parametrize("window", ["5m", "", "1h;drop", "bogus", "-1h", "0h"])
     def test_traffic_bad_windows(self, open_client: TestClient, window: str):
         resp = open_client.get(f"/api/metrics/traffic?window={window}")
-        assert resp.status_code == 422
+        # Our custom validator returns 400 for malformed windows.
+        assert resp.status_code == 400
+
+    def test_traffic_window_exceeds_retention(self, open_client: TestClient):
+        # Default retain_days is 7 → 14d / 30d are well past the horizon.
+        resp = open_client.get("/api/metrics/traffic?window=14d")
+        assert resp.status_code == 400
+        assert "retention" in resp.json()["error"]["message"].lower()
+
+        resp = open_client.get("/api/metrics/traffic?window=30d")
+        assert resp.status_code == 400
+
+    def test_traffic_accepts_non_preset_valid_window(
+        self, open_client: TestClient
+    ):
+        # Anything that parses as <n>h / <n>d and fits retention is valid —
+        # the API is no longer restricted to the preset button labels.
+        resp = open_client.get("/api/metrics/traffic?window=2h")
+        assert resp.status_code == 200
+        assert resp.json()["window"] == "2h"
 
     @pytest.mark.parametrize("limit", [0, -1, 201, 10000])
     def test_requests_bad_limits(self, open_client: TestClient, limit: int):

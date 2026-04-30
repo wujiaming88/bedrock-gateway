@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -49,17 +50,57 @@ from .security import (
 _STATIC_DIR = Path(__file__).parent / "static"
 
 
-# Window label → (minutes of history, bin granularity in seconds). Larger
-# windows aggregate per-minute buckets into coarser bins so the chart has a
-# manageable number of points and stays responsive in the browser.
-_WINDOW_SPECS: dict[str, tuple[int, int]] = {
-    "1h": (60, 60),            # 60 points · 1 min
-    "6h": (6 * 60, 60),        # 360 points · 1 min
-    "24h": (24 * 60, 5 * 60),  # 288 points · 5 min
-    "3d": (3 * 24 * 60, 15 * 60),  # 288 points · 15 min
-    "7d": (7 * 24 * 60, 60 * 60),  # 168 points · 1 hour
-}
-_WINDOW_PATTERN = "^(1h|6h|24h|3d|7d)$"
+_WINDOW_RE = re.compile(r"^(\d+)([hd])$")
+
+
+class _WindowError(ValueError):
+    """Raised when a ``window=…`` query parameter is malformed or out of range."""
+
+
+def _resolve_window(window: str, retain_days: int) -> tuple[int, int]:
+    """
+    Parse a window label (e.g. ``"1h"``, ``"24h"``, ``"7d"``) into
+    ``(minutes, bin_seconds)``.
+
+    ``bin_seconds`` widens with the window so the chart stays around
+    ~300 points regardless of how far back the operator looks:
+
+        ≤ 6h  → 1-minute bins
+        ≤ 24h → 5-minute bins
+        ≤ 3d  → 15-minute bins
+        ≤ 7d  → 1-hour bins
+        ≤ 14d → 2-hour bins
+        > 14d → 4-hour bins
+
+    Raises :class:`_WindowError` for malformed input or when the window
+    would reach past the configured ``retain_days`` horizon.
+    """
+    match = _WINDOW_RE.match(window or "")
+    if not match:
+        raise _WindowError(f"invalid window format: {window!r}")
+    n = int(match.group(1))
+    unit = match.group(2)
+    if n <= 0:
+        raise _WindowError(f"invalid window value: {window!r}")
+    hours = n if unit == "h" else n * 24
+    if hours > retain_days * 24:
+        raise _WindowError(
+            f"window {window!r} exceeds retention ({retain_days} day(s))"
+        )
+    minutes = hours * 60
+    if minutes <= 6 * 60:
+        bin_seconds = 60
+    elif minutes <= 24 * 60:
+        bin_seconds = 5 * 60
+    elif minutes <= 3 * 24 * 60:
+        bin_seconds = 15 * 60
+    elif minutes <= 7 * 24 * 60:
+        bin_seconds = 60 * 60
+    elif minutes <= 14 * 24 * 60:
+        bin_seconds = 2 * 60 * 60
+    else:
+        bin_seconds = 4 * 60 * 60
+    return minutes, bin_seconds
 
 
 _COOKIE_NAME = "bedrock_gw_key"
@@ -105,6 +146,20 @@ def _unauthorized_json() -> JSONResponse:
                 "message": "Dashboard authentication required",
                 "type": "authentication_error",
                 "code": 401,
+            }
+        },
+    )
+    return _apply_security_headers(resp)
+
+
+def _bad_request_json(reason: str) -> JSONResponse:
+    resp = JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": reason,
+                "type": "invalid_request_error",
+                "code": 400,
             }
         },
     )
@@ -276,12 +331,15 @@ def build_dashboard_router(
     @router.get("/api/metrics/traffic")
     async def traffic(
         request: Request,
-        window: str = Query("1h", pattern=_WINDOW_PATTERN),
+        window: str = Query("1h"),
     ) -> Response:
         blocked = _guard_api(request)
         if blocked is not None:
             return blocked
-        minutes, bin_seconds = _WINDOW_SPECS.get(window, (60, 60))
+        try:
+            minutes, bin_seconds = _resolve_window(window, collector.retain_days)
+        except _WindowError as exc:
+            return _bad_request_json(str(exc))
         data = collector.timeseries(minutes=minutes, bin_seconds=bin_seconds)
         data["window"] = window
         return _apply_security_headers(JSONResponse(content=data))
@@ -343,12 +401,15 @@ def build_dashboard_router(
     @router.get("/api/metrics/memory")
     async def memory(
         request: Request,
-        window: str = Query("1h", pattern=_WINDOW_PATTERN),
+        window: str = Query("1h"),
     ) -> Response:
         blocked = _guard_api(request)
         if blocked is not None:
             return blocked
-        minutes, bin_seconds = _WINDOW_SPECS.get(window, (60, 60))
+        try:
+            minutes, bin_seconds = _resolve_window(window, collector.retain_days)
+        except _WindowError as exc:
+            return _bad_request_json(str(exc))
         data = collector.memory_timeseries(
             minutes=minutes, bin_seconds=bin_seconds
         )
