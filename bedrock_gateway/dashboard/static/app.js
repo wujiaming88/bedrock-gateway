@@ -109,6 +109,26 @@
     return hh + ":" + mm + ":" + ss;
   }
 
+  // Turn a Bedrock model id like "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+  // into the shorter "claude-sonnet-4-6" that fits in a legend/table cell.
+  function friendlyModel(name) {
+    if (!name || typeof name !== "string") {
+      return "-";
+    }
+    var m = name;
+    // Strip common regional prefixes.
+    m = m.replace(/^(us|eu|apac|ap|ca|sa)\./, "");
+    // Strip vendor namespace.
+    m = m.replace(/^anthropic\./, "");
+    // Drop a trailing ":0" inference-profile suffix.
+    m = m.replace(/:\d+$/, "");
+    // Drop a trailing "-vN" or "-YYYYMMDD" version tag (but keep X-Y-Z dotted
+    // variant numbers like "claude-sonnet-4-6").
+    m = m.replace(/-v\d+(?:[-.]\d+)*$/, "");
+    m = m.replace(/-\d{8}$/, "");
+    return m || name;
+  }
+
   function statusClass(status) {
     if (!status) {
       return "";
@@ -301,26 +321,39 @@
   }
 
   function renderGauges(overview, traffic) {
-    // QPS: average over the last 60 seconds (or visible window's last point)
-    var qps = 0;
-    if (traffic && traffic.qps && traffic.qps.length) {
-      qps = traffic.qps[traffic.qps.length - 1] || 0;
+    // QPS: prefer the server-side rolling value, which compensates for the
+    // current minute being partially elapsed. Fall back to the last sample.
+    var qps = safeGet(overview, "qps", null);
+    if (qps === null) {
+      qps = 0;
+      if (traffic && traffic.qps && traffic.qps.length) {
+        qps = traffic.qps[traffic.qps.length - 1] || 0;
+      }
     }
-    var p95 = 0;
-    if (traffic && traffic.p95 && traffic.p95.length) {
-      // Take the max p95 over the last 5 minutes so the gauge feels reactive
-      var look = traffic.p95.slice(-5);
-      for (var i = 0; i < look.length; i++) {
-        if (look[i] > p95) {
-          p95 = look[i];
+    // P95: prefer the pooled 5-minute value from the server; fall back to the
+    // max of the last 5 per-minute p95s.
+    var p95 = safeGet(overview, "p95_ms", null);
+    if (p95 === null) {
+      p95 = 0;
+      if (traffic && traffic.p95 && traffic.p95.length) {
+        var look = traffic.p95.slice(-5);
+        for (var i = 0; i < look.length; i++) {
+          if (look[i] > p95) {
+            p95 = look[i];
+          }
         }
       }
     }
     var successRate = safeGet(overview, "success_rate", 0);
-    var totalTokens =
-      safeGet(overview, "prompt_tokens", 0) + safeGet(overview, "completion_tokens", 0);
-    var uptimeSec = safeGet(overview, "uptime_seconds", 1) || 1;
-    var tokensPerHour = totalTokens / (uptimeSec / 3600);
+    // Tokens/h is a rolling 60-minute sum on the server. For legacy payloads
+    // fall back to lifetime total / uptime.
+    var tokensPerHour = safeGet(overview, "tokens_per_hour", null);
+    if (tokensPerHour === null) {
+      var totalTokens =
+        safeGet(overview, "prompt_tokens", 0) + safeGet(overview, "completion_tokens", 0);
+      var uptimeSec = safeGet(overview, "uptime_seconds", 1) || 1;
+      tokensPerHour = totalTokens / (uptimeSec / 3600);
+    }
 
     var canvasQps = $('canvas[data-key="qps"]');
     var canvasSuccess = $('canvas[data-key="success"]');
@@ -659,7 +692,7 @@
     var totalReqs = 0;
 
     for (var i = 0; i < topN.length; i++) {
-      labels.push(topN[i].model);
+      labels.push(friendlyModel(topN[i].model));
       reqs.push(topN[i].requests);
       tokens.push(topN[i].tokens);
       colors.push(MODEL_COLORS[i % MODEL_COLORS.length]);
@@ -684,7 +717,8 @@
         sw.style.background = colors[j];
         var nm = document.createElement("span");
         nm.className = "name";
-        nm.textContent = topN[j].model;
+        nm.textContent = friendlyModel(topN[j].model);
+        nm.title = topN[j].model;
         var pct = document.createElement("span");
         pct.className = "pct";
         pct.textContent =
@@ -830,7 +864,7 @@
           "<td>" + escapeHtml(formatTime(r.ts)) + "</td>" +
           '<td><span class="method-badge">' + escapeHtml(r.method || "-") + "</span></td>" +
           "<td title=\"" + escapeHtml(r.path || "") + "\">" + escapeHtml(r.path || "-") + "</td>" +
-          "<td title=\"" + escapeHtml(r.model || "") + "\">" + escapeHtml(r.model || "-") + "</td>" +
+          "<td title=\"" + escapeHtml(r.model || "") + "\">" + escapeHtml(friendlyModel(r.model || "-")) + "</td>" +
           '<td class="num">' + statusBadge + "</td>" +
           "<td class=\"num " + latencyClass(r.latency_ms) + "\">" + escapeHtml(formatNumber(r.latency_ms)) + " ms</td>" +
           "<td class=\"num\">" + escapeHtml(formatNumber(tokens)) + "</td>" +

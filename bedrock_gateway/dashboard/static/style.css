@@ -265,11 +265,11 @@ body {
   );
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px;
+  padding: 14px 14px 30px 14px;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 210px;
+  min-height: 230px;
   position: relative;
   overflow: hidden;
   box-shadow: var(--shadow-card),
@@ -809,6 +809,27 @@ body {
 
 .muted {
   color: var(--text-mute);
+}
+
+/* Bilingual panel descriptions (EN / 中文) */
+.panel-desc {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+}
+
+.gauge-card .panel-desc {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 6px;
+  margin: 0;
+  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.3;
 }
 
 /* ------------------------------------------------------------------ */

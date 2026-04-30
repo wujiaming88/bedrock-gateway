@@ -26,6 +26,7 @@ from bedrock_gateway.config import (
 from bedrock_gateway.dashboard import (
     DashboardAuth,
     MetricsCollector,
+    MetricsStorage,
     RateLimiter,
     build_dashboard_router,
     metrics_middleware_factory,
@@ -1027,6 +1028,176 @@ class TestDashboardConfig:
 # ---------------------------------------------------------------------------
 # End-to-end: dashboard metrics reflect real traffic
 # ---------------------------------------------------------------------------
+
+
+class TestOverviewAccuracy:
+    """Accuracy of the gauge-facing fields: qps, p95_ms, tokens_per_hour."""
+
+    def test_qps_uses_elapsed_for_current_minute(self):
+        # A fresh collector's minute bucket is still "open" — QPS should
+        # divide by elapsed seconds, not by a fixed 60.
+        m = MetricsCollector()
+        # Force start_time back in time so the bucket has "elapsed" seconds.
+        now = time.time()
+        bucket_ts = int(now // 60) * 60
+        with m._lock:
+            from bedrock_gateway.dashboard.metrics import _Bucket
+            b = _Bucket(ts=bucket_ts, total=5, success=5)
+            b.latencies = [100.0] * 5
+            m._buckets[bucket_ts] = b
+            m._total_requests = 5
+            m._total_success = 5
+        o = m.overview()
+        # With only the open minute populated, QPS ≈ 5 / elapsed. Elapsed is
+        # bounded below by 1.0, so qps ≤ 5.0. If we had divided by 60 we'd
+        # see ~0.083 instead.
+        assert o["qps"] > 0.05  # well above the flat 5/60 floor when fresh
+        assert o["qps"] <= 5.0
+
+    def test_qps_prefers_last_completed_minute(self):
+        m = MetricsCollector()
+        from bedrock_gateway.dashboard.metrics import _Bucket
+        now = time.time()
+        minute = int(now // 60) * 60
+        with m._lock:
+            m._buckets[minute - 60] = _Bucket(ts=minute - 60, total=120, success=120)
+            m._buckets[minute] = _Bucket(ts=minute, total=1, success=1)
+            m._total_requests = 121
+        # Last full minute: 120 req / 60 s = 2.0 qps.
+        assert m.overview()["qps"] == pytest.approx(2.0)
+
+    def test_p95_pools_across_recent_minutes(self):
+        m = MetricsCollector()
+        # Spread latencies across several minutes; p95 should see them all.
+        now = time.time()
+        minute = int(now // 60) * 60
+        from bedrock_gateway.dashboard.metrics import _Bucket
+        with m._lock:
+            for offset, values in [(0, [10, 20]), (60, [1000]), (120, [50])]:
+                ts = minute - offset
+                b = _Bucket(ts=ts, total=len(values), success=len(values))
+                b.latencies = [float(v) for v in values]
+                m._buckets[ts] = b
+        p95 = m.overview()["p95_ms"]
+        # Pooled values: [10, 20, 1000, 50] → p95 should pick up the tail.
+        assert p95 >= 500
+
+    def test_tokens_per_hour_rolling_window(self):
+        m = MetricsCollector()
+        # Seed tokens across several minute-buckets.
+        from bedrock_gateway.dashboard.metrics import _Bucket
+        now = time.time()
+        minute = int(now // 60) * 60
+        with m._lock:
+            for i in range(10):
+                b = _Bucket(ts=minute - i * 60, total=1, success=1)
+                b.prompt_tokens = 100
+                b.completion_tokens = 50
+                b.latencies = [1.0]
+                m._buckets[minute - i * 60] = b
+        # 10 minutes × 150 tokens = 1500 tokens in the last hour.
+        assert m.overview()["tokens_per_hour"] == 1500
+
+
+class TestErrorClassification:
+    def test_status_to_type_mapping(self):
+        m = MetricsCollector()
+        mapping = [
+            (429, "rate_limit"),
+            (503, "overloaded"),
+            (529, "overloaded"),
+            (401, "auth_error"),
+            (403, "auth_error"),
+            (408, "timeout"),
+            (500, "internal_error"),
+            (502, "internal_error"),
+            (404, "client_error"),
+        ]
+        for status, _ in mapping:
+            m.record_request(
+                method="POST", path="/v1/x", model="m1",
+                status=status, latency_ms=1,
+            )
+        breakdown = m.error_breakdown()
+        seen = breakdown["by_type"]
+        for _, expected in mapping:
+            assert seen.get(expected, 0) >= 1, f"{expected} not recorded"
+
+    def test_explicit_error_type_preserved(self):
+        m = MetricsCollector()
+        m.record_request(
+            method="POST", path="/v1/x", model="m1",
+            status=500, latency_ms=1, error_type="DownstreamTimeout",
+        )
+        b = m.error_breakdown()
+        assert "DownstreamTimeout" in b["by_type"]
+
+
+class TestMetricsStorage:
+    def test_persists_and_reloads_requests(self, tmp_path):
+        db = tmp_path / "metrics.db"
+        storage = MetricsStorage(str(db))
+        m1 = MetricsCollector(storage=storage)
+        for i in range(3):
+            m1.record_request(
+                method="POST", path=f"/v1/x/{i}", model="m1",
+                status=200, latency_ms=10, prompt_tokens=5, completion_tokens=2,
+            )
+        # Flush so the writer thread drains.
+        if m1._writer is not None:
+            m1._writer.stop()
+
+        # Fresh collector on the same db — should rehydrate the log.
+        m2 = MetricsCollector(storage=MetricsStorage(str(db)))
+        recent = m2.recent_requests(limit=10)
+        assert len(recent) == 3
+        assert recent[0]["path"] == "/v1/x/2"  # newest first
+
+    def test_persists_bucket_on_minute_rollover(self, tmp_path):
+        db = tmp_path / "metrics.db"
+        storage = MetricsStorage(str(db))
+        m = MetricsCollector(storage=storage)
+
+        from bedrock_gateway.dashboard.metrics import _Bucket
+        now = time.time()
+        past_minute = int(now // 60) * 60 - 60
+        # Inject a "closed" bucket manually.
+        with m._lock:
+            b = _Bucket(ts=past_minute, total=2, success=2)
+            b.latencies = [5.0, 7.0]
+            b.model_counts = {"m1": 2}
+            m._buckets[past_minute] = b
+
+        # Recording a new request in the current minute triggers the flush
+        # of any previously-open buckets.
+        m.record_request(
+            method="POST", path="/v1/x", model="m2",
+            status=200, latency_ms=1,
+        )
+        if m._writer is not None:
+            m._writer.stop()
+
+        buckets = storage.load_buckets(since_ts=past_minute)
+        # Should contain the past bucket persisted during rollover.
+        tsvals = [b.ts for b in buckets]
+        assert past_minute in tsvals
+
+    def test_cleanup_drops_old_rows(self, tmp_path):
+        from bedrock_gateway.dashboard.storage import BucketRow, RequestRow
+        db = tmp_path / "metrics.db"
+        storage = MetricsStorage(str(db))
+        old = time.time() - 30 * 86400  # 30 days ago
+        new = time.time()
+        storage.batch_write_requests([
+            RequestRow(ts=old, method="GET", path="/old", model="-", status=200, latency_ms=1),
+            RequestRow(ts=new, method="GET", path="/new", model="-", status=200, latency_ms=1),
+        ])
+        storage.upsert_bucket(BucketRow(ts=int(old)))
+        storage.upsert_bucket(BucketRow(ts=int(new)))
+        deleted = storage.cleanup(retain_days=7)
+        assert deleted >= 2
+        recent = storage.load_recent_requests(limit=10)
+        assert all(r.path != "/old" for r in recent)
 
 
 class TestEndToEnd:

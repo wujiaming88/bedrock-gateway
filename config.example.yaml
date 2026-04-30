@@ -50,6 +50,10 @@ dashboard:
   # localhost_only: false             # set true/false to override the default
   rate_limit: 60                      # /api/metrics/* requests/minute/IP
   max_request_log: 200                # rows retained in the request-log panel
+  storage:
+    enabled: true                     # persist metrics to SQLite so they survive restarts
+    path: data/metrics.db             # database file location (relative to CWD)
+    retain_days: 7                    # drop rows older than this many days
 
 # ─── Models ───────────────────────────────────────────────
 # Map user-facing aliases to Bedrock model IDs.

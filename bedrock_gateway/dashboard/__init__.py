@@ -15,10 +15,12 @@ from .api import build_dashboard_router
 from .metrics import MetricsCollector
 from .middleware import metrics_middleware_factory
 from .security import DashboardAuth, RateLimiter
+from .storage import MetricsStorage
 
 __all__ = [
     "DashboardAuth",
     "MetricsCollector",
+    "MetricsStorage",
     "RateLimiter",
     "build_dashboard_router",
     "metrics_middleware_factory",

@@ -48,6 +48,7 @@ from .dashboard import (
     build_dashboard_router,
     metrics_middleware_factory,
 )
+from .dashboard.storage import MetricsStorage
 from .models import ModelRegistry
 
 logger = logging.getLogger("bedrock_gateway")
@@ -92,7 +93,22 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     retry_base_delay = config.retry.base_delay
 
     # Metrics collector (shared across middleware + dashboard router)
-    metrics = MetricsCollector(max_request_log=config.dashboard.max_request_log)
+    storage: MetricsStorage | None = None
+    if config.dashboard.enabled and config.dashboard.storage.enabled:
+        try:
+            storage = MetricsStorage(config.dashboard.storage.path)
+        except Exception:  # noqa: BLE001 — dashboard persistence is optional
+            logger.warning(
+                "failed to initialise dashboard storage at %s; continuing in-memory",
+                config.dashboard.storage.path,
+                exc_info=True,
+            )
+            storage = None
+    metrics = MetricsCollector(
+        max_request_log=config.dashboard.max_request_log,
+        storage=storage,
+        retain_days=config.dashboard.storage.retain_days,
+    )
 
     # Dashboard auth + rate limiter (public-deployment hardening).
     # dashboard.api_key is deliberately independent of server.api_key:

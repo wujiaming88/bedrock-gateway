@@ -35,15 +35,19 @@
   <section class="gauges">
     <div class="gauge-card">
       <canvas class="gauge" data-key="qps" width="200" height="200"></canvas>
+      <p class="panel-desc">Requests per second (last minute avg) / 每秒请求数（最近一分钟均值）</p>
     </div>
     <div class="gauge-card">
       <canvas class="gauge" data-key="success" width="200" height="200"></canvas>
+      <p class="panel-desc">Percentage of non-error responses (2xx/3xx) / 非错误响应占比（2xx/3xx）</p>
     </div>
     <div class="gauge-card">
       <canvas class="gauge" data-key="latency" width="200" height="200"></canvas>
+      <p class="panel-desc">95% of requests complete within this time / 95%的请求在此时间内完成</p>
     </div>
     <div class="gauge-card">
       <canvas class="gauge" data-key="tokens" width="200" height="200"></canvas>
+      <p class="panel-desc">Tokens consumed in the last 60 minutes / 最近 60 分钟消耗的 Token 数</p>
     </div>
   </section>
 
@@ -55,6 +59,7 @@
         <h2>MODEL DISTRIBUTION</h2>
       </header>
       <div class="panel-body">
+        <p class="panel-desc">Request count (top) and total tokens (bottom) per model / 各模型请求数量（上）与 Token 消耗（下）</p>
         <div class="chart-box chart-box-small">
           <canvas id="chart-models-pie"></canvas>
         </div>
@@ -76,6 +81,7 @@
         </div>
       </header>
       <div class="panel-body">
+        <p class="panel-desc">QPS (left axis) and latency percentiles in ms (right axis), per-minute granularity / QPS（左轴）与延迟百分位毫秒（右轴），分钟粒度</p>
         <div class="chart-box chart-box-large">
           <canvas id="chart-traffic"></canvas>
         </div>
@@ -93,6 +99,7 @@
         </div>
       </header>
       <div class="panel-body panel-body-scroll">
+        <p class="panel-desc">Latest API calls with status, latency and tokens / 最近的 API 调用记录（状态、延迟、Token）</p>
         <table class="req-table">
           <thead>
             <tr>
@@ -118,6 +125,7 @@
         <h2>ERRORS</h2>
       </header>
       <div class="panel-body panel-body-scroll">
+        <p class="panel-desc">Error breakdown by HTTP status code and error type / 按 HTTP 状态码与错误类型分类的统计</p>
         <div class="error-summary" id="error-summary">
           <div class="err-group">
             <div class="err-group-title">BY STATUS</div>

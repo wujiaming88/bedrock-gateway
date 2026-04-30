@@ -90,6 +90,14 @@ class RetryConfig:
 
 
 @dataclass
+class StorageConfig:
+    """Dashboard metrics persistence (SQLite) configuration."""
+    enabled: bool = True
+    path: str = "data/metrics.db"
+    retain_days: int = 7
+
+
+@dataclass
 class DashboardConfig:
     """Dashboard (metrics UI + API) configuration.
 
@@ -108,6 +116,7 @@ class DashboardConfig:
     localhost_only: bool | None = None
     rate_limit: int = 60
     max_request_log: int = 200
+    storage: StorageConfig = field(default_factory=StorageConfig)
 
     def __post_init__(self) -> None:
         if not self.api_key:
@@ -291,6 +300,12 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
     else:
         localhost_only = bool(lh_raw)
     dash_api_key_raw = dash_raw.get("api_key", None)
+    storage_raw = dash_raw.get("storage", {}) or {}
+    storage = StorageConfig(
+        enabled=bool(storage_raw.get("enabled", True)),
+        path=str(storage_raw.get("path", "data/metrics.db")),
+        retain_days=int(storage_raw.get("retain_days", 7)),
+    )
     dashboard = DashboardConfig(
         enabled=bool(dash_raw.get("enabled", True)),
         require_auth=bool(dash_raw.get("require_auth", True)),
@@ -298,6 +313,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         localhost_only=localhost_only,
         rate_limit=int(dash_raw.get("rate_limit", 60)),
         max_request_log=int(dash_raw.get("max_request_log", 200)),
+        storage=storage,
     )
 
     # Models
