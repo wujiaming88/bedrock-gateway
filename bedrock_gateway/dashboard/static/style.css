@@ -249,23 +249,60 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
-/* Gauges row                                                          */
+/* Dashboard grid — priority layers                                    */
 /* ------------------------------------------------------------------ */
-.gauges {
+.dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.layer {
+  display: flex;
+  flex-direction: column;
   gap: 14px;
 }
 
-/* When six gauges are rendered we want a 3-wide layout on roomy screens
- * so each row shows three at a time (first row: QPS / Success / P95;
- * second row: Tokens / TTFT / Tokens-per-second).  Below 1280px we fall
- * back to the 2-column responsive rule defined further down. */
-.gauges.gauges-row {
-  grid-template-columns: repeat(3, 1fr);
+/* Layer 3 — models (left) + system health (right) */
+.layer-3 {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(0, 1.4fr);
+  gap: 16px;
 }
 
-@media (max-width: 1280px) {
+/* Layer 4 — requests | errors | (sources + memory stacked) */
+.layer-4 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(260px, 0.9fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Gauges row (six gauges on a single strip)                           */
+/* ------------------------------------------------------------------ */
+.gauges {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 14px;
+}
+
+@media (max-width: 1500px) {
+  .gauges,
+  .gauges.gauges-row {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .gauges,
   .gauges.gauges-row {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -323,14 +360,6 @@ body {
   text-shadow: 0 0 10px rgba(255, 68, 102, 0.35);
 }
 
-.mini-tile-desc {
-  font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.42);
-  line-height: 1.35;
-  letter-spacing: 0.2px;
-  margin-top: auto;
-}
-
 @media (max-width: 960px) {
   .mini-tiles {
     grid-template-columns: repeat(2, 1fr);
@@ -345,10 +374,12 @@ body {
   );
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px 14px 30px 14px;
+  padding: 14px 14px 14px 14px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: 6px;
   min-height: 230px;
   position: relative;
   overflow: hidden;
@@ -357,6 +388,24 @@ body {
   transition: border-color 0.25s ease, transform 0.25s ease;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+}
+
+.gauge-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--text);
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: help;
+  margin-top: 2px;
+}
+
+.gauge-sublabel {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.5px;
 }
 
 .gauge-card:hover {
@@ -396,18 +445,12 @@ body {
   max-width: 100%;
   height: auto;
   display: block;
+  flex: 0 0 auto;
 }
 
 /* ------------------------------------------------------------------ */
-/* Main grid                                                           */
+/* Panels                                                              */
 /* ------------------------------------------------------------------ */
-.grid {
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(480px, 2fr);
-  grid-template-rows: minmax(280px, auto) minmax(280px, auto);
-  gap: 14px;
-}
-
 .panel {
   background: linear-gradient(
     135deg,
@@ -485,91 +528,10 @@ body {
   overflow: auto;
 }
 
-.panel-models {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.panel-traffic {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.panel-sources {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.panel-memory {
-  grid-column: 2;
-  grid-row: 2;
-}
-
-.panel-health {
-  grid-column: 1 / span 2;
-  grid-row: 3;
-}
-
-.panel-requests {
-  grid-column: 1 / span 2;
-  grid-row: 4;
-}
-
-.panel-errors {
-  grid-column: 1 / span 2;
-  grid-row: 5;
-}
-
-@media (min-width: 1280px) {
-  .grid {
-    grid-template-columns: minmax(320px, 1fr) minmax(480px, 2fr);
-    grid-template-rows:
-      minmax(300px, auto) minmax(220px, auto)
-      minmax(220px, auto) minmax(280px, auto)
-      minmax(260px, auto);
-  }
-}
-
-@media (min-width: 1600px) {
-  .grid {
-    grid-template-columns: minmax(320px, 1fr) minmax(520px, 2fr) minmax(340px, 1fr);
-    grid-template-rows: minmax(320px, auto) minmax(220px, auto) minmax(220px, auto) minmax(280px, auto);
-  }
-
-  .panel-models {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .panel-traffic {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .panel-errors {
-    grid-column: 3;
-    grid-row: 1 / span 2;
-  }
-
-  .panel-sources {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .panel-memory {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
-  .panel-health {
-    grid-column: 1 / span 3;
-    grid-row: 3;
-  }
-
-  .panel-requests {
-    grid-column: 1 / span 3;
-    grid-row: 4;
-  }
+/* Panels stretch to fill their layer cells by default */
+.layer-3 > .panel,
+.layer-4 > .panel {
+  min-height: 100%;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1047,49 +1009,75 @@ body {
   color: var(--text-mute);
 }
 
-/* Bilingual panel descriptions (EN / 中文) */
+/* Bilingual panel descriptions (EN on top, 中文 below) */
 .panel-desc {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
-  margin: 0 0 8px 0;
-  line-height: 1.4;
-  font-weight: 400;
-  letter-spacing: 0.2px;
+  margin: 0 0 10px 0;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
-.gauge-card .panel-desc {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 6px;
-  margin: 0;
-  text-align: center;
-  font-size: 10.5px;
-  line-height: 1.3;
+.panel-desc .desc-en {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.2px;
+  font-weight: 400;
+}
+
+.panel-desc .desc-cn {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.32);
+  letter-spacing: 0.2px;
+  font-weight: 400;
+}
+
+/* Inside mini-tiles the description sits below the value; align to bottom */
+.mini-tile .panel-desc {
+  margin: auto 0 0 0;
 }
 
 /* ------------------------------------------------------------------ */
 /* Responsive                                                          */
 /* ------------------------------------------------------------------ */
+
+/* Medium screens — layer-4 collapses to two columns */
+@media (max-width: 1400px) {
+  .layer-4 {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+
+  .layer-4 .panel-stack {
+    grid-column: 1 / span 2;
+    flex-direction: row;
+  }
+
+  .layer-4 .panel-stack > .panel {
+    flex: 1 1 0;
+  }
+}
+
+@media (max-width: 1100px) {
+  .layer-3 {
+    grid-template-columns: 1fr;
+  }
+
+  .layer-4,
+  .layer-4 .panel-stack {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .layer-4 .panel-stack {
+    grid-column: 1;
+  }
+}
+
 @media (max-width: 960px) {
   .gauges {
     grid-template-columns: repeat(2, 1fr);
-  }
-
-  .grid {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-  }
-
-  .panel-models,
-  .panel-traffic,
-  .panel-sources,
-  .panel-memory,
-  .panel-health,
-  .panel-requests,
-  .panel-errors {
-    grid-column: 1;
-    grid-row: auto;
   }
 
   .error-summary {

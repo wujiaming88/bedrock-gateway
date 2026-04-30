@@ -31,186 +31,237 @@
     </div>
   </header>
 
-  <!-- Gauges (two rows of three) -->
-  <section class="gauges gauges-row">
-    <div class="gauge-card">
-      <canvas class="gauge" data-key="qps" width="200" height="200"></canvas>
-      <p class="panel-desc">Requests per second (last minute avg) / 每秒请求数（最近一分钟均值）</p>
-    </div>
-    <div class="gauge-card">
-      <canvas class="gauge" data-key="success" width="200" height="200"></canvas>
-      <p class="panel-desc">Percentage of non-error responses (2xx/3xx) / 非错误响应占比（2xx/3xx）</p>
-    </div>
-    <div class="gauge-card">
-      <canvas class="gauge" data-key="latency" width="200" height="200"></canvas>
-      <p class="panel-desc">95% of requests complete within this time / 95%的请求在此时间内完成</p>
-    </div>
-    <div class="gauge-card">
-      <canvas class="gauge" data-key="tokens" width="200" height="200"></canvas>
-      <p class="panel-desc">Tokens consumed in the last 60 minutes / 最近 60 分钟消耗的 Token 数</p>
-    </div>
-    <div class="gauge-card">
-      <canvas class="gauge" data-key="ttft" width="200" height="200"></canvas>
-      <p class="panel-desc">Time to first token for streaming requests / 流式请求首 Token 延迟</p>
-    </div>
-    <div class="gauge-card">
-      <canvas class="gauge" data-key="tps" width="200" height="200"></canvas>
-      <p class="panel-desc">Output tokens per second (generation speed) / 输出吞吐（生成速度 tok/s）</p>
-    </div>
-  </section>
-
-  <!-- Secondary metric tiles (retry/timeout rates) -->
-  <section class="mini-tiles">
-    <div class="mini-tile">
-      <div class="mini-tile-label">RETRY RATE</div>
-      <div class="mini-tile-value" id="tile-retry">—</div>
-      <div class="mini-tile-desc">Requests that required internal retry / 触发内部重试的请求占比</div>
-    </div>
-    <div class="mini-tile">
-      <div class="mini-tile-label">TIMEOUT RATE</div>
-      <div class="mini-tile-value" id="tile-timeout">—</div>
-      <div class="mini-tile-desc">Requests that timed out / 超时请求占比</div>
-    </div>
-    <div class="mini-tile">
-      <div class="mini-tile-label">P50 LATENCY</div>
-      <div class="mini-tile-value" id="tile-p50">—</div>
-      <div class="mini-tile-desc">Median latency (rolling 5m window) / 中位数延迟（最近 5 分钟）</div>
-    </div>
-    <div class="mini-tile">
-      <div class="mini-tile-label">P99 LATENCY</div>
-      <div class="mini-tile-value" id="tile-p99">—</div>
-      <div class="mini-tile-desc">99th-percentile latency (rolling 5m) / 99 分位延迟（最近 5 分钟）</div>
-    </div>
-  </section>
-
-  <!-- Main grid -->
-  <main class="grid">
-    <!-- Left column: models -->
-    <section class="panel panel-models">
-      <header class="panel-head">
-        <h2>MODEL DISTRIBUTION</h2>
-      </header>
-      <div class="panel-body">
-        <p class="panel-desc">Request count (top) and total tokens (bottom) per model / 各模型请求数量（上）与 Token 消耗（下）</p>
-        <div class="chart-box chart-box-small">
-          <canvas id="chart-models-pie"></canvas>
+  <div class="dashboard-grid">
+    <!-- ============================================================ -->
+    <!-- LAYER 1 — Core health: at-a-glance "is anything wrong?"       -->
+    <!-- ============================================================ -->
+    <section class="layer layer-1">
+      <div class="gauges gauges-row">
+        <div class="gauge-card">
+          <canvas class="gauge" data-key="qps" width="200" height="200"></canvas>
+          <div class="gauge-label" title="每秒请求数（最近一分钟均值）">QPS</div>
+          <div class="gauge-sublabel">req/s · 1m avg</div>
         </div>
-        <div class="chart-box chart-box-small">
-          <canvas id="chart-models-tokens"></canvas>
+        <div class="gauge-card">
+          <canvas class="gauge" data-key="success" width="200" height="200"></canvas>
+          <div class="gauge-label" title="非错误响应占比（2xx/3xx）">SUCCESS</div>
+          <div class="gauge-sublabel">2xx/3xx share</div>
         </div>
-        <div class="models-legend" id="models-legend"></div>
-      </div>
-    </section>
-
-    <!-- Right column: traffic chart -->
-    <section class="panel panel-traffic">
-      <header class="panel-head">
-        <h2>TRAFFIC &amp; LATENCY</h2>
-        <div class="window-switch" id="window-switch">
-          <button type="button" class="win-btn active" data-window="1h">1H</button>
-          <button type="button" class="win-btn" data-window="6h">6H</button>
-          <button type="button" class="win-btn" data-window="24h">24H</button>
+        <div class="gauge-card">
+          <canvas class="gauge" data-key="latency" width="200" height="200"></canvas>
+          <div class="gauge-label" title="95% 的请求在此时间内完成">P95 LATENCY</div>
+          <div class="gauge-sublabel">95th percentile</div>
         </div>
-      </header>
-      <div class="panel-body">
-        <p class="panel-desc">QPS (bars) with P50 / P95 / P99 latency overlays in ms / QPS（柱状）叠加 P50/P95/P99 延迟毫秒，分钟粒度</p>
-        <div class="chart-box chart-box-large">
-          <canvas id="chart-traffic"></canvas>
+        <div class="gauge-card">
+          <canvas class="gauge" data-key="ttft" width="200" height="200"></canvas>
+          <div class="gauge-label" title="流式请求首 Token 延迟">TTFT</div>
+          <div class="gauge-sublabel">time to first token</div>
+        </div>
+        <div class="gauge-card">
+          <canvas class="gauge" data-key="tps" width="200" height="200"></canvas>
+          <div class="gauge-label" title="输出吞吐（生成速度 tok/s）">TOKENS / SEC</div>
+          <div class="gauge-sublabel">output generation</div>
+        </div>
+        <div class="gauge-card">
+          <canvas class="gauge" data-key="tokens" width="200" height="200"></canvas>
+          <div class="gauge-label" title="最近 60 分钟消耗的 Token 数">TOKENS / HOUR</div>
+          <div class="gauge-sublabel">last 60 min total</div>
         </div>
       </div>
-    </section>
 
-    <!-- Request sources (Top IPs) -->
-    <section class="panel panel-sources">
-      <header class="panel-head">
-        <h2>REQUEST SOURCES</h2>
-      </header>
-      <div class="panel-body">
-        <p class="panel-desc">Top request sources by IP (last octet masked) / 请求来源 Top 10（按 IP，末段脱敏）</p>
-        <ul class="sources-list" id="sources-list">
-          <li class="muted">no traffic yet</li>
-        </ul>
-      </div>
-    </section>
-
-    <!-- Process memory trend -->
-    <section class="panel panel-memory">
-      <header class="panel-head">
-        <h2>PROCESS MEMORY</h2>
-      </header>
-      <div class="panel-body">
-        <p class="panel-desc">Process RSS memory over time / 进程内存(RSS)随时间变化趋势</p>
-        <div class="chart-box chart-box-small">
-          <canvas id="chart-memory"></canvas>
-        </div>
-      </div>
-    </section>
-
-    <!-- System health (gateway self-health) -->
-    <section class="panel panel-health">
-      <header class="panel-head">
-        <h2>SYSTEM HEALTH</h2>
-      </header>
-      <div class="panel-body">
-        <p class="panel-desc">Gateway health indicators / 网关自身健康指标</p>
-        <ul class="health-list" id="health-list">
-          <li class="muted">loading…</li>
-        </ul>
-      </div>
-    </section>
-
-    <!-- Bottom left: request log -->
-    <section class="panel panel-requests">
-      <header class="panel-head">
-        <h2>RECENT REQUESTS</h2>
-        <div class="filter-switch" id="filter-switch">
-          <button type="button" class="fil-btn active" data-filter="all">ALL</button>
-          <button type="button" class="fil-btn" data-filter="success">OK</button>
-          <button type="button" class="fil-btn" data-filter="error">ERR</button>
-        </div>
-      </header>
-      <div class="panel-body panel-body-scroll">
-        <p class="panel-desc">Latest API calls with status, latency and tokens / 最近的 API 调用记录（状态、延迟、Token）</p>
-        <table class="req-table">
-          <thead>
-            <tr>
-              <th>TIME</th>
-              <th>METHOD</th>
-              <th>PATH</th>
-              <th>MODEL</th>
-              <th class="num">STATUS</th>
-              <th class="num">LATENCY</th>
-              <th class="num">TOKENS</th>
-            </tr>
-          </thead>
-          <tbody id="req-body">
-            <tr><td colspan="7" class="muted">waiting for data…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- Bottom right: errors -->
-    <section class="panel panel-errors">
-      <header class="panel-head">
-        <h2>ERRORS</h2>
-      </header>
-      <div class="panel-body panel-body-scroll">
-        <p class="panel-desc">Error breakdown by HTTP status code and error type / 按 HTTP 状态码与错误类型分类的统计</p>
-        <div class="error-summary" id="error-summary">
-          <div class="err-group">
-            <div class="err-group-title">BY STATUS</div>
-            <div class="err-chips" id="err-by-status"></div>
-          </div>
-          <div class="err-group">
-            <div class="err-group-title">BY TYPE</div>
-            <div class="err-chips" id="err-by-type"></div>
+      <div class="mini-tiles">
+        <div class="mini-tile">
+          <div class="mini-tile-label">P50 LATENCY</div>
+          <div class="mini-tile-value" id="tile-p50">—</div>
+          <div class="panel-desc">
+            <span class="desc-en">Median latency (rolling 5m window)</span>
+            <span class="desc-cn">中位数延迟（最近 5 分钟）</span>
           </div>
         </div>
-        <ul class="err-list" id="err-list"></ul>
+        <div class="mini-tile">
+          <div class="mini-tile-label">P99 LATENCY</div>
+          <div class="mini-tile-value" id="tile-p99">—</div>
+          <div class="panel-desc">
+            <span class="desc-en">99th-percentile latency (rolling 5m)</span>
+            <span class="desc-cn">99 分位延迟（最近 5 分钟）</span>
+          </div>
+        </div>
+        <div class="mini-tile">
+          <div class="mini-tile-label">RETRY RATE</div>
+          <div class="mini-tile-value" id="tile-retry">—</div>
+          <div class="panel-desc">
+            <span class="desc-en">Requests that required internal retry</span>
+            <span class="desc-cn">触发内部重试的请求占比</span>
+          </div>
+        </div>
+        <div class="mini-tile">
+          <div class="mini-tile-label">TIMEOUT RATE</div>
+          <div class="mini-tile-value" id="tile-timeout">—</div>
+          <div class="panel-desc">
+            <span class="desc-en">Requests that timed out</span>
+            <span class="desc-cn">超时请求占比</span>
+          </div>
+        </div>
       </div>
     </section>
-  </main>
+
+    <!-- ============================================================ -->
+    <!-- LAYER 2 — Trend: what's changing over time                    -->
+    <!-- ============================================================ -->
+    <section class="layer layer-2">
+      <section class="panel panel-traffic">
+        <header class="panel-head">
+          <h2>TRAFFIC &amp; LATENCY</h2>
+          <div class="window-switch" id="window-switch">
+            <button type="button" class="win-btn active" data-window="1h">1H</button>
+            <button type="button" class="win-btn" data-window="6h">6H</button>
+            <button type="button" class="win-btn" data-window="24h">24H</button>
+          </div>
+        </header>
+        <div class="panel-body">
+          <div class="panel-desc">
+            <span class="desc-en">QPS (bars) with P50 / P95 / P99 latency overlays in ms, per-minute granularity</span>
+            <span class="desc-cn">QPS（柱状）叠加 P50 / P95 / P99 延迟毫秒，分钟粒度</span>
+          </div>
+          <div class="chart-box chart-box-large">
+            <canvas id="chart-traffic"></canvas>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- LAYER 3 — Context: model distribution + infra health          -->
+    <!-- ============================================================ -->
+    <section class="layer layer-3">
+      <section class="panel panel-models">
+        <header class="panel-head">
+          <h2>MODEL DISTRIBUTION</h2>
+        </header>
+        <div class="panel-body">
+          <div class="panel-desc">
+            <span class="desc-en">Request count (top) and total tokens (bottom) per model</span>
+            <span class="desc-cn">各模型请求数量（上）与 Token 消耗（下）</span>
+          </div>
+          <div class="chart-box chart-box-small">
+            <canvas id="chart-models-pie"></canvas>
+          </div>
+          <div class="chart-box chart-box-small">
+            <canvas id="chart-models-tokens"></canvas>
+          </div>
+          <div class="models-legend" id="models-legend"></div>
+        </div>
+      </section>
+
+      <section class="panel panel-health">
+        <header class="panel-head">
+          <h2>SYSTEM HEALTH</h2>
+        </header>
+        <div class="panel-body">
+          <div class="panel-desc">
+            <span class="desc-en">Gateway self-health indicators</span>
+            <span class="desc-cn">网关自身健康指标</span>
+          </div>
+          <ul class="health-list" id="health-list">
+            <li class="muted">loading…</li>
+          </ul>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- LAYER 4 — Details: drill-in when investigating                -->
+    <!-- ============================================================ -->
+    <section class="layer layer-4">
+      <section class="panel panel-requests">
+        <header class="panel-head">
+          <h2>RECENT REQUESTS</h2>
+          <div class="filter-switch" id="filter-switch">
+            <button type="button" class="fil-btn active" data-filter="all">ALL</button>
+            <button type="button" class="fil-btn" data-filter="success">OK</button>
+            <button type="button" class="fil-btn" data-filter="error">ERR</button>
+          </div>
+        </header>
+        <div class="panel-body panel-body-scroll">
+          <div class="panel-desc">
+            <span class="desc-en">Latest API calls with status, latency and tokens</span>
+            <span class="desc-cn">最近的 API 调用记录（状态、延迟、Token）</span>
+          </div>
+          <table class="req-table">
+            <thead>
+              <tr>
+                <th>TIME</th>
+                <th>METHOD</th>
+                <th>PATH</th>
+                <th>MODEL</th>
+                <th class="num">STATUS</th>
+                <th class="num">LATENCY</th>
+                <th class="num">TOKENS</th>
+              </tr>
+            </thead>
+            <tbody id="req-body">
+              <tr><td colspan="7" class="muted">waiting for data…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel panel-errors">
+        <header class="panel-head">
+          <h2>ERRORS</h2>
+        </header>
+        <div class="panel-body panel-body-scroll">
+          <div class="panel-desc">
+            <span class="desc-en">Error breakdown by HTTP status code and error type</span>
+            <span class="desc-cn">按 HTTP 状态码与错误类型分类的统计</span>
+          </div>
+          <div class="error-summary" id="error-summary">
+            <div class="err-group">
+              <div class="err-group-title">BY STATUS</div>
+              <div class="err-chips" id="err-by-status"></div>
+            </div>
+            <div class="err-group">
+              <div class="err-group-title">BY TYPE</div>
+              <div class="err-chips" id="err-by-type"></div>
+            </div>
+          </div>
+          <ul class="err-list" id="err-list"></ul>
+        </div>
+      </section>
+
+      <div class="panel-stack">
+        <section class="panel panel-sources">
+          <header class="panel-head">
+            <h2>REQUEST SOURCES</h2>
+          </header>
+          <div class="panel-body">
+            <div class="panel-desc">
+              <span class="desc-en">Top request sources by IP (last octet masked)</span>
+              <span class="desc-cn">请求来源 Top 10（按 IP，末段脱敏）</span>
+            </div>
+            <ul class="sources-list" id="sources-list">
+              <li class="muted">no traffic yet</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="panel panel-memory">
+          <header class="panel-head">
+            <h2>PROCESS MEMORY</h2>
+          </header>
+          <div class="panel-body">
+            <div class="panel-desc">
+              <span class="desc-en">Process RSS memory over time</span>
+              <span class="desc-cn">进程内存 RSS 随时间变化趋势</span>
+            </div>
+            <div class="chart-box chart-box-small">
+              <canvas id="chart-memory"></canvas>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
 
   <footer class="bottombar">
     <span id="last-updated">— last update: —</span>
