@@ -11,6 +11,49 @@ from dataclasses import dataclass
 
 from .config import GatewayConfig, ModelEntry, _MODEL_ALIASES
 
+# ---------------------------------------------------------------------------
+# Valid Bedrock model ID prefixes — anything starting with one of these is
+# considered a plausible Bedrock model ID and allowed to pass through.
+# ---------------------------------------------------------------------------
+
+_BEDROCK_ID_PREFIXES: tuple[str, ...] = (
+    # Cross-region inference prefixes
+    "us.",
+    "eu.",
+    "ap.",
+    "me.",
+    "sa.",
+    "af.",
+    # Vendor prefixes
+    "anthropic.",
+    "amazon.",
+    "meta.",
+    "mistral.",
+    "cohere.",
+    "ai21.",
+    "stability.",
+)
+
+
+def _looks_like_bedrock_id(model: str) -> bool:
+    """Return True if *model* starts with a known Bedrock model ID prefix."""
+    return model.startswith(_BEDROCK_ID_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class UnknownModelError(Exception):
+    """Raised when a model alias cannot be resolved to a valid Bedrock ID."""
+
+    def __init__(self, model: str) -> None:
+        self.model = model
+        super().__init__(
+            f"Unknown model: {model}. Use /v1/models to list available models."
+        )
+
 
 @dataclass
 class ModelInfo:
@@ -43,7 +86,14 @@ class ModelRegistry:
         Resolution order:
         1. Exact match in registered models
         2. Lookup in common alias table → re-resolve canonical name
-        3. Pass-through (treat alias as raw Bedrock model ID)
+        3. Validate format — if it looks like a Bedrock model ID, pass
+           through; otherwise raise :exc:`UnknownModelError`.
+
+        Raises
+        ------
+        UnknownModelError
+            If *alias* is not registered, not a known alias, and does
+            not match a valid Bedrock model ID format.
         """
         entry = self._models.get(alias)
         if entry:
@@ -55,6 +105,10 @@ class ModelRegistry:
             entry = self._models.get(canonical)
             if entry:
                 return entry.bedrock_id
+
+        # Validate: only pass through if it looks like a real Bedrock ID
+        if not _looks_like_bedrock_id(alias):
+            raise UnknownModelError(alias)
 
         return alias
 

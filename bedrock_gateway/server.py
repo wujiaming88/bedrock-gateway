@@ -51,7 +51,7 @@ from .dashboard import (
     metrics_middleware_factory,
 )
 from .dashboard.storage import MetricsStorage
-from .models import ModelRegistry
+from .models import ModelRegistry, UnknownModelError
 
 logger = logging.getLogger("bedrock_gateway")
 
@@ -303,7 +303,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             return _oai_error(400, "Invalid JSON body")
 
         raw_model = body.get("model", "claude-haiku")
-        model = registry.resolve(raw_model)
+        try:
+            model = registry.resolve(raw_model)
+        except UnknownModelError as exc:
+            return _oai_error(400, str(exc), "invalid_request_error")
         stream = body.get("stream", False)
 
         logger.info(
@@ -400,7 +403,19 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
 
         raw_model = body.get("model", "claude-haiku")
-        model = registry.resolve(raw_model)
+        try:
+            model = registry.resolve(raw_model)
+        except UnknownModelError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": str(exc),
+                    },
+                },
+            )
         stream = body.get("stream", False)
 
         # max_tokens is required by the Anthropic API spec
