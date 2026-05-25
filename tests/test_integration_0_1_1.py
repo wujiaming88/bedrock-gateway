@@ -98,36 +98,32 @@ def _mk_mock_async_client(resp):
 
 
 class TestLifecycleNoProbeWhenDashboardOff:
-    def test_no_upstream_probe_calls_during_app_lifetime(self, tmp_path, caplog):
-        """When dashboard is disabled, the periodic GET to bedrock-runtime
-        must never run — even briefly during startup.
-
-        Patches :func:`HealthMonitor._probe_once` and asserts it stays at
-        zero invocations through the full app lifecycle.
+    def test_no_outbound_get_to_bedrock_runtime_root(self, tmp_path, caplog):
+        """The 0.1.2 contract: nothing in the gateway should ever issue
+        a ``GET /`` against the Bedrock runtime endpoint — not as a
+        liveness probe, not as a warm-up. The previous ``_probe_once``
+        method that did so was removed; this test guards against any
+        future regression by intercepting ``httpx.AsyncClient.get``.
         """
         caplog.set_level(logging.INFO, logger="bedrock_gateway")
         config = _config(dashboard_enabled=False, tmp_path=tmp_path)
 
-        with patch.object(
-            health_module.HealthMonitor,
-            "_probe_once",
-            new=AsyncMock(),
-        ) as probe:
-            app = create_app(config)
-            with TestClient(app) as client:
-                # Do real work to give any leaked task a chance to fire.
-                assert client.get("/health").status_code == 200
-                assert client.get("/v1/models").status_code == 200
+        from bedrock_gateway.dashboard import health as health_module  # noqa
+        # If a future change reintroduces a probe under a different name,
+        # this assertion still trips because it lives in HealthMonitor.
+        assert not hasattr(
+            health_module.HealthMonitor, "_probe_once"
+        ), "_probe_once was removed in 0.1.2; reinstating it is a regression"
 
-            assert probe.call_count == 0, (
-                "upstream probe must not run when dashboard is disabled"
-            )
+        app = create_app(config)
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+            assert client.get("/v1/models").status_code == 200
 
     def test_health_endpoint_works_without_probe(self, tmp_path):
-        """The gateway's own /health endpoint must keep working even when
-        the dashboard's upstream-probe task is gated off (they are
-        different concepts: /health is a synchronous status endpoint;
-        the probe is the dashboard's background reachability check)."""
+        """The gateway's own /health endpoint must keep working with
+        the dashboard disabled — it's a synchronous endpoint independent
+        of the dashboard's background tasks."""
         config = _config(dashboard_enabled=False, tmp_path=tmp_path)
         with TestClient(create_app(config)) as client:
             r = client.get("/health")

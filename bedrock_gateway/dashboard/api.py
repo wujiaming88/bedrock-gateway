@@ -447,10 +447,7 @@ def build_dashboard_router(
                 "auth": {"mode": "-", "status": "unknown", "expires_at": None},
                 "consecutive_errors": collector.consecutive_errors(),
                 "event_loop_lag_ms": 0.0,
-                "upstream": {
-                    "reachable": None, "latency_ms": None,
-                    "last_check": None, "last_success": None,
-                },
+                "upstream": collector.upstream_health(),
             }
         else:
             payload = monitor.snapshot(metrics=collector)

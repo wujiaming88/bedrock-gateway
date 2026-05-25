@@ -135,6 +135,16 @@ def _percentile(values: list[float], p: float) -> float:
     return s[f] + (s[c] - s[f]) * (k - f)
 
 
+def _iso_or_none(ts: float | None) -> str | None:
+    """Format a unix timestamp as ISO-8601 UTC; return None on bad input."""
+    if ts is None:
+        return None
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _read_rss_kb() -> int | None:
     """Best-effort read of the current process RSS (in KB) from /proc."""
     try:
@@ -215,6 +225,14 @@ class MetricsCollector:
         # Consecutive 5xx (upstream) errors — resets on any 2xx/3xx.
         # Surfaced by the SYSTEM HEALTH panel.
         self._consecutive_errors: int = 0
+
+        # Timestamps used by ``upstream_health`` to derive upstream status
+        # from real traffic instead of an active probe. ``last_success`` is
+        # the wall-clock of the most recent 2xx/3xx; ``last_auth_failure``
+        # tracks 401/403 separately because they signal credential breakage
+        # rather than upstream outage.
+        self._last_success_ts: float | None = None
+        self._last_auth_failure_ts: float | None = None
 
         self._storage = storage
         self._retain_days = max(1, int(retain_days))
@@ -386,6 +404,12 @@ class MetricsCollector:
                 self._consecutive_errors += 1
             elif status < 400:
                 self._consecutive_errors = 0
+                self._last_success_ts = now
+            # 401/403 from upstream means our credentials are broken;
+            # tracked separately so ``upstream_health`` can flag it as
+            # an auth failure rather than a generic outage.
+            if status in (401, 403):
+                self._last_auth_failure_ts = now
 
             self._recent.append(rec)
             if is_err:
@@ -796,6 +820,68 @@ class MetricsCollector:
         """Current run of consecutive 5xx responses (resets on any 2xx/3xx)."""
         with self._lock:
             return self._consecutive_errors
+
+    def upstream_health(
+        self, *, window_minutes: int = _GAUGE_WINDOW_MINUTES
+    ) -> dict[str, Any]:
+        """
+        Derive upstream health from recent real traffic.
+
+        Bands (over the last *window_minutes* of completed requests):
+          * no traffic                   → ``unknown``
+          * any 401/403 in the window    → ``auth_failed``
+          * success rate ≥ 99 %          → ``healthy``
+          * success rate ≥ 80 %          → ``degraded``
+          * success rate <  80 %         → ``down``
+
+        Returns ``{status, success_rate, total, last_success}``.
+        ``success_rate`` is None when there is no traffic.
+        """
+        window_minutes = max(1, int(window_minutes))
+        now = time.time()
+        now_minute = int(now // _BUCKET_SECONDS) * _BUCKET_SECONDS
+        window_start = now_minute - (window_minutes - 1) * _BUCKET_SECONDS
+
+        with self._lock:
+            total = 0
+            success = 0
+            error = 0
+            for i in range(window_minutes):
+                b = self._buckets.get(now_minute - i * _BUCKET_SECONDS)
+                if b is None:
+                    continue
+                total += b.total
+                success += b.success
+                error += b.error
+            last_success_ts = self._last_success_ts
+            last_auth_ts = self._last_auth_failure_ts
+
+        if total == 0:
+            status = "unknown"
+            rate: float | None = None
+        elif (
+            last_auth_ts is not None
+            and last_auth_ts >= window_start
+        ):
+            status = "auth_failed"
+            rate = (success / total * 100.0) if total else None
+        else:
+            rate = (success / total * 100.0) if total else 0.0
+            if rate >= 99.0:
+                status = "healthy"
+            elif rate >= 80.0:
+                status = "degraded"
+            else:
+                status = "down"
+
+        return {
+            "status": status,
+            "success_rate": (round(rate, 2) if rate is not None else None),
+            "total": total,
+            "errors": error,
+            "window_minutes": window_minutes,
+            "last_success": _iso_or_none(last_success_ts),
+        }
 
     def sources_stats(self, *, top_n: int = 10) -> dict[str, Any]:
         """Return the top-*top_n* client IPs by request count."""

@@ -1201,27 +1201,37 @@
     var lagTone = lag < 10 ? "h-ok" : lag < 50 ? "h-warn" : "h-bad";
     addHealthRow(el, "Event Loop Lag", lag.toFixed(1) + " ms", lagTone);
 
-    // Upstream reachability
+    // Upstream health — derived from request metrics, no active probe.
     var ups = data.upstream || {};
-    var reach = safeGet(ups, "reachable", null);
-    var lat = safeGet(ups, "latency_ms", null);
-    var lastCheck = safeGet(ups, "last_check", null);
+    var status = safeGet(ups, "status", "unknown");
+    var rate = safeGet(ups, "success_rate", null);
+    var total = safeGet(ups, "total", 0);
+    var window = safeGet(ups, "window_minutes", 0);
     var lastSuccess = safeGet(ups, "last_success", null);
     var upsTone, upsVal, upsSub;
-    if (reach === null) {
-      upsTone = "";
-      upsVal = "probing…";
-      upsSub = null;
-    } else if (reach) {
+    if (status === "healthy") {
       upsTone = "h-ok";
-      upsVal = "reachable (" + (lat !== null ? Math.round(lat) + " ms" : "—") + ")";
-      upsSub = lastCheck ? "last check " + formatAgeSeconds(lastCheck) : null;
-    } else {
+      upsVal = "healthy (" + rate.toFixed(1) + "%)";
+      upsSub = total + " req in last " + window + "m";
+    } else if (status === "degraded") {
+      upsTone = "h-warn";
+      upsVal = "degraded (" + rate.toFixed(1) + "%)";
+      upsSub = total + " req in last " + window + "m";
+    } else if (status === "down") {
       upsTone = "h-bad";
-      upsVal = "unreachable";
+      upsVal = "down (" + rate.toFixed(1) + "%)";
+      upsSub = total + " req in last " + window + "m";
+    } else if (status === "auth_failed") {
+      upsTone = "h-bad";
+      upsVal = "auth failed";
+      upsSub = "401/403 from upstream — check credentials";
+    } else {
+      // unknown — no traffic in the window
+      upsTone = "";
+      upsVal = "no traffic";
       upsSub = lastSuccess
-        ? "last seen " + formatAgeSeconds(lastSuccess)
-        : "never seen";
+        ? "last success " + formatAgeSeconds(lastSuccess)
+        : "no requests yet";
     }
     addHealthRow(el, "Upstream", upsVal, upsTone, upsSub);
   }

@@ -12,9 +12,17 @@ Indicators:
   * auth               — auth-mode status + optional expiry (iam_role/profile)
   * consecutive_errors — pulled from :class:`MetricsCollector`
   * event_loop_lag_ms  — asyncio scheduling lag (staleness of the loop)
-  * upstream           — periodic reachability probe against bedrock-runtime
+  * upstream           — derived from real traffic statistics in
+                         :class:`MetricsCollector` (no active probe)
 
-The background tasks (event-loop-lag and upstream-probe) are started via
+Upstream health used to be sampled by an active GET probe against
+``bedrock-runtime.<region>.amazonaws.com/`` every 30 s. Bedrock has no
+root resource, so the probe always returned 404 — useful only as a TCP
+liveness check, but it polluted logs and couldn't distinguish credential
+failure / throttling / model outage from "AWS is up". It is gone in
+0.1.2; upstream status is now derived from actual request outcomes.
+
+The remaining background task (event-loop-lag) is started via
 :meth:`HealthMonitor.start` during the app's startup event and cancelled
 via :meth:`HealthMonitor.stop` on shutdown.
 """
@@ -28,27 +36,14 @@ import resource
 import threading
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any
-
-import httpx
 
 logger = logging.getLogger("bedrock_gateway.dashboard.health")
 
 
 _EVENT_LOOP_SAMPLE_INTERVAL_S = 1.0
 _EVENT_LOOP_SLEEP_S = 0.1
-_UPSTREAM_PROBE_INTERVAL_S = 30.0
-_UPSTREAM_PROBE_TIMEOUT_S = 5.0
 _AUTH_EXPIRING_SOON_S = 15 * 60
-
-
-@dataclass
-class _UpstreamState:
-    reachable: bool | None = None
-    latency_ms: float | None = None
-    last_check: float | None = None
-    last_success: float | None = None
 
 
 class HealthMonitor:
@@ -77,10 +72,6 @@ class HealthMonitor:
 
         self._event_loop_lag_ms: float = 0.0
 
-        self._upstream = _UpstreamState()
-        self._upstream_url = (
-            f"https://bedrock-runtime.{region}.amazonaws.com/"
-        )
         self._region = region
         self._auth_mode = auth_mode
         self._auth_provider = auth_provider
@@ -126,7 +117,7 @@ class HealthMonitor:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Launch the event-loop-lag + upstream-probe background tasks.
+        """Launch the event-loop-lag background task.
 
         Safe to call multiple times; no-op if already running.
         """
@@ -140,7 +131,6 @@ class HealthMonitor:
             return
         self._stopped = asyncio.Event()
         self._tasks.append(loop.create_task(self._event_loop_lag_task()))
-        self._tasks.append(loop.create_task(self._upstream_probe_task()))
 
     async def stop(self) -> None:
         self._stopped.set()
@@ -181,35 +171,6 @@ class HealthMonitor:
                 except asyncio.CancelledError:
                     return
 
-    async def _upstream_probe_task(self) -> None:
-        """Probe the Bedrock runtime endpoint every 30s."""
-        while not self._stopped.is_set():
-            await self._probe_once()
-            try:
-                await asyncio.sleep(_UPSTREAM_PROBE_INTERVAL_S)
-            except asyncio.CancelledError:
-                return
-
-    async def _probe_once(self) -> None:
-        now = time.time()
-        t0 = time.perf_counter()
-        reachable = False
-        try:
-            async with httpx.AsyncClient(timeout=_UPSTREAM_PROBE_TIMEOUT_S) as c:
-                # A GET without auth will get a 403/400 — that's fine; we
-                # only care that TCP+TLS reached the upstream.
-                resp = await c.get(self._upstream_url)
-                reachable = resp.status_code < 600
-        except Exception:  # noqa: BLE001 — probe never raises
-            reachable = False
-        latency_ms = (time.perf_counter() - t0) * 1000.0
-        with self._lock:
-            self._upstream.reachable = reachable
-            self._upstream.latency_ms = latency_ms
-            self._upstream.last_check = now
-            if reachable:
-                self._upstream.last_success = now
-
     # ------------------------------------------------------------------
     # Snapshot / introspection
     # ------------------------------------------------------------------
@@ -218,8 +179,10 @@ class HealthMonitor:
         """
         Return a dashboard-friendly dict of all health indicators.
 
-        *metrics* is an optional :class:`MetricsCollector`; when supplied,
-        ``consecutive_errors`` is pulled from it.
+        *metrics* is an optional :class:`MetricsCollector`. When supplied,
+        ``consecutive_errors`` and the ``upstream`` section are derived
+        from real request traffic (see :meth:`MetricsCollector.upstream_health`).
+        Without it, ``upstream.status`` falls back to ``unknown``.
         """
         fd_info = _read_fd_info()
         auth = self._auth_snapshot()
@@ -228,19 +191,27 @@ class HealthMonitor:
             up_active = self._upstream_active
             up_total = self._upstream_total
             lag_ms = self._event_loop_lag_ms
-            up = _UpstreamState(
-                reachable=self._upstream.reachable,
-                latency_ms=self._upstream.latency_ms,
-                last_check=self._upstream.last_check,
-                last_success=self._upstream.last_success,
-            )
 
         consecutive_errors = 0
-        if metrics is not None and hasattr(metrics, "consecutive_errors"):
-            try:
-                consecutive_errors = int(metrics.consecutive_errors())
-            except Exception:  # noqa: BLE001 — never fail a snapshot on metrics
-                consecutive_errors = 0
+        upstream: dict[str, Any] = {
+            "status": "unknown",
+            "success_rate": None,
+            "total": 0,
+            "errors": 0,
+            "window_minutes": 0,
+            "last_success": None,
+        }
+        if metrics is not None:
+            if hasattr(metrics, "consecutive_errors"):
+                try:
+                    consecutive_errors = int(metrics.consecutive_errors())
+                except Exception:  # noqa: BLE001 — never fail a snapshot on metrics
+                    consecutive_errors = 0
+            if hasattr(metrics, "upstream_health"):
+                try:
+                    upstream = metrics.upstream_health()
+                except Exception:  # noqa: BLE001 — same defensive principle
+                    pass
 
         return {
             "active_connections": active,
@@ -256,14 +227,7 @@ class HealthMonitor:
             "auth": auth,
             "consecutive_errors": consecutive_errors,
             "event_loop_lag_ms": round(lag_ms, 2),
-            "upstream": {
-                "reachable": up.reachable,
-                "latency_ms": (
-                    round(up.latency_ms, 2) if up.latency_ms is not None else None
-                ),
-                "last_check": _iso(up.last_check),
-                "last_success": _iso(up.last_success),
-            },
+            "upstream": upstream,
         }
 
     # ------------------------------------------------------------------

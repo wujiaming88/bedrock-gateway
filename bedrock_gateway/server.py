@@ -203,12 +203,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     app.state.dashboard_auth = dashboard_auth
     app.state.dashboard_rate_limiter = dashboard_rate_limiter
 
-    # Start/stop background health tasks with the app lifecycle.
-    # Only run them when the dashboard is enabled — they exist solely to
-    # populate dashboard snapshots (event-loop lag, upstream reachability).
-    # With the dashboard off there is no consumer; running the upstream
-    # probe every 30s would be dead work and pollute logs (each probe
-    # emits an httpx INFO line).
+    # Start/stop the event-loop-lag sampler with the app lifecycle.
+    # Only runs when the dashboard is enabled — it exists solely to
+    # populate the dashboard's loop-lag gauge. Upstream health is now
+    # derived passively from request metrics (no probe).
     if config.dashboard.enabled:
         @app.on_event("startup")
         async def _health_startup() -> None:
@@ -219,8 +217,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             await health.stop()
     else:
         logger.info(
-            "dashboard disabled — health probe and event-loop-lag tasks "
-            "are not started (no consumer for their data)"
+            "dashboard disabled — event-loop-lag sampler is not started"
         )
 
     # ------------------------------------------------------------------

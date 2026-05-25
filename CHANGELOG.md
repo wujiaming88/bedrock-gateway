@@ -3,6 +3,52 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.1.2] — 2026-05-25
+
+### 修复
+
+- **删除针对 Bedrock 上游的主动可达性探针**：原实现每 30 秒向
+  `https://bedrock-runtime.<region>.amazonaws.com/` 发一次 GET，
+  期望以「TCP+TLS 通就算上游健康」作为判定依据。该端点没有根资源，
+  AWS 设计上必然返回 404，所以这个探针：
+  - 区分不出"网络不通"以外的故障（凭据失效 / 限流 / 模型下线全部漏报）；
+  - 在 dashboard 关闭时仍每 30 秒打一条 httpx INFO 日志（0.1.1 已通过
+    `dashboard.enabled` 开关压制，但 dashboard 开着的实例仍被刷屏）；
+  - 与已有的请求级 metrics 信号重复，没有新增信息量。
+
+  0.1.2 直接删除该探针。dashboard 的「Upstream」面板改为基于真实请求
+  统计被动推导（最近 5 分钟窗口）：
+
+  | 条件 | 状态 |
+  | --- | --- |
+  | 窗口内无流量 | `unknown` |
+  | 出现 401/403 | `auth_failed`（凭据问题，单独标记） |
+  | 成功率 ≥ 99% | `healthy` |
+  | 成功率 ≥ 80% | `degraded` |
+  | 成功率 < 80% | `down` |
+
+  （`metrics.py:upstream_health`、`health.py:snapshot`、`api.py`、
+  `static/app.js` 渲染层）
+
+### 移除
+
+- `HealthMonitor._probe_once` 与 `_upstream_probe_task`、相关的
+  `_UpstreamState` / `_UPSTREAM_PROBE_INTERVAL_S` / `_UPSTREAM_PROBE_TIMEOUT_S`
+  常量、health 模块中对 `httpx` 的依赖。
+- 旧响应字段 `upstream.reachable` / `latency_ms` / `last_check`，
+  替换为 `upstream.status` / `success_rate` / `total` / `errors` /
+  `window_minutes` / `last_success`。
+
+### 测试
+
+- 新增 `tests/test_upstream_health.py`（15 个用例，覆盖各成功率边界、
+  401/403 覆盖逻辑、`last_success` 持续性、窗口参数）。
+- 新增 `tests/test_integration_0_1_2.py`（5 个用例，端到端验证
+  `unknown → healthy → down → auth_failed` 状态切换，并断言
+  dashboard 健康端点不会触发任何指向 bedrock-runtime 根路径的 GET）。
+- 更新 `tests/test_health_coverage.py` 与 `tests/test_integration_0_1_1.py`
+  以反映探针删除；总测试 551 个全部通过。
+
 ## [0.1.1] — 2026-05-25
 
 ### 修复

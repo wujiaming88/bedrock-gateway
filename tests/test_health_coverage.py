@@ -1,14 +1,16 @@
 """Coverage tests for bedrock_gateway.dashboard.health —
-background tasks, upstream probe, auth expiry introspection, FD reader."""
+event-loop-lag task, auth expiry introspection, FD reader.
+
+The active upstream probe was removed in 0.1.2 (upstream health is now
+derived passively from request metrics — see ``MetricsCollector.upstream_health``),
+so probe tests live in ``test_upstream_health.py`` instead.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import datetime
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from bedrock_gateway.dashboard import health as health_module
 from bedrock_gateway.dashboard.health import HealthMonitor, _iso, _read_fd_info
@@ -20,10 +22,12 @@ class TestStartStop:
 
         async def run():
             h.start()
-            assert len(h._tasks) == 2
+            # Only the event-loop-lag task remains after the upstream
+            # probe was removed in 0.1.2.
+            assert len(h._tasks) == 1
             # Start again is a no-op.
             h.start()
-            assert len(h._tasks) == 2
+            assert len(h._tasks) == 1
             await h.stop()
             assert h._tasks == []
 
@@ -83,62 +87,50 @@ class TestEventLoopLagTask:
                 pass
 
 
-class TestUpstreamProbe:
-    async def test_probe_once_reachable(self):
+class TestUpstreamSnapshot:
+    """Upstream section of ``snapshot`` is sourced from the metrics
+    collector since 0.1.2 — verify the wiring is correct."""
+
+    def test_no_metrics_returns_unknown(self):
         h = HealthMonitor(region="us-east-1", auth_mode="bearer_token")
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 403  # Any response < 600 is "reachable".
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("bedrock_gateway.dashboard.health.httpx.AsyncClient",
-                   return_value=mock_client):
-            await h._probe_once()
-
         snap = h.snapshot()
-        assert snap["upstream"]["reachable"] is True
-        assert snap["upstream"]["latency_ms"] is not None
-        assert snap["upstream"]["last_check"] is not None
-        assert snap["upstream"]["last_success"] is not None
+        assert snap["upstream"]["status"] == "unknown"
+        assert snap["upstream"]["total"] == 0
 
-    async def test_probe_once_unreachable_on_exception(self):
+    def test_metrics_upstream_health_is_used(self):
         h = HealthMonitor(region="us-east-1", auth_mode="bearer_token")
 
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=OSError("network down"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        class FakeMetrics:
+            def consecutive_errors(self):
+                return 0
 
-        with patch("bedrock_gateway.dashboard.health.httpx.AsyncClient",
-                   return_value=mock_client):
-            await h._probe_once()
+            def upstream_health(self):
+                return {
+                    "status": "healthy",
+                    "success_rate": 100.0,
+                    "total": 12,
+                    "errors": 0,
+                    "window_minutes": 5,
+                    "last_success": "2026-05-25T10:00:00Z",
+                }
 
-        snap = h.snapshot()
-        assert snap["upstream"]["reachable"] is False
-        # last_success never updated.
-        assert snap["upstream"]["last_success"] is None
+        snap = h.snapshot(metrics=FakeMetrics())
+        assert snap["upstream"]["status"] == "healthy"
+        assert snap["upstream"]["total"] == 12
 
-    async def test_probe_task_runs_and_stops(self):
+    def test_metrics_upstream_health_exception_falls_back(self):
         h = HealthMonitor(region="us-east-1", auth_mode="bearer_token")
 
-        # Mock the actual probe so it's near-instant.
-        h._probe_once = AsyncMock()
+        class BadMetrics:
+            def consecutive_errors(self):
+                return 0
 
-        with patch.object(health_module, "_UPSTREAM_PROBE_INTERVAL_S", 0.001):
-            task = asyncio.create_task(h._upstream_probe_task())
-            await asyncio.sleep(0.005)
-            h._stopped.set()
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            def upstream_health(self):
+                raise RuntimeError("boom")
 
-        assert h._probe_once.await_count >= 1
+        snap = h.snapshot(metrics=BadMetrics())
+        # Fallback payload keeps a sane default.
+        assert snap["upstream"]["status"] == "unknown"
 
 
 class TestAuthSnapshot:
