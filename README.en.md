@@ -2,7 +2,7 @@
 
 Forward OpenAI / Anthropic API requests to AWS Bedrock.
 
-[中文文档](README_CN.md)
+[中文文档](README.md) · [Changelog](CHANGELOG.md)
 
 ## Quick start
 
