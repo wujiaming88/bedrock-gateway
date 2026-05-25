@@ -1,20 +1,20 @@
 # Bedrock Gateway
 
-Forward OpenAI / Anthropic API requests to AWS Bedrock.
+把 OpenAI / Anthropic API 请求转发到 AWS Bedrock。
 
-[中文文档](README_CN.md)
+[English](README.md)
 
-## Quick start
+## 快速开始
 
 ```bash
 pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 
-export AWS_BEARER_TOKEN_BEDROCK="your-aws-bearer-token"
+export AWS_BEARER_TOKEN_BEDROCK="你的-aws-bearer-token"
 bedrock-gateway
 # listening on http://127.0.0.1:4000
 ```
 
-Verify:
+验证：
 
 ```bash
 curl http://127.0.0.1:4000/health
@@ -24,7 +24,7 @@ curl http://127.0.0.1:4000/v1/messages \
   -d '{"model":"claude-haiku","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Use from an SDK:
+SDK 调用：
 
 ```python
 # OpenAI SDK
@@ -45,15 +45,15 @@ client.messages.create(
 )
 ```
 
-## Configuration
+## 配置
 
-All config lives in `config.yaml` next to the process (or at `--config /path/to/config.yaml`). String values support `${VAR}` interpolation from the process environment — missing variables expand to an empty string.
+所有配置项在进程同目录下的 `config.yaml`（或 `--config /path/to/config.yaml`）。字符串值支持 `${VAR}` 从环境变量插值——变量不存在时展开为空字符串。
 
 ### `auth`
 
-AWS credential source. Exactly one mode at a time.
+AWS 凭证来源。同一时间只能启用一种模式。
 
-**`bearer_token`** — Bedrock API key (simplest; no SigV4, no boto3).
+**`bearer_token`** — Bedrock API key（最简单；不走 SigV4，不需要 boto3）。
 
 ```yaml
 auth:
@@ -61,24 +61,24 @@ auth:
   bearer_token: ${AWS_BEARER_TOKEN_BEDROCK}
 ```
 
-**`credentials`** — static AK/SK, request is signed with SigV4 in-process.
+**`credentials`** — 静态 AK/SK，进程内用 SigV4 签名。
 
 ```yaml
 auth:
   mode: credentials
   access_key_id: ${AWS_ACCESS_KEY_ID}
   secret_access_key: ${AWS_SECRET_ACCESS_KEY}
-  session_token: ${AWS_SESSION_TOKEN}   # optional, temporary credentials
+  session_token: ${AWS_SESSION_TOKEN}   # 可选，临时凭证用
 ```
 
-**`iam_role`** — pick up credentials from the EC2 / ECS / Lambda metadata service. Requires `boto3`: `pip install "bedrock-gateway[boto3]"`.
+**`iam_role`** — 从 EC2 / ECS / Lambda 元数据服务获取凭证。需要 `boto3`：`pip install "bedrock-gateway[boto3]"`。
 
 ```yaml
 auth:
   mode: iam_role
 ```
 
-**`profile`** — named profile from `~/.aws/credentials`. Also requires `boto3`.
+**`profile`** — 使用 `~/.aws/credentials` 中的命名 profile。同样需要 `boto3`。
 
 ```yaml
 auth:
@@ -90,13 +90,13 @@ auth:
 
 ```yaml
 server:
-  host: 0.0.0.0          # default 127.0.0.1
-  port: 4000             # default 4000
+  host: 0.0.0.0          # 默认 127.0.0.1
+  port: 4000             # 默认 4000
   log_level: info        # debug | info | warning | error
-  api_key: ${BEDROCK_API_KEY}   # optional; if set, /v1/* requires it
+  api_key: ${BEDROCK_API_KEY}   # 可选；设置后 /v1/* 需要鉴权
 ```
 
-When `api_key` is set, clients must send either `Authorization: Bearer <key>` or `x-api-key: <key>`. `/health` and `/` stay public. Key comparison uses `hmac.compare_digest`.
+`api_key` 设置后，客户端需带 `Authorization: Bearer <key>` 或 `x-api-key: <key>`。`/health` 和 `/` 始终公开。比较用 `hmac.compare_digest`。
 
 ### `region`
 
@@ -108,15 +108,15 @@ region: us-east-1
 
 ```yaml
 retry:
-  max_retries: 3     # total attempts before giving up
-  base_delay: 1.0    # seconds; actual delay = base_delay * 2^attempt
+  max_retries: 3     # 总尝试次数
+  base_delay: 1.0    # 秒；实际延迟 = base_delay * 2^attempt
 ```
 
-Retries fire on HTTP `429`, `503`, `529`, and timeouts. Everything else returns to the client unchanged.
+HTTP `429`、`503`、`529` 和超时会触发重试，其他状态码原样返回客户端。
 
 ### `models`
 
-Maps a user-facing alias to a Bedrock model ID. Omit the whole section to use the built-in defaults (see [Model aliases](#model-aliases)). You can also always pass a raw Bedrock model ID as the `model` field — the gateway treats anything starting with `us.`, `anthropic.`, etc. as a direct passthrough.
+用户别名到 Bedrock 模型 ID 的映射。省略整段则使用内置默认（见[模型别名](#模型别名)）。`model` 字段也可以直接传原始 Bedrock 模型 ID——以 `us.`、`anthropic.` 等开头的会按 passthrough 处理。
 
 ```yaml
 models:
@@ -130,21 +130,21 @@ models:
 
 ```yaml
 dashboard:
-  enabled: true                       # mount /dashboard/ and /api/metrics/*
-  api_key: ${BEDROCK_DASHBOARD_KEY}   # dashboard auth, independent of server.api_key
-  require_auth: true                  # require dashboard.api_key when one is set
-  localhost_only: false               # optional override; see below
-  rate_limit: 60                      # /api/metrics/* requests per IP per minute
-  max_request_log: 200                # rows kept in the recent-requests panel
+  enabled: true                       # 是否挂载 /dashboard/ 与 /api/metrics/*
+  api_key: ${BEDROCK_DASHBOARD_KEY}   # dashboard 独立鉴权，与 server.api_key 无关
+  require_auth: true                  # 配置了 dashboard.api_key 时是否要求该 key
+  localhost_only: false               # 可选覆盖；见下文
+  rate_limit: 60                      # /api/metrics/* 每 IP 每分钟限流
+  max_request_log: 200                # 请求日志面板保留的最近记录条数
 ```
 
-`dashboard.api_key` is deliberately independent of `server.api_key` — model clients cannot reach the dashboard, and dashboard operators cannot call the model endpoints. `localhost_only` defaults to `true` when no `dashboard.api_key` is configured, and `false` when one is — set it explicitly to override. Set `enabled: false` to not mount the dashboard routes at all.
+`dashboard.api_key` 与 `server.api_key` 完全独立——持有模型调用 key 的客户端无法访问 dashboard，dashboard 管理员也无法调用 `/v1/*`。`localhost_only` 未配置时：没有 `dashboard.api_key` 则默认 `true`，有则默认 `false`，需要时可显式覆盖。`enabled: false` 时完全不挂载 dashboard 路由。
 
-### Environment-variable shortcuts
+### 环境变量快捷配置
 
-Used only when the matching `config.yaml` field is absent.
+仅当 `config.yaml` 中对应字段缺省时生效。
 
-| Variable | Default | Field |
+| 变量 | 默认值 | 对应字段 |
 |---|---|---|
 | `BEDROCK_API_KEY` | — | `server.api_key` |
 | `BEDROCK_DASHBOARD_KEY` | — | `dashboard.api_key` |
@@ -156,37 +156,37 @@ Used only when the matching `config.yaml` field is absent.
 | `BEDROCK_AUTH_MODE` | `bearer_token` | `auth.mode` |
 | `BEDROCK_MAX_RETRIES` | `3` | `retry.max_retries` |
 
-## Deployment
+## 部署
 
-### Local
+### 本地
 
 ```bash
 git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e .
 
-export AWS_BEARER_TOKEN_BEDROCK="your-token"
+export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
 python -m bedrock_gateway
 ```
 
 ### systemd
 
 ```bash
-# deps + venv
+# 依赖 + 虚拟环境
 apt install -y python3.12-venv git
 python3 -m venv /opt/bedrock-gateway
 /opt/bedrock-gateway/bin/pip install git+https://github.com/wujiaming88/bedrock-gateway.git
 ln -s /opt/bedrock-gateway/bin/bedrock-gateway /usr/local/bin/bedrock-gateway
 
-# secrets
+# 密钥
 cat > /opt/bedrock-gateway/.env << 'EOF'
-AWS_BEARER_TOKEN_BEDROCK=your-aws-bearer-token
-BEDROCK_API_KEY=bgw-your-generated-key
-BEDROCK_DASHBOARD_KEY=bgw-dash-your-generated-key
+AWS_BEARER_TOKEN_BEDROCK=你的-aws-bearer-token
+BEDROCK_API_KEY=bgw-生成的密钥
+BEDROCK_DASHBOARD_KEY=bgw-dash-生成的密钥
 EOF
 chmod 600 /opt/bedrock-gateway/.env
 
-# config
+# 配置
 cat > /opt/bedrock-gateway/config.yaml << 'EOF'
 auth:
   mode: bearer_token
@@ -213,7 +213,7 @@ dashboard:
 EOF
 ```
 
-`/etc/systemd/system/bedrock-gateway.service`:
+`/etc/systemd/system/bedrock-gateway.service`：
 
 ```ini
 [Unit]
@@ -248,23 +248,23 @@ docker build -t bedrock-gateway .
 
 docker run -d --name bedrock-gateway \
   -p 4000:4000 \
-  -e AWS_BEARER_TOKEN_BEDROCK="your-token" \
-  -e BEDROCK_API_KEY="bgw-your-key" \
+  -e AWS_BEARER_TOKEN_BEDROCK="你的令牌" \
+  -e BEDROCK_API_KEY="bgw-你的密钥" \
   -v $(pwd)/config.yaml:/app/config.yaml:ro \
   bedrock-gateway
 ```
 
 ### docker-compose
 
-The shipped `docker-compose.yml` mounts `./config.yaml` into the container and reads `AWS_BEARER_TOKEN_BEDROCK` / `AWS_REGION` from the environment.
+仓库自带的 `docker-compose.yml` 会挂载 `./config.yaml` 到容器，并从环境读取 `AWS_BEARER_TOKEN_BEDROCK` / `AWS_REGION`。
 
 ```bash
-export AWS_BEARER_TOKEN_BEDROCK="your-token"
+export AWS_BEARER_TOKEN_BEDROCK="你的令牌"
 docker compose up -d
 docker compose logs -f
 ```
 
-### Nginx reverse proxy
+### Nginx 反代
 
 ```nginx
 upstream bedrock_gateway {
@@ -288,7 +288,7 @@ server {
         proxy_set_header        X-Real-IP $remote_addr;
         proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
 
-        # streaming
+        # 流式
         proxy_buffering         off;
         proxy_cache             off;
         proxy_read_timeout      600s;
@@ -299,55 +299,55 @@ server {
 
 ## Dashboard
 
-Live request metrics at `/dashboard/`. JSON endpoints at `/api/metrics/*`.
+`/dashboard/` 下的实时请求监控界面，JSON 接口在 `/api/metrics/*`。
 
-**Access.** The dashboard uses its own `dashboard.api_key`, separate from `server.api_key`: someone with the model-calling key cannot reach the dashboard, and a dashboard operator cannot call `/v1/*`. Four ways to authenticate when `dashboard.api_key` is set: login cookie (via the form at `/dashboard/login`), `Authorization: Bearer`, `x-api-key` header, or `?key=` query parameter.
+**访问方式。** Dashboard 使用独立的 `dashboard.api_key`，与 `server.api_key` 分开：拿到模型调用 key 无法访问 dashboard，dashboard 管理员也无法调用 `/v1/*`。配置了 `dashboard.api_key` 时，四种鉴权方式任选其一：登录 cookie（通过 `/dashboard/login` 表单）、`Authorization: Bearer`、`x-api-key` 头、`?key=` query 参数。
 
-**Auth rules.**
+**访问规则。**
 
-| Condition | Behavior |
+| 条件 | 行为 |
 |---|---|
-| `dashboard.api_key` set and `dashboard.require_auth: true` | Dashboard key required by any method above |
-| `dashboard.api_key` unset | Serves only to `127.0.0.1` / `::1` (unless `localhost_only: false`) |
-| `dashboard.enabled: false` | Routes not mounted |
+| `dashboard.api_key` 已设 且 `dashboard.require_auth: true` | 必须用上述任一方式鉴权 |
+| `dashboard.api_key` 未设 | 仅对 `127.0.0.1` / `::1` 开放（除非 `localhost_only: false`） |
+| `dashboard.enabled: false` | 不挂载路由 |
 
-**What it shows.** Top gauges (QPS, success rate, p50/p95 latency, tokens/min); per-model request and token distribution; a 1H / 6H / 24H traffic and latency time series; recent-requests table filterable by status; errors grouped by status code and by error type; header bar with version, region, auth mode, uptime, RSS.
+**界面内容。** 顶部仪表盘（QPS、成功率、p50/p95 延迟、tokens/分钟）；按模型的请求与 tokens 分布；1H / 6H / 24H 流量与延迟时序；可按状态过滤的最近请求表；按状态码和错误类型分组的错误面板；顶部状态条包含版本、region、认证模式、uptime、RSS。
 
-All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 1; mode=block`, `Referrer-Policy: no-referrer`. `/api/metrics/*` is rate-limited per IP (default 60/min, `dashboard.rate_limit`).
+所有 dashboard 响应带 `Content-Security-Policy`、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`X-XSS-Protection: 1; mode=block`、`Referrer-Policy: no-referrer`。`/api/metrics/*` 按 IP 限流（默认 60/分钟，`dashboard.rate_limit`）。
 
 ## API
 
-### Endpoints
+### 端点
 
-| Method | Path | Description |
+| 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | OpenAI chat completions, sync and streaming |
-| `POST` | `/v1/messages` | Anthropic messages, sync and streaming |
-| `GET`  | `/v1/models` | Model list (OpenAI format) |
-| `GET`  | `/health` | Liveness, no auth |
+| `POST` | `/v1/chat/completions` | OpenAI 聊天补全，同步与流式 |
+| `POST` | `/v1/messages` | Anthropic messages，同步与流式 |
+| `GET`  | `/v1/models` | 模型列表（OpenAI 格式） |
+| `GET`  | `/health` | 健康检查，无需鉴权 |
 | `GET`  | `/dashboard/` | UI |
 | `GET`  | `/api/metrics/*` | Dashboard JSON |
 
-### OpenAI parameters (`/v1/chat/completions`)
+### OpenAI 参数（`/v1/chat/completions`）
 
-| Parameter | Notes |
+| 参数 | 说明 |
 |---|---|
-| `messages` | `role=system` extracted to Bedrock `system` field |
-| `model` | Alias or raw Bedrock model ID |
-| `stream` | Boolean, SSE |
-| `max_tokens` / `max_completion_tokens` | Falls back to model default |
-| `temperature`, `top_p` | Passthrough |
-| `stop` | String or list → `stop_sequences` |
-| `tools`, `tool_choice` | Converted to Anthropic `tool_use` |
-| `reasoning_effort` | Mapped to `thinking` budget |
-| `thinking` | Passthrough |
-| `image_url` | base64 data URLs and remote URLs |
+| `messages` | `role=system` 提取到 Bedrock `system` 字段 |
+| `model` | 别名或原始 Bedrock 模型 ID |
+| `stream` | 布尔值，SSE |
+| `max_tokens` / `max_completion_tokens` | 未提供时用模型默认值 |
+| `temperature`、`top_p` | 透传 |
+| `stop` | 字符串或数组 → `stop_sequences` |
+| `tools`、`tool_choice` | 转换为 Anthropic `tool_use` |
+| `reasoning_effort` | 映射为 `thinking` budget |
+| `thinking` | 透传 |
+| `image_url` | base64 data URL 与远程 URL 都支持 |
 
-### Anthropic parameters (`/v1/messages`)
+### Anthropic 参数（`/v1/messages`）
 
-Passthrough: `messages`, `system` (string or block array), `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`, `metadata`, `tools`, `tool_choice`, `thinking`, `stream`. Extended-thinking stream events (`thinking_delta`, `signature_delta`, `redacted_thinking`) are forwarded. Cache-token usage is surfaced when the underlying model reports it.
+透传：`messages`、`system`（字符串或 block 数组）、`max_tokens`、`temperature`、`top_p`、`top_k`、`stop_sequences`、`metadata`、`tools`、`tool_choice`、`thinking`、`stream`。扩展思考流事件（`thinking_delta`、`signature_delta`、`redacted_thinking`）会原样转发。底层模型返回 cache-token usage 时也会透传。
 
-### Extended thinking
+### 扩展思考
 
 ```json
 {
@@ -358,11 +358,11 @@ Passthrough: `messages`, `system` (string or block array), `max_tokens`, `temper
 }
 ```
 
-When `thinking` is set, `temperature` is stripped (Bedrock rejects it) and `budget_tokens` is clamped to ≥ 1024. On `/v1/chat/completions`, `reasoning_effort: "low" | "medium" | "high"` maps to a `thinking` budget.
+开启 `thinking` 后，`temperature` 会被移除（Bedrock 不接受）、`budget_tokens` 被钳制到 ≥ 1024。`/v1/chat/completions` 下，`reasoning_effort: "low" | "medium" | "high"` 会映射为对应 `thinking` budget。
 
-### Model aliases
+### 模型别名
 
-| Alias | Bedrock ID | Context | Max output |
+| 别名 | Bedrock ID | 上下文 | 最大输出 |
 |---|---|---|---|
 | `claude-opus-4.7` | `us.anthropic.claude-opus-4-7` | 1M | 128K |
 | `claude-opus-4` | `us.anthropic.claude-opus-4-6-v1` | 1M | 128K |
@@ -371,22 +371,22 @@ When `thinking` is set, `temperature` is stripped (Bedrock rejects it) and `budg
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K |
 | `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K |
 
-Common name variants (e.g. `claude-3-5-sonnet-latest`, `claude-sonnet-4-20250514`) resolve to the canonical alias, so stock Anthropic SDK defaults work as-is.
+常见变体（如 `claude-3-5-sonnet-latest`、`claude-sonnet-4-20250514`）会自动解析到规范别名，Anthropic SDK 默认模型名可以直接用。
 
-## Security
+## 安全
 
-Production checklist:
+生产部署 checklist：
 
-- [ ] `BEDROCK_API_KEY` set to a strong random value (`bgw-$(openssl rand -base64 48)`)
-- [ ] `BEDROCK_DASHBOARD_KEY` set to a strong random value — separate from `BEDROCK_API_KEY`
-- [ ] Secrets in `.env` with mode `600`, not in `config.yaml`
-- [ ] TLS in front of the gateway when binding to `0.0.0.0` (Nginx / ALB / Cloudflare)
-- [ ] `dashboard.api_key` set (or `dashboard.enabled: false`), and `dashboard.require_auth: true`
-- [ ] Process runs as a non-root user (systemd `User=`, Docker `appuser`)
-- [ ] Logs centralised (`journalctl`, container log driver)
-- [ ] Bedrock IAM principal limited to the minimum `bedrock:InvokeModel*` actions
+- [ ] `BEDROCK_API_KEY` 设为强随机值（`bgw-$(openssl rand -base64 48)`）
+- [ ] `BEDROCK_DASHBOARD_KEY` 设为强随机值，且与 `BEDROCK_API_KEY` 不同
+- [ ] 密钥放在 `.env`（权限 `600`），不要写进 `config.yaml`
+- [ ] 绑定 `0.0.0.0` 时前面一定要有 TLS 终止（Nginx / ALB / Cloudflare）
+- [ ] 设置 `dashboard.api_key`（或直接 `dashboard.enabled: false`），并保持 `dashboard.require_auth: true`
+- [ ] 非 root 运行（systemd `User=` 或 Docker `appuser`）
+- [ ] 日志集中（`journalctl`、容器日志驱动）
+- [ ] Bedrock IAM 账号权限最小化，只保留必要的 `bedrock:InvokeModel*`
 
-## Development
+## 开发
 
 ```bash
 git clone https://github.com/wujiaming88/bedrock-gateway.git
@@ -400,4 +400,4 @@ mypy bedrock_gateway/ --ignore-missing-imports
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — 见 [LICENSE](LICENSE)。

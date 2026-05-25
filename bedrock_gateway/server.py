@@ -106,6 +106,26 @@ def _note_timeout(request: Request | None) -> None:
         pass
 
 
+def _log_upstream_error(status_code: int, fmt: str, *args: Any) -> None:
+    """Log a non-2xx upstream response at the level matching its severity.
+
+    Severity rules:
+      * 401 / 403 → ERROR with an ``[auth-failure]`` tag. These are *not*
+        client mistakes — the gateway's own credentials were rejected, so
+        on-call should be paged.
+      * Other 4xx → WARNING. These are caused by the calling client
+        (bad model id, oversized image, malformed body, …); logging them
+        at ERROR floods alerting and hides real gateway/upstream faults.
+      * 5xx and unknown codes → ERROR.
+    """
+    if status_code in (401, 403):
+        logger.error(fmt + " [auth-failure]", *args)
+    elif 400 <= status_code < 500:
+        logger.warning(fmt, *args)
+    else:
+        logger.error(fmt, *args)
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -184,13 +204,24 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     app.state.dashboard_rate_limiter = dashboard_rate_limiter
 
     # Start/stop background health tasks with the app lifecycle.
-    @app.on_event("startup")
-    async def _health_startup() -> None:
-        health.start()
+    # Only run them when the dashboard is enabled — they exist solely to
+    # populate dashboard snapshots (event-loop lag, upstream reachability).
+    # With the dashboard off there is no consumer; running the upstream
+    # probe every 30s would be dead work and pollute logs (each probe
+    # emits an httpx INFO line).
+    if config.dashboard.enabled:
+        @app.on_event("startup")
+        async def _health_startup() -> None:
+            health.start()
 
-    @app.on_event("shutdown")
-    async def _health_shutdown() -> None:
-        await health.stop()
+        @app.on_event("shutdown")
+        async def _health_shutdown() -> None:
+            await health.stop()
+    else:
+        logger.info(
+            "dashboard disabled — health probe and event-loop-lag tasks "
+            "are not started (no consumer for their data)"
+        )
 
     # ------------------------------------------------------------------
     # API key authentication middleware (opt-in)
@@ -603,7 +634,8 @@ async def _handle_sync(
                 continue
 
             error = parse_bedrock_error(resp.status_code, resp.text)
-            logger.error(
+            _log_upstream_error(
+                resp.status_code,
                 "ERR %d model=%s msg=%s",
                 resp.status_code,
                 model,
@@ -626,6 +658,7 @@ async def _handle_sync(
             await asyncio.sleep(retry_base_delay * (2**attempt))
 
         except Exception as exc:
+            logger.exception("UNEXPECTED model=%s during chat.completions", model)
             return _oai_error(500, str(exc))
 
     logger.error(
@@ -803,6 +836,7 @@ async def _handle_stream(
                 return
 
             except Exception as exc:
+                logger.exception("UNEXPECTED [stream] model=%s during chat.completions", model)
                 yield f'data: {json.dumps({"error": {"message": str(exc)}})}\n\n'
                 yield "data: [DONE]\n\n"
                 return
@@ -867,7 +901,8 @@ async def _handle_messages_sync(
                 continue
 
             error = parse_bedrock_error(resp.status_code, resp.text)
-            logger.error(
+            _log_upstream_error(
+                resp.status_code,
                 "ERR [messages] %d model=%s msg=%s",
                 resp.status_code,
                 model,
@@ -893,6 +928,7 @@ async def _handle_messages_sync(
             await asyncio.sleep(retry_base_delay * (2**attempt))
 
         except Exception as exc:
+            logger.exception("UNEXPECTED [messages] model=%s", model)
             return JSONResponse(
                 status_code=500,
                 content=format_anthropic_error(500, str(exc)),
@@ -1037,6 +1073,7 @@ async def _handle_messages_stream(
                 return
 
             except Exception as exc:
+                logger.exception("UNEXPECTED [messages-stream] model=%s", model)
                 yield make_anthropic_sse(
                     "error",
                     {
