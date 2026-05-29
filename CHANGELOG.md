@@ -3,6 +3,28 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.1.3] — 2026-05-29
+
+### 新增
+
+- **支持 Claude Opus 4.8**：注册 `claude-opus-4.8` →
+  `us.anthropic.claude-opus-4-8`（context 1M / max output 128K），
+  并加入名称变体别名 `claude-opus-4-8` / `claude-4.8-opus` /
+  `claude-4-8-opus`。裸别名 `claude-opus-4` 维持指向 4-6 不变。
+  （`config.py:_DEFAULT_MODELS`、`config.py:_MODEL_ALIASES`）
+- **4.8 启用 adaptive thinking**：在 `_ADAPTIVE_THINKING_PATTERNS` 加入
+  `claude-opus-4-8`，使 `reasoning_effort` 各档位映射为
+  `{"type": "adaptive"}`，而非退化的固定 `budget_tokens`。
+  （`converter.py`）
+
+### 测试
+
+- 新增 `tests/test_opus_4_8.py`（32 个用例），覆盖三层一致性（模型注册、
+  别名解析、adaptive thinking）、全部 `reasoning_effort` 档位，以及兜底
+  路径（<1024 budget 上钳、未知 effort 不注入 thinking、无 effort 不注入）。
+  端到端真实请求确认 model ID `us.anthropic.claude-opus-4-8` 有效（返回
+  200），流式与非流式路径均验证通过。总测试 583 个全部通过。
+
 ## [0.1.2] — 2026-05-25
 
 ### 修复
