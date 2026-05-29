@@ -392,10 +392,11 @@ REASONING_EFFORT_MAP: dict[str, dict[str, Any]] = {
     "high": {"type": "enabled", "budget_tokens": 4096},
 }
 
-# Bedrock model IDs that support adaptive thinking (Claude 4.6/4.7)
+# Bedrock model IDs that support adaptive thinking (Claude 4.6/4.7/4.8)
 _ADAPTIVE_THINKING_PATTERNS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-6",
 ]
 

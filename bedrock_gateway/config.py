@@ -153,6 +153,11 @@ class GatewayConfig:
 
 _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     # ── Opus ──────────────────────────────────────────────────────────
+    "claude-opus-4.8": {
+        "bedrock_id": "us.anthropic.claude-opus-4-8",
+        "context_length": 1_000_000,
+        "max_output": 128_000,
+    },
     "claude-opus-4.7": {
         "bedrock_id": "us.anthropic.claude-opus-4-7",
         "context_length": 1_000_000,
@@ -226,6 +231,10 @@ _MODEL_ALIASES: dict[str, str] = {
     "claude-opus-4-20250115": "claude-opus-4",
     "claude-opus-4-7-20250428": "claude-opus-4.7",
     "claude-sonnet-4-6-20250627": "claude-sonnet-4.6",
+    # Opus 4.8 variations
+    "claude-opus-4-8": "claude-opus-4.8",
+    "claude-4.8-opus": "claude-opus-4.8",
+    "claude-4-8-opus": "claude-opus-4.8",
 }
 
 
