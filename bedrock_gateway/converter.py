@@ -447,12 +447,57 @@ def make_stream_chunk(
     return f"data: {json.dumps(payload)}\n\n"
 
 
+# Bedrock streaming exception-frame types → HTTP status code.
+# These arrive mid-stream (after a 200 was already returned) as event-stream
+# error frames carrying an ``:exception-type`` header rather than a normal
+# ``"bytes"``-wrapped payload.  See ``decode_event_stream_chunk``.
+_STREAM_EXCEPTION_STATUS: dict[str, int] = {
+    "throttlingException": 429,
+    "serviceUnavailableException": 503,
+    "modelNotReadyException": 503,
+    "modelTimeoutException": 504,
+    "modelStreamErrorException": 502,
+    "internalServerException": 500,
+    "validationException": 400,
+    "accessDeniedException": 403,
+}
+
+# Matches either a normal ``"bytes":"<base64>"`` event payload OR a mid-stream
+# exception frame.  Exception frames embed the modeled exception name in an
+# event-stream header as ASCII ``:exception-type`` + a few binary header bytes +
+# ``<name>Exception``; the human-readable detail follows as a JSON ``message``.
+_EVENT_FRAME_RE = re.compile(
+    rb'"bytes":"(?P<b64>[A-Za-z0-9+/=]+)"'
+    rb'|:exception-type[\x00-\xff]{0,4}?(?P<etype>[A-Za-z]+Exception)',
+    re.DOTALL,
+)
+_EXC_MESSAGE_RE = re.compile(rb'"[Mm]essage"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def stream_exception_status(exception_type: str) -> int:
+    """Map a Bedrock streaming ``*Exception`` name to an HTTP status code.
+
+    Unknown exception types default to 500 so they are never silently
+    swallowed — an unrecognised upstream fault is still surfaced as a 5xx.
+    """
+    return _STREAM_EXCEPTION_STATUS.get(exception_type, 500)
+
+
 def decode_event_stream_chunk(buf: bytes) -> tuple[list[dict], int]:
     """
-    Extract base64-encoded JSON events from an AWS event-stream binary chunk.
+    Extract events from an AWS event-stream binary chunk.
 
-    The Bedrock streaming response wraps each event as a JSON payload inside
-    binary event-stream frames with ``"bytes":"<base64>"`` encoding.
+    Two frame shapes are recognised:
+
+      * **Normal events** — a JSON payload wrapped as ``"bytes":"<base64>"``;
+        decoded and returned verbatim (``{"type": "content_block_delta", ...}``).
+      * **Exception frames** — mid-stream upstream faults (throttling, model
+        stream errors, internal errors …) carrying an ``:exception-type``
+        header instead of a ``"bytes"`` payload.  These are surfaced as a
+        synthetic ``{"type": "_exception", "exception_type": ..., "message":
+        ..., "status": ...}`` event so the caller can emit a *valid* error and
+        terminate the stream cleanly, rather than dropping the frame and
+        leaving the client hanging.
 
     Returns ``(events, consumed_bytes)`` where *consumed_bytes* is the offset
     up to (and including) the last successfully matched frame.  The caller
@@ -461,11 +506,30 @@ def decode_event_stream_chunk(buf: bytes) -> tuple[list[dict], int]:
     """
     events: list[dict] = []
     consumed = 0
-    for match in re.finditer(rb'"bytes":"([A-Za-z0-9+/=]+)"', buf):
-        try:
-            decoded = json.loads(base64.b64decode(match.group(1)))
-            events.append(decoded)
-        except (json.JSONDecodeError, ValueError):
-            pass
-        consumed = match.end()
+    for match in _EVENT_FRAME_RE.finditer(buf):
+        b64 = match.group("b64")
+        if b64 is not None:
+            try:
+                decoded = json.loads(base64.b64decode(b64))
+                events.append(decoded)
+            except (json.JSONDecodeError, ValueError):
+                pass
+            consumed = match.end()
+            continue
+
+        # Exception frame — recover type + message and synthesise an event.
+        exc_type = match.group("etype").decode("ascii", "replace")
+        msg_match = _EXC_MESSAGE_RE.search(buf, match.end())
+        message = (
+            msg_match.group(1).decode("utf-8", "replace")
+            if msg_match
+            else f"upstream stream error: {exc_type}"
+        )
+        events.append({
+            "type": "_exception",
+            "exception_type": exc_type,
+            "message": message,
+            "status": stream_exception_status(exc_type),
+        })
+        consumed = msg_match.end() if msg_match else match.end()
     return events, consumed

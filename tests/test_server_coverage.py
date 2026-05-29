@@ -418,6 +418,8 @@ class TestStreamRetryAndErrors:
     @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_stream_400_error_body(self, mock_cls, mock_sleep, client: TestClient):
+        # Pre-stream 400: must surface as a REAL HTTP 400 (not a fake-200 SSE
+        # body) so the client's HTTP layer sees the failure immediately.
         ctx = _make_stream_ctx([], status=400,
                                err_text='{"message":"bad request"}')
         mock_cls.return_value = ctx
@@ -426,18 +428,17 @@ class TestStreamRetryAndErrors:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200  # stream always 200 at HTTP level
-        body = resp.text
-        assert "error" in body
-        assert "bad request" in body
-        assert "[DONE]" in body
+        assert resp.status_code == 400
+        data = resp.json()
+        assert data["error"]["message"] == "bad request"
+        assert data["error"]["type"] == "invalid_request_error"
 
     @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_stream_timeout_retries_then_errors(
         self, mock_cls, mock_sleep, client: TestClient
     ):
-        # Always time out → exhaust retries → SSE error event.
+        # Always time out opening the stream → exhaust retries → real HTTP 504.
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(side_effect=httpx.TimeoutException("t"))
         ctx.__aexit__ = AsyncMock(return_value=False)
@@ -453,11 +454,13 @@ class TestStreamRetryAndErrors:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "Timeout after retries" in resp.text
+        assert resp.status_code == 504
+        assert "timeout" in resp.json()["error"]["message"].lower()
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_stream_generic_exception(self, mock_cls, client: TestClient):
+        # Connection-level failure before any bytes → real HTTP 500, not a
+        # silently-dropped frame that hangs the client.
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(side_effect=RuntimeError("unexpected"))
         ctx.__aexit__ = AsyncMock(return_value=False)
@@ -473,8 +476,8 @@ class TestStreamRetryAndErrors:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "unexpected" in resp.text
+        assert resp.status_code == 500
+        assert "unexpected" in resp.json()["error"]["message"]
 
 
 class TestStreamEventTypes:
@@ -648,6 +651,8 @@ class TestMessagesStreamErrorPaths:
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_messages_stream_400_error_body(self, mock_cls, client: TestClient):
+        # Pre-stream 400 → real HTTP 400 with a complete Anthropic error
+        # envelope (matches the upstream Anthropic API for stream-open errors).
         ctx = _make_stream_ctx(
             [], status=400, err_text='{"message":"bad"}'
         )
@@ -658,8 +663,11 @@ class TestMessagesStreamErrorPaths:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "error" in resp.text
+        assert resp.status_code == 400
+        data = resp.json()
+        assert data["type"] == "error"
+        assert data["error"]["type"] == "invalid_request_error"
+        assert data["error"]["message"] == "bad"
 
     @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
     @patch("bedrock_gateway.server.httpx.AsyncClient")
@@ -682,8 +690,8 @@ class TestMessagesStreamErrorPaths:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "Timeout after retries" in resp.text
+        assert resp.status_code == 504
+        assert resp.json()["type"] == "error"
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_messages_stream_generic_exception(self, mock_cls, client: TestClient):
@@ -703,8 +711,8 @@ class TestMessagesStreamErrorPaths:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "fail" in resp.text
+        assert resp.status_code == 500
+        assert "fail" in resp.json()["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -861,7 +869,7 @@ class TestMessagesStreamAllRetriesExhausted:
     def test_all_retries_exhausted_sse_error(
         self, mock_cls, mock_sleep, client: TestClient
     ):
-        """Every attempt returns 429 → loop falls through to 'All retries failed'."""
+        """Every attempt returns 429 → retries exhausted → real HTTP 429."""
         # Build N fresh stream contexts, each 429.
         ctxs = [_make_stream_ctx([], status=429) for _ in range(5)]
         mock_cls.side_effect = ctxs
@@ -871,8 +879,10 @@ class TestMessagesStreamAllRetriesExhausted:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "All retries failed" in resp.text
+        assert resp.status_code == 429
+        data = resp.json()
+        assert data["type"] == "error"
+        assert "attempts failed" in data["error"]["message"]
 
 
 class TestChatStreamAllRetriesExhausted:
@@ -888,8 +898,8 @@ class TestChatStreamAllRetriesExhausted:
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
         })
-        assert resp.status_code == 200
-        assert "All retries failed" in resp.text
+        assert resp.status_code == 429
+        assert "attempts failed" in resp.json()["error"]["message"]
 
 
 class TestCreateAppStorageFailure:
@@ -917,3 +927,153 @@ class TestCreateAppStorageFailure:
         # App comes up, just without storage.
         client = TestClient(app)
         assert client.get("/health").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Mid-stream exception frames — the silent-drop bug that hung clients.
+# Upstream returns 200, starts a stream, then injects an event-stream
+# exception frame (throttling / internal / model-stream error). The gateway
+# must surface a VALID error terminator on both protocols, not drop it.
+# ---------------------------------------------------------------------------
+
+
+def _exc_frame(exc_type: str, message: str) -> bytes:
+    """A realistic AWS event-stream exception frame (see decoder tests)."""
+    return (
+        b"\x00\x00\x0d:exception-type\x07\x00"
+        + bytes([len(exc_type)])
+        + exc_type.encode()
+        + json.dumps({"message": message}).encode()
+    )
+
+
+def _make_raw_stream_ctx(raw_frames: list[bytes], status: int = 200):
+    """Stream context whose body is arbitrary raw bytes (so we can inject
+    exception frames that are NOT `"bytes"`-wrapped normal events)."""
+    async def aiter_bytes():
+        for f in raw_frames:
+            yield f
+
+    async def aiter_text():
+        yield ""
+
+    resp = MagicMock()
+    resp.status_code = status
+    resp.aiter_bytes = aiter_bytes
+    resp.aiter_text = aiter_text
+
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    inst = AsyncMock()
+    inst.stream = MagicMock(return_value=ctx)
+    inst.__aenter__ = AsyncMock(return_value=inst)
+    inst.__aexit__ = AsyncMock(return_value=False)
+    return inst
+
+
+def _parse_sse(text: str) -> list[dict]:
+    events = []
+    current = {}
+    for line in text.strip().split("\n"):
+        if line.startswith("event: "):
+            current["event"] = line[7:]
+        elif line.startswith("data: "):
+            payload = line[6:]
+            current["data"] = None if payload == "[DONE]" else json.loads(payload)
+            current["raw"] = payload
+            events.append(current)
+            current = {}
+    return events
+
+
+class TestMessagesMidStreamException:
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_throttling_midstream_emits_error_event(
+        self, mock_cls, client: TestClient
+    ):
+        # 200 open, message_start flows, THEN a throttling exception frame.
+        frames = [
+            _encode_event({"type": "message_start",
+                           "message": {"usage": {"input_tokens": 3}}}),
+            _encode_event({"type": "content_block_start",
+                           "content_block": {"type": "text", "text": ""}}),
+            _encode_event({"type": "content_block_delta",
+                           "delta": {"type": "text_delta", "text": "partial"}}),
+            _exc_frame("throttlingException", "Rate exceeded mid-stream"),
+        ]
+        mock_cls.return_value = _make_raw_stream_ctx(frames)
+
+        resp = client.post("/v1/messages", json={
+            "model": "test-model",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+        # Stream already opened 200 — error must arrive as a valid SSE event.
+        assert resp.status_code == 200
+        events = _parse_sse(resp.text)
+        types = [e["event"] for e in events]
+        assert "message_start" in types
+        # The partial content was delivered before the fault.
+        assert any(e["event"] == "content_block_delta" for e in events)
+        # And the stream is terminated by a VALID error event (not silence).
+        err = [e for e in events if e["event"] == "error"]
+        assert len(err) == 1
+        assert err[0]["data"]["type"] == "error"
+        assert err[0]["data"]["error"]["type"] == "rate_limit_error"
+        assert "Rate exceeded mid-stream" in err[0]["data"]["error"]["message"]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_internal_error_midstream(self, mock_cls, client: TestClient):
+        frames = [
+            _encode_event({"type": "message_start",
+                           "message": {"usage": {"input_tokens": 1}}}),
+            _exc_frame("internalServerException", "kaboom"),
+        ]
+        mock_cls.return_value = _make_raw_stream_ctx(frames)
+        resp = client.post("/v1/messages", json={
+            "model": "test-model",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+        events = _parse_sse(resp.text)
+        err = [e for e in events if e["event"] == "error"]
+        assert len(err) == 1
+        assert err[0]["data"]["error"]["type"] == "api_error"
+
+
+class TestChatMidStreamException:
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_throttling_midstream_emits_error_chunk_and_done(
+        self, mock_cls, client: TestClient
+    ):
+        frames = [
+            _encode_event({"type": "message_start",
+                           "message": {"usage": {"input_tokens": 3}}}),
+            _encode_event({"type": "content_block_delta",
+                           "delta": {"type": "text_delta", "text": "partial"}}),
+            _exc_frame("throttlingException", "slow down"),
+        ]
+        mock_cls.return_value = _make_raw_stream_ctx(frames)
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+        assert resp.status_code == 200
+        body = resp.text
+        # Partial content delivered, then a visible error, then [DONE] so the
+        # OpenAI-style client terminates cleanly instead of hanging.
+        assert "partial" in body
+        assert "slow down" in body
+        assert "[DONE]" in body
+        events = _parse_sse(body)
+        err_chunks = [e for e in events
+                      if isinstance(e.get("data"), dict) and "error" in e["data"]]
+        assert len(err_chunks) == 1
+        assert err_chunks[0]["data"]["error"]["code"] == 429
+        # [DONE] is the final line.
+        assert events[-1]["raw"] == "[DONE]"

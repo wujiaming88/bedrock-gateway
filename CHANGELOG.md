@@ -3,6 +3,42 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.1.4] — 2026-05-29
+
+### 修复
+
+- **流式错误不再吞没、不再卡死客户端**：流式请求遇到上游错误时，过去会
+  被伪装成 `200` 的 SSE 响应并塞入一个孤立的 `error` 事件，导致客户端状态机
+  收不到合法的流终止信号而永久挂起（表现为「对话几次后卡住不回复」）。现按
+  错误发生的阶段区分处理，与上游 Anthropic API 行为对齐：
+  - **流建立前的错误**（如不支持的 `web_search_20250305` 工具触发的 400、
+    auth、model-not-found、重试穷尽）→ 返回**真实 HTTP 状态码 + 完整错误体**，
+    不再进入流式。新增预检逻辑 `_open_upstream_stream`，开流前验状态。
+    （`server.py`）
+  - **流建立后的中途错误** → 发出协议合法的终止帧：`/v1/messages` 发
+    `event: error`，`/v1/chat/completions` 发 error chunk + `[DONE]`，
+    各自对齐自身协议，客户端能正常收尾。
+- **识别 Bedrock 流式异常帧**：`decode_event_stream_chunk` 过去只匹配
+  `"bytes"` 正常事件帧，会**静默丢弃**流中途的 `:exception-type` 异常帧
+  （throttling / internalServer / modelStreamError 等），使客户端无错误、
+  无终止地卡死。现解析异常帧为合成 `_exception` 事件并映射到 HTTP 状态码
+  （未知类型兜底 500）。（`converter.py`）
+- **消除两条流式路径的处理分歧**：`/v1/messages` 与 `/v1/chat/completions`
+  统一预检 + 中途异常收尾逻辑。
+
+### 新增
+
+- **关键排查日志**：`STREAM-OPEN ok/error/retryable/timeout/failed`（开流阶段）
+  与 `STREAM-MID error/timeout`（流中途故障），含路径、模型、状态码、原因，
+  便于定位「卡住」类问题。（`server.py`）
+
+### 测试
+
+- 新增 12 个用例：解码器异常帧识别（6）、异常类型→状态码映射（2）、两条
+  路径流中途异常的合法收尾（3）、web_search 400 真机回归（1）。
+- 改写 7 个旧用例：原断言「假 200 + SSE」的错误契约，现按真实 HTTP 状态码
+  断言。总测试 595 个全部通过。
+
 ## [0.1.3] — 2026-05-29
 
 ### 新增

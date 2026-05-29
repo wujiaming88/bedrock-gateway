@@ -17,7 +17,7 @@ import json
 import logging
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import httpx
@@ -41,6 +41,7 @@ from .converter import (
     map_reasoning_effort,
     parse_bedrock_error,
     parse_bedrock_response,
+    stream_exception_status,
 )
 from .dashboard import (
     DashboardAuth,
@@ -668,6 +669,124 @@ async def _handle_sync(
 
 
 # ---------------------------------------------------------------------------
+# Streaming preflight
+# ---------------------------------------------------------------------------
+
+async def _open_upstream_stream(
+    url: str,
+    body_bytes: bytes,
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+    *,
+    request: Request | None,
+    health: HealthMonitor | None,
+    log_tag: str,
+) -> tuple[Any, AsyncExitStack | None, dict | None]:
+    """Open the Bedrock streaming connection and inspect the HTTP status
+    *before* any bytes are handed to the client.
+
+    This is what lets a *pre-stream* failure (bad request, unsupported tool,
+    auth, model-not-found, retry-exhausted throttling) be returned as a real
+    HTTP error response — exactly like the non-streaming path and like the
+    upstream Anthropic API — instead of being disguised as a ``200`` SSE body
+    carrying an orphan ``error`` event (which leaves clients hanging).
+
+    Retries 429/503/529 with exponential backoff, mirroring the sync path.
+
+    Returns ``(response, stack, None)`` on success — the caller MUST consume
+    ``response.aiter_bytes()`` and ``await stack.aclose()`` when done — or
+    ``(None, None, error_dict)`` when the stream could not be opened, where
+    ``error_dict`` is ``{"status": int, "type": str, "message": str}``.
+    """
+    last_status = 502
+    last_message = "upstream unavailable"
+    for attempt in range(max_retries):
+        stack = AsyncExitStack()
+        headers = auth.get_headers(method="POST", url=url, body=body_bytes)
+        try:
+            await stack.enter_async_context(_track_upstream(health))
+            client = await stack.enter_async_context(
+                httpx.AsyncClient(timeout=300)
+            )
+            resp = await stack.enter_async_context(
+                client.stream("POST", url, headers=headers, content=body_bytes)
+            )
+        except httpx.TimeoutException:
+            await stack.aclose()
+            _note_timeout(request)
+            last_status, last_message = 504, "Upstream connect timeout"
+            logger.warning(
+                "STREAM-OPEN timeout [%s] attempt=%d/%d",
+                log_tag, attempt + 1, max_retries,
+            )
+            if attempt < max_retries - 1:
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2**attempt))
+            continue
+        except Exception as exc:  # noqa: BLE001
+            # Connection-level failure before any bytes flowed (DNS, refused,
+            # TLS, …). This is a pre-stream error → surface as a real HTTP 500
+            # rather than letting it escape as an unhandled 500 with no body.
+            await stack.aclose()
+            logger.exception("STREAM-OPEN unexpected [%s]", log_tag)
+            return None, None, {
+                "status": 500,
+                "type": "api_error",
+                "message": str(exc),
+            }
+
+        status = resp.status_code
+
+        if status == 200:
+            logger.info("STREAM-OPEN ok [%s] attempt=%d", log_tag, attempt + 1)
+            return resp, stack, None
+
+        # Read the upstream error body, then release the connection.
+        err_body = ""
+        try:
+            async for chunk in resp.aiter_text():
+                err_body += chunk
+        except Exception:  # noqa: BLE001 — best-effort body capture
+            pass
+        await stack.aclose()
+
+        if status in (429, 503, 529):
+            last_status = status
+            last_message = err_body[:200] or f"upstream {status}"
+            _note_retry(request)
+            logger.warning(
+                "STREAM-OPEN retryable %d [%s] attempt=%d/%d",
+                status, log_tag, attempt + 1, max_retries,
+            )
+            await asyncio.sleep(retry_base_delay * (2**attempt))
+            continue
+
+        # Deterministic, non-retryable failure → surface as real HTTP error.
+        error = parse_bedrock_error(status, err_body)
+        _log_upstream_error(
+            status,
+            "STREAM-OPEN error %d [%s] msg=%s",
+            status, log_tag, error["message"][:300],
+        )
+        return None, None, {
+            "status": status,
+            "type": error["type"],
+            "message": error["message"],
+        }
+
+    logger.error(
+        "STREAM-OPEN failed [%s] all %d attempts exhausted: %s",
+        log_tag, max_retries, last_message,
+    )
+    return None, None, {
+        "status": last_status,
+        "type": parse_bedrock_error(last_status, "")["type"],
+        "message": f"All {max_retries} attempts failed: {last_message}",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Streaming handler
 # ---------------------------------------------------------------------------
 
@@ -681,165 +800,159 @@ async def _handle_stream(
     *,
     request: Request | None = None,
     health: HealthMonitor | None = None,
-) -> StreamingResponse:
+) -> JSONResponse | StreamingResponse:
     url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
     body_bytes = json.dumps(bedrock_body).encode()
     msg_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
+    # Preflight: open the upstream stream and check the status BEFORE we commit
+    # to a 200 SSE response. A pre-stream failure becomes a real HTTP error.
+    resp, stack, err = await _open_upstream_stream(
+        url, body_bytes, auth, max_retries, retry_base_delay,
+        request=request, health=health, log_tag=f"chat model={model}",
+    )
+    if err is not None:
+        return _oai_error(err["status"], err["message"], err["type"])
+
     async def generate():  # noqa: C901
-        for attempt in range(max_retries):
-            try:
-                headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-                async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
-                    async with client.stream(
-                        "POST", url, headers=headers, content=body_bytes
-                    ) as resp:
-                        if resp.status_code in (429, 529, 503):
-                            _note_retry(request)
-                            await asyncio.sleep(retry_base_delay * (2**attempt))
-                            continue
+        buf = b""
+        stream_input_tokens = 0
+        stream_output_tokens = 0
+        current_tool_id: str | None = None
+        current_tool_name: str | None = None
+        try:
+            async for raw in resp.aiter_bytes():
+                buf += raw
+                events, consumed = decode_event_stream_chunk(buf)
+                if consumed > 0:
+                    buf = buf[consumed:]
+                for event in events:
+                    etype = event.get("type", "")
 
-                        if resp.status_code != 200:
-                            err = ""
-                            async for chunk in resp.aiter_text():
-                                err += chunk
-                            error = parse_bedrock_error(resp.status_code, err)
-                            yield f'data: {json.dumps({"error": error})}\n\n'
-                            yield "data: [DONE]\n\n"
-                            return
+                    if etype == "_exception":
+                        # Mid-stream upstream fault: surface it as a visible
+                        # error chunk + proper [DONE] terminator so the client
+                        # never hangs waiting for more frames.
+                        _log_upstream_error(
+                            event.get("status", 500),
+                            "STREAM-MID error [chat] model=%s type=%s msg=%s",
+                            model,
+                            event.get("exception_type", "?"),
+                            event.get("message", "")[:300],
+                        )
+                        yield f'data: {json.dumps({"error": {"message": event.get("message", "upstream stream error"), "type": parse_bedrock_error(event.get("status", 500), "")["type"], "code": event.get("status", 500)}})}\n\n'
+                        yield "data: [DONE]\n\n"
+                        return
 
-                        buf = b""
-                        stream_input_tokens = 0
-                        stream_output_tokens = 0
-                        current_tool_id: str | None = None
-                        current_tool_name: str | None = None
+                    if etype == "message_start":
+                        _mu = event.get("message", {}).get("usage", {})
+                        stream_input_tokens = _mu.get("input_tokens", 0)
+                        # Send initial role chunk (OpenAI spec)
+                        yield make_stream_chunk(
+                            msg_id, model, {"role": "assistant"}
+                        )
 
-                        async for raw in resp.aiter_bytes():
-                            buf += raw
-                            events, consumed = decode_event_stream_chunk(buf)
-                            if consumed > 0:
-                                buf = buf[consumed:]
-                            for event in events:
-                                etype = event.get("type", "")
+                    elif etype == "content_block_start":
+                        cb = event.get("content_block", {})
+                        if cb.get("type") == "tool_use":
+                            current_tool_id = cb.get("id", "")
+                            current_tool_name = cb.get("name", "")
+                            yield make_stream_chunk(
+                                msg_id,
+                                model,
+                                {
+                                    "tool_calls": [{
+                                        "index": 0,
+                                        "id": current_tool_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": current_tool_name,
+                                            "arguments": "",
+                                        },
+                                    }]
+                                },
+                            )
+                        elif cb.get("type") == "thinking":
+                            # Start of a thinking block — no output needed
+                            pass
 
-                                if etype == "message_start":
-                                    _mu = event.get("message", {}).get("usage", {})
-                                    stream_input_tokens = _mu.get("input_tokens", 0)
-                                    # Send initial role chunk (OpenAI spec)
-                                    yield make_stream_chunk(
-                                        msg_id, model, {"role": "assistant"}
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        dtype = delta.get("type", "")
+                        if dtype == "text_delta":
+                            yield make_stream_chunk(
+                                msg_id,
+                                model,
+                                {"content": delta.get("text", "")},
+                            )
+                        elif dtype == "input_json_delta":
+                            partial = delta.get("partial_json", "")
+                            yield make_stream_chunk(
+                                msg_id,
+                                model,
+                                {
+                                    "tool_calls": [{
+                                        "index": 0,
+                                        "function": {
+                                            "arguments": partial,
+                                        },
+                                    }]
+                                },
+                            )
+                        elif dtype == "thinking_delta":
+                            yield make_stream_chunk(
+                                msg_id,
+                                model,
+                                {
+                                    "reasoning_content": delta.get(
+                                        "thinking", ""
                                     )
+                                },
+                            )
+                        elif dtype == "signature_delta":
+                            # Signature associated with thinking block;
+                            # no user-visible output needed.
+                            pass
 
-                                elif etype == "content_block_start":
-                                    cb = event.get("content_block", {})
-                                    if cb.get("type") == "tool_use":
-                                        current_tool_id = cb.get("id", "")
-                                        current_tool_name = cb.get("name", "")
-                                        yield make_stream_chunk(
-                                            msg_id,
-                                            model,
-                                            {
-                                                "tool_calls": [{
-                                                    "index": 0,
-                                                    "id": current_tool_id,
-                                                    "type": "function",
-                                                    "function": {
-                                                        "name": current_tool_name,
-                                                        "arguments": "",
-                                                    },
-                                                }]
-                                            },
-                                        )
-                                    elif cb.get("type") == "thinking":
-                                        # Start of a thinking block — no output needed
-                                        pass
+                    elif etype == "content_block_stop":
+                        current_tool_id = None
+                        current_tool_name = None
 
-                                elif etype == "content_block_delta":
-                                    delta = event.get("delta", {})
-                                    dtype = delta.get("type", "")
-                                    if dtype == "text_delta":
-                                        yield make_stream_chunk(
-                                            msg_id,
-                                            model,
-                                            {"content": delta.get("text", "")},
-                                        )
-                                    elif dtype == "input_json_delta":
-                                        partial = delta.get("partial_json", "")
-                                        yield make_stream_chunk(
-                                            msg_id,
-                                            model,
-                                            {
-                                                "tool_calls": [{
-                                                    "index": 0,
-                                                    "function": {
-                                                        "arguments": partial,
-                                                    },
-                                                }]
-                                            },
-                                        )
-                                    elif dtype == "thinking_delta":
-                                        yield make_stream_chunk(
-                                            msg_id,
-                                            model,
-                                            {
-                                                "reasoning_content": delta.get(
-                                                    "thinking", ""
-                                                )
-                                            },
-                                        )
-                                    elif dtype == "signature_delta":
-                                        # Signature associated with thinking block;
-                                        # no user-visible output needed.
-                                        pass
+                    elif etype == "message_delta":
+                        sr = event.get("delta", {}).get(
+                            "stop_reason", "end_turn"
+                        )
+                        fr = "tool_calls" if sr == "tool_use" else "stop"
+                        _du = event.get("usage", {})
+                        if _du.get("output_tokens"):
+                            stream_output_tokens = _du["output_tokens"]
+                        if _du.get("input_tokens"):
+                            stream_input_tokens = _du["input_tokens"]
+                        yield make_stream_chunk(
+                            msg_id, model, {}, fr
+                        )
+                        # Send separate usage-only chunk (OpenAI stream_options format)
+                        _usage = {
+                            "prompt_tokens": stream_input_tokens,
+                            "completion_tokens": stream_output_tokens,
+                            "total_tokens": stream_input_tokens + stream_output_tokens,
+                        }
+                        yield f'data: {json.dumps({"id": msg_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [], "usage": _usage})}\n\n'
 
-                                elif etype == "content_block_stop":
-                                    current_tool_id = None
-                                    current_tool_name = None
+            yield "data: [DONE]\n\n"
 
-                                elif etype == "message_delta":
-                                    sr = event.get("delta", {}).get(
-                                        "stop_reason", "end_turn"
-                                    )
-                                    fr = "tool_calls" if sr == "tool_use" else "stop"
-                                    _du = event.get("usage", {})
-                                    if _du.get("output_tokens"):
-                                        stream_output_tokens = _du["output_tokens"]
-                                    if _du.get("input_tokens"):
-                                        stream_input_tokens = _du["input_tokens"]
-                                    yield make_stream_chunk(
-                                        msg_id, model, {}, fr
-                                    )
-                                    # Send separate usage-only chunk (OpenAI stream_options format)
-                                    _usage = {
-                                        "prompt_tokens": stream_input_tokens,
-                                        "completion_tokens": stream_output_tokens,
-                                        "total_tokens": stream_input_tokens + stream_output_tokens,
-                                    }
-                                    yield f'data: {json.dumps({"id": msg_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [], "usage": _usage})}\n\n'
-
-
-
-                yield "data: [DONE]\n\n"
-                return
-
-            except httpx.TimeoutException:
-                _note_timeout(request)
-                if attempt < max_retries - 1:
-                    _note_retry(request)
-                    await asyncio.sleep(retry_base_delay * (2**attempt))
-                    continue
-                yield f'data: {json.dumps({"error": {"message": "Timeout after retries"}})}\n\n'
-                yield "data: [DONE]\n\n"
-                return
-
-            except Exception as exc:
-                logger.exception("UNEXPECTED [stream] model=%s during chat.completions", model)
-                yield f'data: {json.dumps({"error": {"message": str(exc)}})}\n\n'
-                yield "data: [DONE]\n\n"
-                return
-
-        yield f'data: {json.dumps({"error": {"message": "All retries failed"}})}\n\n'
-        yield "data: [DONE]\n\n"
+        except httpx.TimeoutException:
+            # Connection dropped mid-stream after data may have flowed.
+            _note_timeout(request)
+            logger.warning("STREAM-MID timeout [chat] model=%s", model)
+            yield f'data: {json.dumps({"error": {"message": "Upstream timeout mid-stream", "type": "api_error", "code": 504}})}\n\n'
+            yield "data: [DONE]\n\n"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("UNEXPECTED [stream] model=%s during chat.completions", model)
+            yield f'data: {json.dumps({"error": {"message": str(exc), "type": "api_error", "code": 500}})}\n\n'
+            yield "data: [DONE]\n\n"
+        finally:
+            await stack.aclose()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -959,141 +1072,143 @@ async def _handle_messages_stream(
     *,
     request: Request | None = None,
     health: HealthMonitor | None = None,
-) -> StreamingResponse:
+) -> JSONResponse | StreamingResponse:
     url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
     body_bytes = json.dumps(bedrock_body).encode()
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
-    async def generate():  # noqa: C901
-        for attempt in range(max_retries):
-            try:
-                headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-                async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
-                    async with client.stream(
-                        "POST", url, headers=headers, content=body_bytes
-                    ) as resp:
-                        if resp.status_code in (429, 529, 503):
-                            _note_retry(request)
-                            await asyncio.sleep(retry_base_delay * (2**attempt))
-                            continue
-
-                        if resp.status_code != 200:
-                            err = ""
-                            async for chunk in resp.aiter_text():
-                                err += chunk
-                            error = parse_bedrock_error(resp.status_code, err)
-                            yield make_anthropic_sse(
-                                "error",
-                                {
-                                    "type": "error",
-                                    "error": {
-                                        "type": error["type"],
-                                        "message": error["message"],
-                                    },
-                                },
-                            )
-                            return
-
-                        buf = b""
-                        async for raw in resp.aiter_bytes():
-                            buf += raw
-                            events, consumed = decode_event_stream_chunk(buf)
-                            if consumed > 0:
-                                buf = buf[consumed:]
-                            for event in events:
-                                etype = event.get("type", "")
-
-                                if etype == "message_start":
-                                    # Enrich the message_start with our ID & model
-                                    msg_obj = event.get("message", {})
-                                    msg_obj["id"] = msg_id
-                                    msg_obj["model"] = model
-                                    msg_obj.setdefault("type", "message")
-                                    msg_obj.setdefault("role", "assistant")
-                                    msg_obj.setdefault("content", [])
-                                    msg_obj.setdefault("stop_reason", None)
-                                    msg_obj.setdefault("stop_sequence", None)
-                                    yield make_anthropic_sse(
-                                        "message_start",
-                                        {"type": "message_start", "message": msg_obj},
-                                    )
-
-                                elif etype == "content_block_start":
-                                    yield make_anthropic_sse(
-                                        "content_block_start", event
-                                    )
-
-                                elif etype == "content_block_delta":
-                                    yield make_anthropic_sse(
-                                        "content_block_delta", event
-                                    )
-
-                                elif etype == "content_block_stop":
-                                    yield make_anthropic_sse(
-                                        "content_block_stop", event
-                                    )
-
-                                elif etype == "message_delta":
-                                    yield make_anthropic_sse(
-                                        "message_delta", event
-                                    )
-
-                                elif etype == "message_stop":
-                                    yield make_anthropic_sse(
-                                        "message_stop",
-                                        {"type": "message_stop"},
-                                    )
-
-                                elif etype == "ping":
-                                    yield make_anthropic_sse(
-                                        "ping", {"type": "ping"}
-                                    )
-
-                return  # success, exit retry loop
-
-            except httpx.TimeoutException:
-                _note_timeout(request)
-                if attempt < max_retries - 1:
-                    _note_retry(request)
-                    await asyncio.sleep(retry_base_delay * (2**attempt))
-                    continue
-                yield make_anthropic_sse(
-                    "error",
-                    {
-                        "type": "error",
-                        "error": {
-                            "type": "api_error",
-                            "message": "Timeout after retries",
-                        },
-                    },
-                )
-                return
-
-            except Exception as exc:
-                logger.exception("UNEXPECTED [messages-stream] model=%s", model)
-                yield make_anthropic_sse(
-                    "error",
-                    {
-                        "type": "error",
-                        "error": {
-                            "type": "api_error",
-                            "message": str(exc),
-                        },
-                    },
-                )
-                return
-
-        # All retries exhausted
-        yield make_anthropic_sse(
-            "error",
-            {
+    # Preflight: a pre-stream failure (bad request, unsupported tool, auth,
+    # model-not-found, retry-exhausted) is returned as a real HTTP error with
+    # the proper status code and a complete Anthropic error envelope — matching
+    # the upstream Anthropic API — instead of a 200 SSE body with an orphan
+    # error event that leaves clients hanging.
+    resp, stack, err = await _open_upstream_stream(
+        url, body_bytes, auth, max_retries, retry_base_delay,
+        request=request, health=health, log_tag=f"messages model={model}",
+    )
+    if err is not None:
+        return JSONResponse(
+            status_code=err["status"],
+            content={
                 "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": "All retries failed",
-                },
+                "error": {"type": err["type"], "message": err["message"]},
             },
         )
+
+    async def generate():  # noqa: C901
+        started = False  # whether message_start has been emitted
+        try:
+            buf = b""
+            async for raw in resp.aiter_bytes():
+                buf += raw
+                events, consumed = decode_event_stream_chunk(buf)
+                if consumed > 0:
+                    buf = buf[consumed:]
+                for event in events:
+                    etype = event.get("type", "")
+
+                    if etype == "_exception":
+                        # Mid-stream upstream fault. Emit a valid Anthropic
+                        # error event (a legal stream terminator) so the client
+                        # stops cleanly instead of waiting forever for frames
+                        # that the regex decoder used to drop silently.
+                        _log_upstream_error(
+                            event.get("status", 500),
+                            "STREAM-MID error [messages] model=%s type=%s msg=%s",
+                            model,
+                            event.get("exception_type", "?"),
+                            event.get("message", "")[:300],
+                        )
+                        yield make_anthropic_sse(
+                            "error",
+                            {
+                                "type": "error",
+                                "error": {
+                                    "type": parse_bedrock_error(
+                                        event.get("status", 500), ""
+                                    )["type"],
+                                    "message": event.get(
+                                        "message", "upstream stream error"
+                                    ),
+                                },
+                            },
+                        )
+                        return
+
+                    if etype == "message_start":
+                        started = True
+                        # Enrich the message_start with our ID & model
+                        msg_obj = event.get("message", {})
+                        msg_obj["id"] = msg_id
+                        msg_obj["model"] = model
+                        msg_obj.setdefault("type", "message")
+                        msg_obj.setdefault("role", "assistant")
+                        msg_obj.setdefault("content", [])
+                        msg_obj.setdefault("stop_reason", None)
+                        msg_obj.setdefault("stop_sequence", None)
+                        yield make_anthropic_sse(
+                            "message_start",
+                            {"type": "message_start", "message": msg_obj},
+                        )
+
+                    elif etype == "content_block_start":
+                        yield make_anthropic_sse(
+                            "content_block_start", event
+                        )
+
+                    elif etype == "content_block_delta":
+                        yield make_anthropic_sse(
+                            "content_block_delta", event
+                        )
+
+                    elif etype == "content_block_stop":
+                        yield make_anthropic_sse(
+                            "content_block_stop", event
+                        )
+
+                    elif etype == "message_delta":
+                        yield make_anthropic_sse(
+                            "message_delta", event
+                        )
+
+                    elif etype == "message_stop":
+                        yield make_anthropic_sse(
+                            "message_stop",
+                            {"type": "message_stop"},
+                        )
+
+                    elif etype == "ping":
+                        yield make_anthropic_sse(
+                            "ping", {"type": "ping"}
+                        )
+
+        except httpx.TimeoutException:
+            _note_timeout(request)
+            logger.warning(
+                "STREAM-MID timeout [messages] model=%s started=%s",
+                model, started,
+            )
+            yield make_anthropic_sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "Upstream timeout mid-stream",
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("UNEXPECTED [messages-stream] model=%s", model)
+            yield make_anthropic_sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": str(exc)},
+                },
+            )
+        finally:
+            await stack.aclose()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

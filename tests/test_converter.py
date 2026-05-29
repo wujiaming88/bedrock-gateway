@@ -18,6 +18,7 @@ from bedrock_gateway.converter import (
     map_reasoning_effort,
     parse_bedrock_error,
     parse_bedrock_response,
+    stream_exception_status,
 )
 
 
@@ -509,6 +510,92 @@ class TestDecodeEventStreamChunk:
         assert len(events) == 2
         assert consumed > 0
         assert consumed <= len(raw)
+
+
+def _exc_frame(exc_type: str, message: str, msg_key: str = "message") -> bytes:
+    """Build a realistic AWS event-stream exception frame: an ``:exception-type``
+    header (a few binary header bytes), the modeled ``*Exception`` name, then a
+    JSON ``message`` payload — NOT a ``"bytes"``-wrapped event."""
+    return (
+        b"\x00\x00\x0d:exception-type\x07\x00"
+        + bytes([len(exc_type)])
+        + exc_type.encode()
+        + json.dumps({msg_key: message}).encode()
+    )
+
+
+class TestDecodeExceptionFrames:
+    """The decoder must surface mid-stream Bedrock exception frames instead of
+    silently dropping them (which used to leave clients hanging forever)."""
+
+    def test_throttling_exception_surfaced(self):
+        events, consumed = decode_event_stream_chunk(
+            _exc_frame("throttlingException", "Rate exceeded")
+        )
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["type"] == "_exception"
+        assert ev["exception_type"] == "throttlingException"
+        assert ev["message"] == "Rate exceeded"
+        assert ev["status"] == 429
+        assert consumed > 0
+
+    def test_internal_server_exception_capital_message(self):
+        # Bedrock varies capitalization: "Message" vs "message".
+        events, _ = decode_event_stream_chunk(
+            _exc_frame("internalServerException", "boom", msg_key="Message")
+        )
+        assert events[0]["exception_type"] == "internalServerException"
+        assert events[0]["message"] == "boom"
+        assert events[0]["status"] == 500
+
+    def test_model_stream_error_maps_to_502(self):
+        events, _ = decode_event_stream_chunk(
+            _exc_frame("modelStreamErrorException", "stream broke")
+        )
+        assert events[0]["status"] == 502
+
+    def test_unknown_exception_defaults_to_500(self):
+        events, _ = decode_event_stream_chunk(
+            _exc_frame("someNovelException", "weird")
+        )
+        assert events[0]["type"] == "_exception"
+        assert events[0]["status"] == 500
+
+    def test_normal_event_then_exception_frame(self):
+        import base64 as b64
+
+        good = {"type": "content_block_delta", "delta": {"text": "hi"}}
+        enc = b64.b64encode(json.dumps(good).encode()).decode()
+        raw = (
+            f'{{"bytes":"{enc}"}}'.encode()
+            + b"  "
+            + _exc_frame("throttlingException", "slow down")
+        )
+        events, consumed = decode_event_stream_chunk(raw)
+        types = [e["type"] for e in events]
+        assert types == ["content_block_delta", "_exception"]
+        assert events[1]["status"] == 429
+        assert consumed <= len(raw)
+
+    def test_exception_without_message_uses_fallback(self):
+        # No JSON message payload at all — must still surface, not drop.
+        raw = b"\x00\x00\x0d:exception-type\x07\x00\x13throttlingException"
+        events, _ = decode_event_stream_chunk(raw)
+        assert len(events) == 1
+        assert events[0]["type"] == "_exception"
+        assert "throttlingException" in events[0]["message"]
+
+
+class TestStreamExceptionStatus:
+    def test_known_types(self):
+        assert stream_exception_status("throttlingException") == 429
+        assert stream_exception_status("serviceUnavailableException") == 503
+        assert stream_exception_status("validationException") == 400
+        assert stream_exception_status("modelTimeoutException") == 504
+
+    def test_unknown_defaults_500(self):
+        assert stream_exception_status("nopeException") == 500
 
 
 # ─── Error Parsing ──────────────────────────────────────────────────

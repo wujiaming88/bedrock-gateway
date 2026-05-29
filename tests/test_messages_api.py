@@ -759,7 +759,15 @@ class TestMessagesStreamErrors:
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_stream_bedrock_error(self, mock_client_cls, client: TestClient):
-        """Bedrock errors in streaming return Anthropic error SSE."""
+        """A PRE-stream Bedrock error (the upstream rejects the request before
+        any event flows) must be returned as a real HTTP error with the proper
+        status code and a complete Anthropic error envelope — NOT disguised as
+        a 200 SSE body with an orphan `error` event that hangs the client.
+
+        This mirrors the upstream Anthropic Messages API, whose SDK raises a
+        typed error (e.g. NotFoundError) on stream open rather than yielding a
+        200 stream.
+        """
         async def aiter_text():
             yield json.dumps({"message": "Model not found"})
 
@@ -784,23 +792,52 @@ class TestMessagesStreamErrors:
             "stream": True,
         })
 
-        assert resp.status_code == 200  # SSE stream always returns 200
+        assert resp.status_code == 404
+        data = resp.json()
+        assert data["type"] == "error"
+        assert data["error"]["type"] == "not_found_error"
+        assert data["error"]["message"] == "Model not found"
 
-        # Parse error event
-        lines = resp.text.strip().split("\n")
-        error_events = []
-        current_event = {}
-        for line in lines:
-            if line.startswith("event: "):
-                current_event["event"] = line[7:]
-            elif line.startswith("data: "):
-                current_event["data"] = json.loads(line[6:])
-                error_events.append(current_event)
-                current_event = {}
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_web_search_tool_400_streaming(self, mock_client_cls, client: TestClient):
+        """Regression: the reported field failure. A client sends the
+        Anthropic server-side `web_search` tool (unsupported on Bedrock) with
+        stream=True. Bedrock rejects with 400 at stream-open. The gateway must
+        return a real HTTP 400 + intact error message — NOT a 200 SSE stream
+        with an orphan error event (which hung the client after a few turns)."""
+        async def aiter_text():
+            yield json.dumps({
+                "message": "tool type 'web_search_20250305' is not supported for this model"
+            })
 
-        error_evts = [e for e in error_events if e["event"] == "error"]
-        assert len(error_evts) == 1
-        assert error_evts[0]["data"]["error"]["type"] == "not_found_error"
+        mock_stream_response = MagicMock()
+        mock_stream_response.status_code = 400
+        mock_stream_response.aiter_text = aiter_text
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_stream_response)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_instance = AsyncMock()
+        mock_instance.stream = MagicMock(return_value=mock_stream_ctx)
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_instance
+
+        resp = client.post("/v1/messages?beta=true", json={
+            "model": "test-model",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "search the web"}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "stream": True,
+        })
+
+        assert resp.status_code == 400
+        data = resp.json()
+        assert data["type"] == "error"
+        assert data["error"]["type"] == "invalid_request_error"
+        # Error is surfaced verbatim — never swallowed.
+        assert "web_search_20250305" in data["error"]["message"]
 
 
 class TestMessagesStreamPing:
