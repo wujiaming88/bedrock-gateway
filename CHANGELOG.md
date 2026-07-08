@@ -3,6 +3,15 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.1] — 2026-07-08
+
+### 变更
+
+- **`models:` 配置改为与内置默认合并**（原为整体替换）。现在自定义模型是在
+  Claude/GPT-5.5/Grok 等默认之上**追加**，同名条目**覆盖**默认——加一个模型
+  不再意外丢失所有默认。新增 `use_default_models`（默认 `true`）开关，设
+  `false` 可只暴露自己配的模型。修正了一个反直觉、易踩的行为。
+
 ## [0.3.0] — 2026-07-08
 
 ### 新增

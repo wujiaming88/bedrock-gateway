@@ -167,9 +167,8 @@ def build_config(port: int, tmp_path: str) -> tuple[str, dict]:
     az_ep = os.environ.get("AZURE_OPENAI_ENDPOINT")
     az_key = os.environ.get("AZURE_OPENAI_KEY")
     if az_ep and az_key:
-        # NOTE: a ``models:`` section REPLACES the built-in defaults, so the
-        # Bedrock defaults (claude/gpt-5.5/grok) must be re-listed here to keep
-        # them available alongside the Azure additions.
+        # ``models:`` merges with the built-in defaults (Claude/GPT-5.5/Grok),
+        # so we only list the Azure additions — the Bedrock defaults remain.
         lines += [
             "azure_resources:",
             "  az_resp:",
@@ -179,18 +178,6 @@ def build_config(port: int, tmp_path: str) -> tuple[str, dict]:
             f"    base_url: {az_ep}/v1",
             "    api_key: ${AZURE_OPENAI_KEY}",
             "models:",
-            # Bedrock defaults (re-listed because models: overrides defaults)
-            "  claude-haiku:",
-            "    bedrock_id: us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            "  gpt-5.5:",
-            "    bedrock_id: openai.gpt-5.5",
-            "    endpoint: mantle",
-            "    protocol: openai-responses",
-            "  grok-4.3:",
-            "    bedrock_id: xai.grok-4.3",
-            "    endpoint: mantle",
-            "    protocol: openai-responses",
-            # Azure additions
             "  azure-gpt-5:",
             "    transport: azure",
             "    dialect: openai-responses",

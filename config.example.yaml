@@ -56,8 +56,13 @@ dashboard:
     retain_days: 7                    # drop rows older than this many days
 
 # ─── Models ───────────────────────────────────────────────
-# Map user-facing aliases to Bedrock model IDs.
-# Omit this section entirely to use the built-in defaults.
+# Map user-facing aliases to model IDs. This section MERGES with the built-in
+# defaults (Claude family + GPT-5.5 + Grok): entries here are added on top, and
+# an entry sharing a default's alias overrides it. So you only need to list what
+# you want to ADD or CHANGE — omit the section entirely to use just the defaults.
+# Set `use_default_models: false` to start from empty and expose ONLY the models
+# configured here.
+# use_default_models: false
 models:
   claude-opus-4.7:
     bedrock_id: us.anthropic.claude-opus-4-7

@@ -78,9 +78,10 @@ AWS_BEARER_TOKEN_BEDROCK=... AZURE_OPENAI_ENDPOINT=... AZURE_OPENAI_KEY=... \
 - **Version lives in two files**: bump BOTH `bedrock_gateway/__init__.py` and
   `pyproject.toml`. `TestVersionConsistency` enforces it; a mismatch ships a
   wheel with the wrong dist label.
-- **`models:` in config REPLACES the built-in defaults** (does not merge). If
-  you add a custom model you must re-list any Claude/GPT/Grok defaults you still
-  want. Pinned by `test_custom_models_replace_defaults`.
+- **`models:` MERGES with the built-in defaults** (custom entries add on top;
+  same-alias overrides). `use_default_models: false` starts from empty. Pinned
+  by `test_custom_models_merge_with_defaults` / `..._overrides_default_on_clash`
+  / `..._use_default_models_false_disables_defaults`.
 - **Running e2e/the gateway writes `data/metrics.db`**, which then pollutes the
   dashboard tests. `rm -f data/metrics.db*` before `pytest`.
 - **Azure auth is `api-key:` header, not `Authorization: Bearer`.** Azure

@@ -224,19 +224,13 @@ dashboard:
   rate_limit: 60                          # /api/metrics/* 每 IP 每分钟限流
   max_request_log: 500                    # 请求日志面板保留的最近条数
 
-# ── 模型别名（省略整段则用内置默认）──
+# ── 模型别名（与内置默认合并；同名覆盖）──
+# use_default_models: true                # false 则只用下面配的，不含内置默认
 # models:
-#   my-model:
+#   my-model:                             # 新增一个模型，默认模型仍保留
 #     bedrock_id: us.my-org.my-model-v1
 #     context_length: 100000
 #     max_output: 8192
-#   # mantle 端点 + Responses 协议模型示例（如 GPT-5.5）：
-#   gpt-5.5:
-#     bedrock_id: openai.gpt-5.5
-#     context_length: 272000
-#     max_output: 64000
-#     endpoint: mantle                    # runtime（默认）| mantle
-#     protocol: openai-responses          # anthropic（默认）| openai-responses
 ```
 
 ### 认证模式一览
@@ -306,7 +300,7 @@ models:
     deployment: gpt-4o
 ```
 
-> ⚠️ 配了 `models:` 就会**替换**内置默认模型（不合并）。若还要用 Claude/GPT-5.5/Grok，需在 `models:` 里一并列出。
+> `models:` 与内置默认模型**合并**：只需列出要新增的模型，Claude/GPT-5.5/Grok 等默认仍可用；同名条目会覆盖默认。想只暴露自己配的模型，设 `use_default_models: false`。
 
 ### 调用
 

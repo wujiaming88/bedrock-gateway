@@ -329,11 +329,10 @@ def _parse_azure_resources(
     return resources
 
 
-def _parse_models(
-    raw: dict[str, Any] | None,
-    azure_resources: dict[str, AzureResource] | None = None,
-) -> dict[str, ModelEntry]:
-    """Parse model entries from raw dict, falling back to defaults.
+def _build_entry(
+    name: str, info: dict[str, Any], resources: dict[str, AzureResource]
+) -> ModelEntry:
+    """Construct a single :class:`ModelEntry` from a raw config dict.
 
     Azure models reference a resource by name via ``azure_resource``; the
     referenced :class:`AzureResource`'s endpoint + key are resolved onto the
@@ -341,39 +340,58 @@ def _parse_models(
     raises ``ValueError`` rather than silently producing an unauthenticated
     entry.
     """
+    endpoint = info.get("endpoint", "runtime")
+    protocol = info.get("protocol", "anthropic")
+    transport, dialect = _resolve_axes(info, protocol)
+    entry = ModelEntry(
+        bedrock_id=info.get("bedrock_id", name),
+        context_length=int(info.get("context_length", 200_000)),
+        max_output=int(info.get("max_output", 64_000)),
+        endpoint=endpoint,
+        protocol=protocol,
+        transport=transport,
+        dialect=dialect,
+    )
+    # Resolve Azure resource reference → concrete endpoint + key.
+    res_ref = info.get("azure_resource")
+    if res_ref is not None:
+        if res_ref not in resources:
+            raise ValueError(
+                f"model {name!r} references unknown azure_resource "
+                f"{res_ref!r}; defined resources: {list(resources)}"
+            )
+        res = resources[res_ref]
+        entry.azure_endpoint = res.base_url
+        entry.azure_api_key = res.api_key
+        entry.transport = "azure"
+        # deployment defaults to the alias when omitted
+        entry.deployment = str(info.get("deployment", name))
+    return entry
+
+
+def _parse_models(
+    raw: dict[str, Any] | None,
+    azure_resources: dict[str, AzureResource] | None = None,
+    *,
+    use_defaults: bool = True,
+) -> dict[str, ModelEntry]:
+    """Parse model entries, **merging** built-in defaults with user config.
+
+    The built-in :data:`_DEFAULT_MODELS` form the base; entries from *raw* are
+    added on top, an entry sharing a default's alias **overriding** it. This is
+    additive: adding one custom model does not drop the Claude / GPT-5.5 / Grok
+    defaults. Set ``use_defaults=False`` (config ``use_default_models: false``)
+    to start from an empty base and expose *only* the configured models.
+    """
     resources = azure_resources or {}
-    source = raw if raw else _DEFAULT_MODELS
     models: dict[str, ModelEntry] = {}
-    for name, info in source.items():
+    if use_defaults:
+        for name, info in _DEFAULT_MODELS.items():
+            models[name] = _build_entry(name, info, resources)
+    for name, info in (raw or {}).items():
         if not isinstance(info, dict):
             continue
-        endpoint = info.get("endpoint", "runtime")
-        protocol = info.get("protocol", "anthropic")
-        transport, dialect = _resolve_axes(info, protocol)
-        entry = ModelEntry(
-            bedrock_id=info.get("bedrock_id", name),
-            context_length=int(info.get("context_length", 200_000)),
-            max_output=int(info.get("max_output", 64_000)),
-            endpoint=endpoint,
-            protocol=protocol,
-            transport=transport,
-            dialect=dialect,
-        )
-        # Resolve Azure resource reference → concrete endpoint + key.
-        res_ref = info.get("azure_resource")
-        if res_ref is not None:
-            if res_ref not in resources:
-                raise ValueError(
-                    f"model {name!r} references unknown azure_resource "
-                    f"{res_ref!r}; defined resources: {list(resources)}"
-                )
-            res = resources[res_ref]
-            entry.azure_endpoint = res.base_url
-            entry.azure_api_key = res.api_key
-            entry.transport = "azure"
-            # deployment defaults to the alias when omitted
-            entry.deployment = str(info.get("deployment", name))
-        models[name] = entry
+        models[name] = _build_entry(name, info, resources)  # override on clash
     return models
 
 
@@ -472,8 +490,13 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
     # Azure resources (parsed before models so references can resolve)
     azure_resources = _parse_azure_resources(raw.get("azure_resources"))
 
-    # Models
-    models = _parse_models(raw.get("models"), azure_resources)
+    # Models — built-in defaults merged with user config (user overrides on
+    # alias clash). ``use_default_models: false`` starts from an empty base.
+    models = _parse_models(
+        raw.get("models"),
+        azure_resources,
+        use_defaults=bool(raw.get("use_default_models", True)),
+    )
 
     return GatewayConfig(
         auth=auth,

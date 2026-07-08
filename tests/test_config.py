@@ -104,20 +104,44 @@ class TestModelParsing:
         assert entry.context_length == 50000
         assert entry.max_output == 8192
 
-    def test_custom_models_replace_defaults(self, tmp_path: Path):
-        """GOTCHA: a ``models:`` section REPLACES the built-in defaults — it
-        does not merge. Callers who add a model must re-list the defaults they
-        still want. This test pins the behaviour so it isn't changed silently.
+    def test_custom_models_merge_with_defaults(self, tmp_path: Path):
+        """A ``models:`` section is ADDITIVE — custom models are merged on top
+        of the built-in defaults, which remain available.
         """
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
+            "models:\n"
+            "  extra-model:\n"
+            "    bedrock_id: us.x.y\n"
+        )
+        cfg = load_config(config_file)
+        assert "extra-model" in cfg.models          # custom added
+        assert "claude-haiku" in cfg.models          # defaults still present
+        assert "gpt-5.5" in cfg.models
+
+    def test_custom_model_overrides_default_on_clash(self, tmp_path: Path):
+        """A custom entry sharing a default alias overrides it."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "models:\n"
+            "  claude-haiku:\n"
+            "    bedrock_id: us.custom.haiku-override\n"
+        )
+        cfg = load_config(config_file)
+        assert cfg.models["claude-haiku"].bedrock_id == "us.custom.haiku-override"
+
+    def test_use_default_models_false_disables_defaults(self, tmp_path: Path):
+        """use_default_models: false → only the configured models are exposed."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "use_default_models: false\n"
             "models:\n"
             "  only-model:\n"
             "    bedrock_id: us.x.y\n"
         )
         cfg = load_config(config_file)
         assert set(cfg.models) == {"only-model"}
-        assert "claude-haiku" not in cfg.models  # defaults gone
+        assert "claude-haiku" not in cfg.models
 
 
 class TestAuthConfig:
