@@ -135,6 +135,29 @@ def _log_upstream_error(status_code: int, fmt: str, *args: Any) -> None:
         logger.error(fmt, *args)
 
 
+# Connections should fail fast (DNS/refused/TLS is not something a long read
+# timeout should mask); reads must be generous for slow reasoning models. So we
+# split the single ``timeout`` value: it governs read/write/pool, while connect
+# is capped short. See P2 in the timeout/error-handling audit.
+_CONNECT_TIMEOUT = 10.0
+
+
+def _httpx_timeout(timeout: float) -> httpx.Timeout:
+    """Build an httpx.Timeout: fast connect, ``timeout`` for read/write/pool."""
+    return httpx.Timeout(timeout, connect=min(_CONNECT_TIMEOUT, timeout))
+
+
+# Total wall-clock budget for the whole retry sequence (all attempts + backoff
+# sleeps), as a multiple of the per-attempt timeout. Prevents a slow upstream
+# from stacking N full timeouts into minutes of hang under load. See P3.
+_RETRY_BUDGET_FACTOR = 1.5
+
+
+def _retry_deadline(timeout: float, max_retries: int) -> float:
+    """A ``time.monotonic()`` deadline bounding the entire retry sequence."""
+    return time.monotonic() + timeout * _RETRY_BUDGET_FACTOR * max(1, max_retries)
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -726,19 +749,40 @@ async def _handle_sync(
     url = transport.build_url(dialect.operation_path(entry, False), region, entry)
     body_bytes = json.dumps(bedrock_body).encode()
     last_error: str | None = None
+    deadline = _retry_deadline(timeout, max_retries)
 
     for attempt in range(max_retries):
+        # P3: stop retrying once the total wall-clock budget is spent, rather
+        # than stacking N full per-attempt timeouts into a multi-minute hang.
+        if attempt > 0 and time.monotonic() >= deadline:
+            logger.warning(
+                "RETRY-BUDGET exhausted model=%s attempt=%d/%d", model,
+                attempt + 1, max_retries,
+            )
+            break
         try:
             # Transport-specific headers (e.g. Azure api-key) override the
             # gateway's global auth; None → use the global SigV4/Bearer path.
             headers = transport.auth_headers(entry) or auth.get_headers(
                 method="POST", url=url, body=body_bytes
             )
-            async with _track_upstream(health), httpx.AsyncClient(timeout=timeout) as client:
+            async with _track_upstream(health), httpx.AsyncClient(timeout=_httpx_timeout(timeout)) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
-                result = resp.json()
+                # P1: a 200 with an unparseable body is an upstream fault (502),
+                # not a gateway crash (500) — guard the JSON decode.
+                try:
+                    result = resp.json()
+                except (ValueError, json.JSONDecodeError):
+                    logger.error(
+                        "BADJSON model=%s upstream 200 but body not JSON (%d bytes)",
+                        model, len(resp.content),
+                    )
+                    return _oai_error(
+                        502, "Upstream returned a malformed (non-JSON) response",
+                        "api_error",
+                    )
                 client_body, log_info = dialect.render_sync(result, model)
                 logger.info(
                     "RES model=%s finish=%s in=%s out=%s attempt=%d",
@@ -837,7 +881,14 @@ async def _open_upstream_stream(
     """
     last_status = 502
     last_message = "upstream unavailable"
+    deadline = _retry_deadline(timeout, max_retries)
     for attempt in range(max_retries):
+        if attempt > 0 and time.monotonic() >= deadline:  # P3: total budget
+            logger.warning(
+                "STREAM-OPEN retry-budget exhausted [%s] attempt=%d/%d",
+                log_tag, attempt + 1, max_retries,
+            )
+            break
         stack = AsyncExitStack()
         # Transport-specific headers (Azure api-key) override the global auth.
         headers = extra_headers or auth.get_headers(
@@ -846,7 +897,7 @@ async def _open_upstream_stream(
         try:
             await stack.enter_async_context(_track_upstream(health))
             client = await stack.enter_async_context(
-                httpx.AsyncClient(timeout=timeout)
+                httpx.AsyncClient(timeout=_httpx_timeout(timeout))
             )
             resp = await stack.enter_async_context(
                 client.stream("POST", url, headers=headers, content=body_bytes)
@@ -1001,15 +1052,34 @@ async def _handle_messages_sync(
     url = f"{bedrock_base}/model/{model}/invoke"
     body_bytes = json.dumps(bedrock_body).encode()
     last_error: str | None = None
+    deadline = _retry_deadline(timeout, max_retries)
 
     for attempt in range(max_retries):
+        if attempt > 0 and time.monotonic() >= deadline:  # P3: total budget
+            logger.warning(
+                "RETRY-BUDGET exhausted [messages] model=%s attempt=%d/%d",
+                model, attempt + 1, max_retries,
+            )
+            break
         try:
             headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-            async with _track_upstream(health), httpx.AsyncClient(timeout=timeout) as client:
+            async with _track_upstream(health), httpx.AsyncClient(timeout=_httpx_timeout(timeout)) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
-                result = resp.json()
+                try:  # P1: malformed 200 body → 502, not a 500 crash
+                    result = resp.json()
+                except (ValueError, json.JSONDecodeError):
+                    logger.error(
+                        "BADJSON [messages] model=%s upstream 200 but body not JSON",
+                        model,
+                    )
+                    return JSONResponse(
+                        status_code=502,
+                        content=format_anthropic_error(
+                            502, "Upstream returned a malformed (non-JSON) response"
+                        ),
+                    )
                 usage = result.get("usage", {})
                 logger.info(
                     "RES [messages] model=%s stop=%s in=%s out=%s attempt=%d",

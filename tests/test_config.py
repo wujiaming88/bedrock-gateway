@@ -158,3 +158,44 @@ class TestAuthConfig:
         assert cfg.access_key_id == "ak_from_env"
         assert cfg.secret_access_key == "sk_from_env"
         assert cfg.session_token == "st_from_env"
+
+
+class TestSigV4TransportWarning:
+    """SigV4 auth modes can't reach mantle/Azure — startup should warn (not
+    fail, since runtime/Bedrock models still work)."""
+
+    def test_credentials_mode_warns_on_mantle_model(self, tmp_path, caplog):
+        import logging
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "auth:\n"
+            "  mode: credentials\n"
+            "  access_key_id: AKIA_x\n"
+            "  secret_access_key: secret_x\n"
+            "models:\n"
+            "  gpt-5.5:\n"
+            "    bedrock_id: openai.gpt-5.5\n"
+            "    endpoint: mantle\n"
+            "    protocol: openai-responses\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="bedrock_gateway"):
+            load_config(cfg)
+        assert any("will NOT authenticate" in r.message for r in caplog.records)
+        assert any("gpt-5.5" in r.message for r in caplog.records)
+
+    def test_bearer_mode_no_warning(self, tmp_path, caplog):
+        import logging
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "auth:\n"
+            "  mode: bearer_token\n"
+            "  bearer_token: tok\n"
+            "models:\n"
+            "  gpt-5.5:\n"
+            "    bedrock_id: openai.gpt-5.5\n"
+            "    endpoint: mantle\n"
+            "    protocol: openai-responses\n"
+        )
+        with caplog.at_level(logging.WARNING, logger="bedrock_gateway"):
+            load_config(cfg)
+        assert not any("will NOT authenticate" in r.message for r in caplog.records)

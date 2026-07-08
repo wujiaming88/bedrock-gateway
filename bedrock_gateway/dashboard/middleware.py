@@ -40,7 +40,11 @@ _EXCLUDED_EXACT = {
 
 # Paths that carry an LLM request body (JSON with ``model``) and whose
 # responses carry ``usage`` tokens worth extracting.
-_LLM_PATHS = frozenset({"/v1/chat/completions", "/v1/messages"})
+_LLM_PATHS = frozenset({
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/openai/v1/responses",
+})
 
 # Headers that describe the upstream body we buffer/replace; re-computed
 # from the response we return.

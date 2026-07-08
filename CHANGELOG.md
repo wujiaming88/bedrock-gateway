@@ -3,6 +3,31 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.4] — 2026-07-08
+
+### 修复
+
+- **`/openai/v1/responses` 请求此前完全未计入 dashboard metrics**（`_LLM_PATHS`
+  漏了该端点，自 0.2.0 起）。GPT-5.5 / Grok / Azure 的调用现被正确统计，model
+  名与 token 归属正常（token 提取已兼容 Responses 的 `input_tokens/output_tokens`）。
+- **上游 200 但响应体非法 JSON** 现返回 **502**（bad gateway）而非 500（伪装成
+  网关崩溃）——上游坏数据不再表现为网关自身错误。（chat + messages 两条 sync 路径）
+
+### 变更（超时/错误处理审查）
+
+- **连接超时与读取超时分离**：`retry.timeout` 现只管 read/write/pool，connect
+  固定 ≤10s 快速失败——连不上上游不再干等满整个 timeout。
+- **重试总时长封顶**：整个重试序列受墙钟预算约束（`timeout × 1.5 × max_retries`），
+  避免慢上游把 N 个完整超时叠成数分钟挂起。
+- **SigV4 auth 模式与 mantle/Azure 不兼容时启动告警**：`credentials`/`iam_role`/
+  `profile` 只能签 Bedrock runtime；配了 mantle/Azure 模型会在启动时 WARNING 列出
+  （服务照常运行，Bedrock 模型不受影响）。README 标注该限制。
+
+### 测试
+
+- 新增 `test_timeout_errors.py`（坏 JSON→502、超时拆分、重试预算、responses 端点
+  纳入 metrics）+ config SigV4 告警测试。总测试 **691 全绿**。
+
 ## [0.3.3] — 2026-07-08
 
 ### 新增

@@ -7,6 +7,7 @@ environment variable overrides, and sensible defaults.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -14,6 +15,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger("bedrock_gateway")
+
+# Auth modes whose credentials are applied via SigV4 signing scoped to the
+# ``bedrock`` service on the bedrock-runtime host. They CANNOT authenticate the
+# mantle endpoint (different host/service) or Azure (which needs an api-key
+# header), so models on those transports are unreachable under these modes.
+_SIGV4_AUTH_MODES = frozenset({"credentials", "iam_role", "profile"})
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +517,22 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         azure_resources,
         use_defaults=bool(raw.get("use_default_models", True)),
     )
+
+    # Warn (don't fail — Bedrock/runtime models still work) when a SigV4-based
+    # auth mode is paired with mantle/Azure models it cannot authenticate. This
+    # surfaces the mismatch at startup instead of as a mystery 403 at call time.
+    if auth.mode in _SIGV4_AUTH_MODES:
+        unreachable = [
+            name for name, m in models.items()
+            if m.transport == "azure" or m.endpoint == "mantle"
+        ]
+        if unreachable:
+            logger.warning(
+                "auth.mode=%r uses SigV4 (bedrock/runtime only) — these models "
+                "target mantle/Azure and will NOT authenticate: %s. Use "
+                "bearer_token (mantle) / api-key (Azure) for them.",
+                auth.mode, ", ".join(sorted(unreachable)),
+            )
 
     return GatewayConfig(
         auth=auth,

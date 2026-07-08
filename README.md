@@ -243,6 +243,8 @@ dashboard:
 | `iam_role` | EC2 / ECS / Lambda 元数据服务自动取凭据 | **是** |
 | `profile` | 使用 `~/.aws/credentials` 中的命名 profile | **是** |
 
+> ⚠️ **SigV4 模式（`credentials` / `iam_role` / `profile`）只适用于 Bedrock runtime 模型**（Claude 系）。它们对 **mantle 端点（GPT-5.5 / Grok）和 Azure 签不出有效凭据**——mantle 主机/服务不同、Azure 要 `api-key` header。要用 mantle 模型请配 `bearer_token`，Azure 由资源的 `api_key` 承担。若在 SigV4 模式下配了 mantle/Azure 模型，网关启动时会 WARNING 列出这些不可达的模型（服务照常运行，Bedrock 模型不受影响）。
+
 ### 鉴权与访问控制
 
 - 设置 `server.api_key` 后，调用 `/v1/*`、`/openai/*` 需带 `Authorization: Bearer <key>` 或 `x-api-key: <key>`；比较用 `hmac.compare_digest`，防时序攻击。
