@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.5] — 2026-07-08
+
+### 修复
+
+- **GPT-5.5 规格修正**：`context_length` 64K→**1,050,000**、`max_output`
+  64K→**128,000**，采用 OpenAI 官方 model spec（此前的 272K/64K 中 64K 是接入时
+  的保守猜测，model card 标 N/A）。这两个字段是 advisory（`/v1/models` 展示 +
+  客户端省略 max_tokens 时的默认值），非硬限制。Grok 4.3（1M / 131072）经核实
+  准确，未改。
+
 ## [0.3.4] — 2026-07-08
 
 ### 修复

@@ -58,7 +58,8 @@ class TestRegistration:
         assert e["bedrock_id"] == GPT55_BEDROCK_ID
         assert e["endpoint"] == "mantle"
         assert e["protocol"] == "openai-responses"
-        assert e["context_length"] == 272_000
+        assert e["context_length"] == 1_050_000
+        assert e["max_output"] == 128_000
 
     @pytest.mark.parametrize(
         "alias", ["gpt-55", "gpt5.5", "gpt-5-5", "openai.gpt-5.5", "openai-gpt-5.5"]

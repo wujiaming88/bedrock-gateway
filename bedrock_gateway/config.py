@@ -260,8 +260,12 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     # ── OpenAI GPT-5.5 (mantle endpoint, Responses API) ───────────────
     "gpt-5.5": {
         "bedrock_id": "openai.gpt-5.5",
-        "context_length": 272_000,
-        "max_output": 64_000,
+        # Per OpenAI's official model spec (developers.openai.com): 1.05M
+        # context, 128K max output. NB: the Bedrock model card lists 272K —
+        # these fields are advisory (shown in /v1/models, used as the default
+        # when a client omits max_tokens), not enforced by the gateway.
+        "context_length": 1_050_000,
+        "max_output": 128_000,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
