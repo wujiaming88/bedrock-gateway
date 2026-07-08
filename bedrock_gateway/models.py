@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import GatewayConfig, ModelEntry, _MODEL_ALIASES
+from .config import AzureResource, GatewayConfig, ModelEntry, _MODEL_ALIASES
 
 # ---------------------------------------------------------------------------
 # Valid Bedrock model ID prefixes — anything starting with one of these is
@@ -77,6 +77,14 @@ class ModelRegistry:
 
     def __init__(self, config: GatewayConfig) -> None:
         self._models: dict[str, ModelEntry] = dict(config.models)
+        # Azure resources that opt into passthrough-by-model-prefix, indexed by
+        # their ``prefix`` (e.g. "azure" → resource). Enables ``azure/<dep>``
+        # model routing with no per-model config.
+        self._prefix_resources: dict[str, AzureResource] = {
+            res.prefix: res
+            for res in config.azure_resources.values()
+            if res.prefix
+        }
 
     # ------------------------------------------------------------------
     # Public API
@@ -129,6 +137,35 @@ class ModelRegistry:
         if canonical:
             return self._models.get(canonical)
         return None
+
+    def resolve_prefixed(self, alias: str, dialect: str) -> ModelEntry | None:
+        """Resolve a ``<prefix>/<deployment>`` model into a passthrough entry.
+
+        If *alias* begins with a configured Azure resource ``prefix`` followed
+        by ``/``, build an Azure passthrough :class:`ModelEntry` on the fly:
+        the deployment is the remainder after the prefix, the endpoint + key
+        come from the matched resource, and *dialect* is supplied by the caller
+        (the server picks it from the endpoint the request hit). Returns
+        ``None`` when no prefix matches, so callers fall through to normal
+        resolution.
+
+        This is what lets ``azure/<any-deployment>`` route with **no per-model
+        config** — the resource (endpoint + key + prefix) is registered once.
+        """
+        if "/" not in alias or not self._prefix_resources:
+            return None
+        prefix, _, deployment = alias.partition("/")
+        res = self._prefix_resources.get(prefix)
+        if res is None or not deployment:
+            return None
+        return ModelEntry(
+            bedrock_id=deployment,
+            transport="azure",
+            dialect=dialect,
+            deployment=deployment,
+            azure_endpoint=res.base_url,
+            azure_api_key=res.api_key,
+        )
 
     def get_info(self, alias: str) -> ModelInfo | None:
         """Return full metadata for *alias*, or ``None`` if unknown."""

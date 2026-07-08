@@ -143,7 +143,16 @@ models:
 # Responses and Chat Completions dialects with no api-version needed, so a
 # single resource entry covers all your deployments. (A legacy base with
 # ?api-version=... is still supported — any query string is preserved.)
+#
+# `prefix` (optional) enables PASSTHROUGH-BY-MODEL-PREFIX: set prefix: azure and
+# any client model `azure/<deployment>` is routed to this resource with
+# <deployment> as the Azure deployment name — NO per-model entry needed. The
+# dialect is picked by the endpoint hit (/openai/v1/responses → responses,
+# /v1/chat/completions → chat). This is the lightest way to expose a whole Azure
+# resource: configure it once, then call azure/<anything> as your deployments
+# come and go. (You can still register explicit models in `models:` too.)
 # azure_resources:
 #   my-azure:
 #     base_url: https://<resource>.cognitiveservices.azure.com/openai/v1
 #     api_key: ${AZURE_OPENAI_KEY}
+#     prefix: azure        # → call model "azure/<your-deployment>"

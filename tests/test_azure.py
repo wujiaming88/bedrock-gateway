@@ -28,6 +28,7 @@ from bedrock_gateway.config import (
     _parse_azure_resources,
     _parse_models,
 )
+from bedrock_gateway.models import ModelRegistry
 from bedrock_gateway.providers import (
     AzureTransport,
     ChatPassthroughDialect,
@@ -393,3 +394,96 @@ class TestAzureGuards:
             "model": "azure-gpt-5-chat", "input": "hi"})
         assert r.status_code == 400
         assert "/v1/chat/completions" in r.json()["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Passthrough-by-model-prefix (azure/<deployment>)
+# ---------------------------------------------------------------------------
+
+def _prefix_config() -> GatewayConfig:
+    """A resource that opts into prefix routing via ``prefix: azure``."""
+    resources = {
+        "r1": AzureResource(base_url=AZ_BASE + "/v1", api_key="az-secret",
+                            prefix="azure"),
+    }
+    # No models: section → prefix routing is the ONLY way to reach Azure here.
+    models = _parse_models(None, resources)  # built-in defaults only
+    return GatewayConfig(
+        auth=AuthConfig(mode="bearer_token", bearer_token="t"),
+        region="us-east-1",
+        server=ServerConfig(host="127.0.0.1", port=4000, log_level="warning"),
+        retry=RetryConfig(max_retries=1, base_delay=0.01),
+        models=models,
+        azure_resources=resources,
+    )
+
+
+class TestPrefixResolutionUnit:
+    def _registry(self):
+        return ModelRegistry(_prefix_config())
+
+    def test_resolves_prefixed_to_passthrough_entry(self):
+        reg = self._registry()
+        e = reg.resolve_prefixed("azure/gpt-5.5", "openai-responses")
+        assert e is not None
+        assert e.transport == "azure"
+        assert e.dialect == "openai-responses"
+        assert e.deployment == "gpt-5.5"           # prefix stripped
+        assert e.azure_endpoint == AZ_BASE + "/v1"
+        assert e.azure_api_key == "az-secret"
+
+    def test_dialect_comes_from_caller(self):
+        """Same model, different endpoint → different dialect."""
+        reg = self._registry()
+        assert reg.resolve_prefixed("azure/x", "openai-chat").dialect == "openai-chat"
+        assert reg.resolve_prefixed("azure/x", "openai-responses").dialect == "openai-responses"
+
+    def test_no_prefix_match_returns_none(self):
+        reg = self._registry()
+        assert reg.resolve_prefixed("gpt-5.5", "openai-responses") is None      # no slash
+        assert reg.resolve_prefixed("other/x", "openai-responses") is None      # unknown prefix
+        assert reg.resolve_prefixed("azure/", "openai-responses") is None       # empty deployment
+
+    def test_deployment_may_contain_slashes(self):
+        reg = self._registry()
+        # only the first segment is the prefix; the rest is the deployment
+        e = reg.resolve_prefixed("azure/some/deep/name", "openai-chat")
+        assert e.deployment == "some/deep/name"
+
+
+class TestPrefixResolutionIntegration:
+    @pytest.fixture
+    def client(self):
+        return TestClient(create_app(_prefix_config()))
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_prefix_routes_responses(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_responses_body())
+        r = client.post("/openai/v1/responses",
+                        json={"model": "azure/gpt-5.5", "input": "hi"})
+        assert r.status_code == 200
+        url, headers, body = _call(mock_cls)
+        assert url == AZ_BASE + "/v1/responses"
+        assert headers.get("api-key") == "az-secret"
+        assert body["model"] == "gpt-5.5"          # prefix stripped for upstream
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_prefix_routes_chat(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_chat_body())
+        r = client.post("/v1/chat/completions", json={
+            "model": "azure/gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}]})
+        assert r.status_code == 200
+        url, headers, body = _call(mock_cls)
+        assert url == AZ_BASE + "/v1/chat/completions"
+        assert body["model"] == "gpt-5.5"
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_bedrock_defaults_still_work_alongside_prefix(self, mock_cls, client):
+        """Prefix routing doesn't shadow normal model resolution."""
+        mock_cls.return_value = _mock_sync_client(_responses_body())
+        r = client.post("/openai/v1/responses",
+                        json={"model": "gpt-5.5", "input": "hi"})  # Bedrock default
+        assert r.status_code == 200
+        url, _, _ = _call(mock_cls)
+        assert "bedrock-mantle" in url             # went to Bedrock, not Azure

@@ -140,9 +140,17 @@ class AzureResource:
     or the api-version-style base a specific resource exposes. The provider
     appends the operation path (``/responses``, ``/embeddings`` …) and any
     query string already present is preserved.
+
+    ``prefix`` enables **passthrough-by-model-prefix**: when set (e.g.
+    ``azure``), any client model of the form ``azure/<deployment>`` is routed
+    to this resource with ``<deployment>`` as the Azure deployment name — no
+    per-model config needed. The dialect is chosen by the endpoint the request
+    hits (``/openai/v1/responses`` → responses, ``/v1/chat/completions`` →
+    chat). Leave empty to disable prefix routing for this resource.
     """
     base_url: str
     api_key: str = ""
+    prefix: str = ""
 
 
 @dataclass
@@ -325,6 +333,7 @@ def _parse_azure_resources(
             resources[name] = AzureResource(
                 base_url=str(info.get("base_url", "")).rstrip("/"),
                 api_key=str(info.get("api_key", "")),
+                prefix=str(info.get("prefix", "")),
             )
     return resources
 

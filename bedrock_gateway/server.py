@@ -340,14 +340,21 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             return _oai_error(400, "Invalid JSON body")
 
         raw_model = body.get("model", "claude-haiku")
-        try:
-            model = registry.resolve(raw_model)
-        except UnknownModelError as exc:
-            return _oai_error(400, str(exc), "invalid_request_error")
 
-        # Select transport + dialect. Unregistered aliases (raw Bedrock IDs
-        # passed through) fall back to the default bedrock/anthropic entry.
-        entry = registry.get_entry(raw_model) or _fallback_entry(model)
+        # Prefix passthrough first: ``azure/<deployment>`` → Azure resource,
+        # dialect fixed by this endpoint (chat). Falls through otherwise.
+        entry = registry.resolve_prefixed(raw_model, "openai-chat")
+        if entry is not None:
+            model = entry.deployment
+        else:
+            try:
+                model = registry.resolve(raw_model)
+            except UnknownModelError as exc:
+                return _oai_error(400, str(exc), "invalid_request_error")
+            # Unregistered aliases (raw Bedrock IDs passed through) fall back
+            # to the default bedrock/anthropic entry.
+            entry = registry.get_entry(raw_model) or _fallback_entry(model)
+
         transport = get_transport(entry)
         dialect = get_dialect(entry)
         stream = body.get("stream", False)
@@ -479,12 +486,20 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             return _oai_error(400, "Invalid JSON body")
 
         raw_model = body.get("model", "gpt-5.5")
-        try:
-            model = registry.resolve(raw_model)
-        except UnknownModelError as exc:
-            return _oai_error(400, str(exc), "invalid_request_error")
 
-        entry = registry.get_entry(raw_model) or _fallback_entry(model)
+        # Prefix passthrough first: ``azure/<deployment>`` → Azure resource,
+        # dialect fixed by this endpoint (responses). Falls through when the
+        # model carries no configured resource prefix.
+        entry = registry.resolve_prefixed(raw_model, "openai-responses")
+        if entry is not None:
+            model = entry.deployment
+        else:
+            try:
+                model = registry.resolve(raw_model)
+            except UnknownModelError as exc:
+                return _oai_error(400, str(exc), "invalid_request_error")
+            entry = registry.get_entry(raw_model) or _fallback_entry(model)
+
         dialect = get_dialect(entry)
         transport = get_transport(entry)
         # This endpoint only serves the Responses dialect.

@@ -304,6 +304,27 @@ models:
 
 > `models:` 与内置默认模型**合并**：只需列出要新增的模型，Claude/GPT-5.5/Grok 等默认仍可用；同名条目会覆盖默认。想只暴露自己配的模型，设 `use_default_models: false`。
 
+### 前缀透传（零模型登记，推荐）
+
+给资源加 `prefix`，即可**不逐个登记模型**——客户端用 `<prefix>/<deployment>` 调用，网关自动路由到该资源、剥离前缀作为 deployment，dialect 由端点决定（`/openai/v1/responses` → responses，`/v1/chat/completions` → chat）：
+
+```yaml
+azure_resources:
+  az:
+    base_url: https://<resource>.cognitiveservices.azure.com/openai/v1
+    api_key: ${AZURE_OPENAI_KEY}
+    prefix: azure          # 启用前缀透传
+# 无需 models: 段
+```
+
+```python
+# 客户端：deployment 想调哪个就写哪个，网关不用改
+client.responses.create(model="azure/gpt-5.5", input="...")          # → responses
+client.chat.completions.create(model="azure/gpt-5", messages=[...])  # → chat
+```
+
+deployment 增删换名都不用动网关配置。代价：`/v1/models` 列不出这些透传模型（网关事先不知道有哪些）。需要别名/模型清单/dashboard 分模型统计时，用上面的显式 `models:` 登记；两者可共存。
+
 ### 调用
 
 Azure 模型的对外端点由其 `dialect` 决定，客户端用法与 Bedrock 上同类模型完全一致——只是 `model` 换成你配的别名：

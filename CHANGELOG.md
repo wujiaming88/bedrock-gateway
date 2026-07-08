@@ -3,6 +3,23 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.3] — 2026-07-08
+
+### 新增
+
+- **Azure 前缀透传（零模型登记）**：`azure_resources` 条目可加 `prefix`（如
+  `azure`），之后客户端用 `azure/<deployment>` 调用即自动路由到该资源——无需
+  为每个 deployment 写 `models:` 条目。前缀被剥离作为 Azure deployment 名，
+  dialect 由命中的端点决定（responses / chat）。deployment 增删换名不用动网关。
+  真机验证：`azure/gpt-5.5`(responses) 与 `azure/gpt-5`(chat) 在无 `models:`
+  段的配置下均调通。（显式 `models:` 登记仍可用，二者共存；透传模型不进
+  `/v1/models` 列表。）
+
+### 测试
+
+- 新增前缀路由单测 + 集成测试（解析/剥离/端点定 dialect/不命中回退/与默认共存）。
+  总测试 **681 全绿**。
+
 ## [0.3.2] — 2026-07-08
 
 ### 变更（架构）
