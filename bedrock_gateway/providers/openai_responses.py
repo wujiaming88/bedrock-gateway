@@ -26,14 +26,6 @@ from .base import Dialect
 if TYPE_CHECKING:
     from ..config import ModelEntry
 
-# Bedrock mantle uses ``/openai/v1/responses``; Azure uses ``/responses`` under
-# a per-resource base. The dialect returns the path fragment the *mantle*
-# transport expects; Azure's own operation path is provided by its dialect
-# subclass note below (kept identical here since both are the Responses API and
-# the transport owns the host + version-specific base).
-_RESPONSES_PATH = "/openai/v1/responses"
-
-
 class ResponsesPassthroughDialect(Dialect):
     """OpenAI Responses API, verbatim passthrough (GPT-5.5 / Grok / Azure).
 
@@ -44,12 +36,10 @@ class ResponsesPassthroughDialect(Dialect):
     name = "openai-responses"
 
     def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
-        # Azure resolves its own base (…/openai) and the transport keeps any
-        # api-version query; there the operation is just ``/responses``. On
-        # Bedrock mantle the full ``/openai/v1/responses`` path is used.
-        if entry.transport == "azure":
-            return "/responses"
-        return _RESPONSES_PATH
+        # Bare operation, relative to the OpenAI-compat API root. The transport
+        # owns the root prefix (Bedrock mantle adds ``/openai/v1``; Azure's base
+        # already ends in it) — the dialect stays cloud-agnostic.
+        return "/responses"
 
     def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:
         # Server already swapped model→upstream id; pure passthrough here.

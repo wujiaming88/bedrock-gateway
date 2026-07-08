@@ -280,9 +280,10 @@ dashboard:
 
 ```yaml
 # 资源级：endpoint + key（一个资源配一次）
+# base_url 用 v1 根（.../openai/v1）：同时支持 Responses 与 Chat，无需 api-version
 azure_resources:
   my-azure:
-    base_url: https://<resource>.cognitiveservices.azure.com/openai
+    base_url: https://<resource>.cognitiveservices.azure.com/openai/v1
     api_key: ${AZURE_OPENAI_KEY}
 
 models:

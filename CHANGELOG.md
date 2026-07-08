@@ -3,6 +3,24 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.2] — 2026-07-08
+
+### 变更（架构）
+
+- **收紧 Transport × Dialect 职责边界**：dialect 的 `operation_path` 现只返回
+  裸操作（`/responses`、`/chat/completions`），不再含 `if transport == "azure"`
+  判断；`/openai/v1` 根前缀的拼接移交给 transport（`BedrockTransport` 为 mantle
+  端点补 `/openai/v1`，`AzureTransport` 用资源 base 已有的根）。两轴恢复完全正交
+  ——dialect 不再感知云。**最终 URL 与行为完全不变**，纯内部重构。
+- **Azure 单资源即可**：确认 `.../openai/v1` 根同时服务 Responses 与 Chat，无需
+  api-version、无需为两种 dialect 拆两个资源。config.example / README 改为推荐
+  v1 根；smoke 脚本简化为单资源。（带 `?api-version=` 的旧 base 仍兼容。）
+
+### 测试
+
+- 新增 `TestTransportOwnsApiRoot`（钉死两云拼出的完整 URL）+ operation_path 云
+  无关性断言。总测试 **674 全绿**，真机冒烟 9/9。
+
 ## [0.3.1] — 2026-07-08
 
 ### 变更

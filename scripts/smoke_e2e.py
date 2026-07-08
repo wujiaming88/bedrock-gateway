@@ -167,26 +167,24 @@ def build_config(port: int, tmp_path: str) -> tuple[str, dict]:
     az_ep = os.environ.get("AZURE_OPENAI_ENDPOINT")
     az_key = os.environ.get("AZURE_OPENAI_KEY")
     if az_ep and az_key:
-        # ``models:`` merges with the built-in defaults (Claude/GPT-5.5/Grok),
-        # so we only list the Azure additions — the Bedrock defaults remain.
+        # A single /openai/v1 resource serves both dialects (responses + chat);
+        # no api-version needed. AZURE_OPENAI_ENDPOINT is the resource base up
+        # to /openai. ``models:`` merges with the built-in Bedrock defaults.
         lines += [
             "azure_resources:",
-            "  az_resp:",
-            f"    base_url: {az_ep}?api-version=2025-04-01-preview",
-            "    api_key: ${AZURE_OPENAI_KEY}",
-            "  az_chat:",
+            "  az:",
             f"    base_url: {az_ep}/v1",
             "    api_key: ${AZURE_OPENAI_KEY}",
             "models:",
             "  azure-gpt-5:",
             "    transport: azure",
             "    dialect: openai-responses",
-            "    azure_resource: az_resp",
+            "    azure_resource: az",
             "    deployment: gpt-5",
             "  azure-gpt-5-chat:",
             "    transport: azure",
             "    dialect: openai-chat",
-            "    azure_resource: az_chat",
+            "    azure_resource: az",
             "    deployment: gpt-5",
         ]
     cfg = os.path.join(tmp_path, "smoke_config.yaml")

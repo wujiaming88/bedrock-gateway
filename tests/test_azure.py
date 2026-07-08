@@ -134,6 +134,38 @@ class TestAzureTransport:
         assert "Authorization" not in h
 
 
+class TestTransportOwnsApiRoot:
+    """Regression guard for the two-axis boundary: dialects emit a BARE
+    operation; each transport prepends its own /openai/v1 root. The final
+    composed URLs must match what each cloud actually serves.
+    """
+
+    def test_bedrock_mantle_adds_openai_v1_root(self):
+        from bedrock_gateway.providers import BedrockTransport
+        from bedrock_gateway.providers.openai_responses import (
+            ResponsesPassthroughDialect,
+        )
+        t, d = BedrockTransport(), ResponsesPassthroughDialect()
+        e = ModelEntry(bedrock_id="openai.gpt-5.5", transport="bedrock",
+                      endpoint="mantle", dialect="openai-responses")
+        url = t.build_url(d.operation_path(e, False), "us-east-1", e)
+        assert url == (
+            "https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses"
+        )
+
+    def test_azure_base_already_has_root(self):
+        from bedrock_gateway.providers.openai_responses import (
+            ResponsesPassthroughDialect,
+        )
+        t, d = AzureTransport(), ResponsesPassthroughDialect()
+        # production-style base ending in /openai/v1
+        base = "https://r.cognitiveservices.azure.com/openai/v1"
+        e = ModelEntry(bedrock_id="gpt-5", transport="azure",
+                      azure_endpoint=base, dialect="openai-responses")
+        url = t.build_url(d.operation_path(e, False), "x", e)
+        assert url == base + "/responses"
+
+
 # ---------------------------------------------------------------------------
 # 3. ChatPassthroughDialect unit
 # ---------------------------------------------------------------------------
@@ -145,16 +177,15 @@ class TestChatPassthroughDialect:
         return ModelEntry(bedrock_id="gpt-5", transport="azure",
                           dialect="openai-chat", deployment="gpt-5")
 
-    def test_operation_path_azure(self):
-        assert self.dialect.operation_path(self._azure_entry(), False) == (
-            "/chat/completions"
-        )
-
-    def test_operation_path_bedrock(self):
-        e = ModelEntry(bedrock_id="x", transport="bedrock", dialect="openai-chat")
-        assert self.dialect.operation_path(e, False) == (
-            "/openai/v1/chat/completions"
-        )
+    def test_operation_path_is_bare_and_cloud_agnostic(self):
+        """operation_path returns only the bare operation, regardless of cloud
+        — the transport owns the /openai/v1 root prefix. This keeps the two
+        axes orthogonal (no `if transport` inside the dialect)."""
+        azure = self._azure_entry()
+        bedrock = ModelEntry(bedrock_id="x", transport="bedrock",
+                            endpoint="mantle", dialect="openai-chat")
+        assert self.dialect.operation_path(azure, False) == "/chat/completions"
+        assert self.dialect.operation_path(bedrock, False) == "/chat/completions"
 
     def test_render_sync_verbatim_openai_usage(self):
         upstream = {

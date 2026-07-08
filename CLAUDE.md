@@ -31,6 +31,13 @@ cloud = one Transport; adding a wire format = one Dialect.** Never add an
 `if azure:` branch to a dialect or an `if responses:` branch to a transport —
 that reintroduces the N×M coupling this design removed.
 
+Boundary rule for URLs: a dialect's `operation_path` returns the **bare
+operation** (`/responses`, `/chat/completions`) — never a cloud-specific
+prefix. The **transport** owns the API root: `BedrockTransport` adds
+`/openai/v1` for the mantle endpoint; `AzureTransport` uses whatever the
+resource `base_url` already ends in. If you find yourself checking
+`entry.transport` inside a dialect, the prefix belongs in the transport instead.
+
 The server (`server.py`) owns everything cross-cutting — retries, backoff,
 timeouts, metrics, the pre-stream error preflight (`_open_upstream_stream`),
 error-severity logging — and is transport-/dialect-agnostic. Handlers thread

@@ -29,11 +29,10 @@ class ChatPassthroughDialect(Dialect):
     name = "openai-chat"
 
     def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
-        # Azure uses ``/chat/completions`` under the per-resource ``/openai``
-        # base; Bedrock mantle uses the full ``/openai/v1/chat/completions``.
-        if entry.transport == "azure":
-            return "/chat/completions"
-        return "/openai/v1/chat/completions"
+        # Bare operation, relative to the OpenAI-compat API root. The transport
+        # owns the root prefix (Bedrock mantle adds ``/openai/v1``; Azure's base
+        # already ends in it) — the dialect stays cloud-agnostic.
+        return "/chat/completions"
 
     def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:
         # Server already swapped model→upstream id; pure passthrough here.

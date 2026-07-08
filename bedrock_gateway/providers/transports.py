@@ -21,8 +21,17 @@ if TYPE_CHECKING:
 
 
 class BedrockTransport(Transport):
-    """AWS Bedrock. Host depends on the dialect's endpoint hint
-    (``runtime`` → ``bedrock-runtime``; ``mantle`` → ``bedrock-mantle``).
+    """AWS Bedrock. Host + API root depend on the ``endpoint`` hint:
+
+      * ``mantle`` → ``bedrock-mantle.{region}.api.aws`` serving the
+        OpenAI-compatible API under ``/openai/v1`` (Responses / Chat dialects).
+      * ``runtime`` (default) → ``bedrock-runtime.{region}.amazonaws.com`` with
+        Bedrock's native ``/model/{id}/...`` paths (Anthropic dialect, whose
+        ``operation_path`` already carries the full native path).
+
+    ``operation_path`` from OpenAI-compat dialects is a bare operation
+    (``/responses``); this transport prepends the ``/openai/v1`` root. The
+    Anthropic dialect returns its full native path, which is used as-is.
     Auth is the gateway global (SigV4 / Bearer), so ``auth_headers`` is None.
     """
 
@@ -32,10 +41,13 @@ class BedrockTransport(Transport):
         self, operation_path: str, region: str, entry: "ModelEntry"
     ) -> str:
         if entry.endpoint == "mantle":
-            host = f"https://bedrock-mantle.{region}.api.aws"
-        else:  # "runtime" (default)
-            host = f"https://bedrock-runtime.{region}.amazonaws.com"
-        return host + operation_path
+            # OpenAI-compatible surface: dialect gives a bare op, we add the root.
+            return (
+                f"https://bedrock-mantle.{region}.api.aws/openai/v1"
+                + operation_path
+            )
+        # runtime: native Bedrock path, already complete from the dialect.
+        return f"https://bedrock-runtime.{region}.amazonaws.com" + operation_path
 
 
 class AzureTransport(Transport):

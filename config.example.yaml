@@ -139,9 +139,11 @@ models:
 # One entry per Azure OpenAI resource. Credentials are resource-scoped: each
 # resource has its own endpoint + api-key (keys are NOT interchangeable across
 # resources). One resource can host many deployments sharing this endpoint/key.
-# base_url is the resource endpoint up to /openai; keep any ?api-version=... a
-# specific resource requires — it is preserved in the final URL.
+# Recommended base_url is the v1 API root (.../openai/v1): it serves BOTH the
+# Responses and Chat Completions dialects with no api-version needed, so a
+# single resource entry covers all your deployments. (A legacy base with
+# ?api-version=... is still supported — any query string is preserved.)
 # azure_resources:
 #   my-azure:
-#     base_url: https://<resource>.cognitiveservices.azure.com/openai
+#     base_url: https://<resource>.cognitiveservices.azure.com/openai/v1
 #     api_key: ${AZURE_OPENAI_KEY}
