@@ -3,6 +3,40 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.3.0] — 2026-07-08
+
+### 新增
+
+- **多云支持：接入 Azure OpenAI**。新增 `azure` transport（`api-key` 鉴权 +
+  per-资源 endpoint），可经现有 `/openai/v1/responses`（Responses 模型）和
+  `/v1/chat/completions`（Chat 模型）调用 Azure 部署，均为透传。
+  - **两层配置**：`azure_resources`（资源 = endpoint + key）+ 模型条目引用资源
+    并指定 deployment（→ 上游请求体 `model` 字段）。资源引用未定义时报错。
+  - 响应的 Azure `content_filter_results` 字段原样透传；URL 保留资源 base 上的
+    `?api-version=...`（若有）。
+  - 真机端到端验证：Azure gpt-5 走 responses 与 chat 两条路径，同步 + 流式均通过。
+- **`openai-chat` dialect**：OpenAI Chat Completions 透传（Azure + mantle），
+  `/v1/chat/completions` 现按 dialect 分流——`anthropic`（Claude，转换）与
+  `openai-chat`（透传）共存。
+
+### 变更（架构）
+
+- **Provider 抽象重构为 Transport × Dialect 两轴**（见
+  `docs/multi-cloud-multimodal-design.md`）。`transport`（云 + 鉴权）与
+  `dialect`（请求/响应/流形状）正交，加云/加格式从 N×M 组合塌缩为 N+M 加法。
+  纯重构、零行为变化：现有 Claude / GPT-5.5 / Grok 全部路径无损迁移。
+  - `ModelEntry` 新增 `transport` / `dialect` 字段；旧 `protocol` / `endpoint`
+    保留并映射到新轴，存量配置零改动继续工作。
+
+### 测试
+
+- 新增 `test_azure.py`（25 例：config 两层解析 / AzureTransport URL·auth /
+  ChatPassthroughDialect / 选择 / responses·chat 集成 / 守卫 / content_filter
+  透传）+ config 覆盖行为固化测试。
+- 新增可重复端到端冒烟脚本 `scripts/smoke_e2e.py`（Bedrock + Azure，同步 +
+  流式，带断言），真机 9/9 通过。
+- 总测试 **671 全绿**。
+
 ## [0.2.1] — 2026-07-08
 
 ### 新增

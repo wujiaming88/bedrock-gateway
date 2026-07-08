@@ -19,27 +19,41 @@ from __future__ import annotations
 
 import codecs
 import json
-from typing import AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
 
-from .base import Provider
+from .base import Dialect
 
-# mantle host template — note ``.api.aws``, distinct from bedrock-runtime.
-_MANTLE_HOST = "https://bedrock-mantle.{region}.api.aws"
+if TYPE_CHECKING:
+    from ..config import ModelEntry
+
+# Bedrock mantle uses ``/openai/v1/responses``; Azure uses ``/responses`` under
+# a per-resource base. The dialect returns the path fragment the *mantle*
+# transport expects; Azure's own operation path is provided by its dialect
+# subclass note below (kept identical here since both are the Responses API and
+# the transport owns the host + version-specific base).
 _RESPONSES_PATH = "/openai/v1/responses"
 
 
-class OpenAIResponsesProvider(Provider):
-    """``bedrock-mantle`` + OpenAI Responses API (GPT-5.5), passthrough."""
+class ResponsesPassthroughDialect(Dialect):
+    """OpenAI Responses API, verbatim passthrough (GPT-5.5 / Grok / Azure).
+
+    Request body flows through untouched except the model id (swapped by the
+    server before dispatch); response and SSE are re-emitted verbatim.
+    """
 
     name = "openai-responses"
 
-    def sync_url(self, region: str, bedrock_id: str) -> str:
-        # The Responses API takes the model in the body, not the path.
-        return _MANTLE_HOST.format(region=region) + _RESPONSES_PATH
+    def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
+        # Azure resolves its own base (…/openai) and the transport keeps any
+        # api-version query; there the operation is just ``/responses``. On
+        # Bedrock mantle the full ``/openai/v1/responses`` path is used.
+        if entry.transport == "azure":
+            return "/responses"
+        return _RESPONSES_PATH
 
-    def stream_url(self, region: str, bedrock_id: str) -> str:
-        # Same URL; streaming is toggled by ``"stream": true`` in the body.
-        return _MANTLE_HOST.format(region=region) + _RESPONSES_PATH
+    def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:
+        # Server already swapped model→upstream id; pure passthrough here.
+        return client_body
 
     # ------------------------------------------------------------------
     # Sync — verbatim passthrough

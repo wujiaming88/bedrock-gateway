@@ -104,6 +104,21 @@ class TestModelParsing:
         assert entry.context_length == 50000
         assert entry.max_output == 8192
 
+    def test_custom_models_replace_defaults(self, tmp_path: Path):
+        """GOTCHA: a ``models:`` section REPLACES the built-in defaults — it
+        does not merge. Callers who add a model must re-list the defaults they
+        still want. This test pins the behaviour so it isn't changed silently.
+        """
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "models:\n"
+            "  only-model:\n"
+            "    bedrock_id: us.x.y\n"
+        )
+        cfg = load_config(config_file)
+        assert set(cfg.models) == {"only-model"}
+        assert "claude-haiku" not in cfg.models  # defaults gone
+
 
 class TestAuthConfig:
     """AuthConfig post-init env fallback."""

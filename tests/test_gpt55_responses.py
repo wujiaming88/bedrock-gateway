@@ -32,10 +32,12 @@ from bedrock_gateway.config import (
 )
 from bedrock_gateway.models import ModelRegistry
 from bedrock_gateway.providers import (
-    AnthropicBedrockProvider,
-    OpenAIResponsesProvider,
+    AnthropicMessagesDialect,
+    BedrockTransport,
+    ResponsesPassthroughDialect,
     UnsupportedProtocolError,
-    get_provider,
+    get_dialect,
+    get_transport,
 )
 from bedrock_gateway.server import create_app
 
@@ -87,9 +89,10 @@ class TestGrokRegistration:
     def test_aliases_resolve(self, alias):
         assert _MODEL_ALIASES[alias] == GROK_ALIAS
 
-    def test_selects_responses_provider(self):
-        e = ModelEntry(bedrock_id=GROK_BEDROCK_ID, protocol="openai-responses")
-        assert get_provider(e).name == "openai-responses"
+    def test_selects_responses_dialect(self):
+        e = _parse_models(_DEFAULT_MODELS)[GROK_ALIAS]
+        assert get_dialect(e).name == "openai-responses"
+        assert get_transport(e).name == "bedrock"
 
 
 # ---------------------------------------------------------------------------
@@ -97,80 +100,109 @@ class TestGrokRegistration:
 # ---------------------------------------------------------------------------
 
 class TestModelEntryDefaults:
-    def test_new_fields_default_to_runtime_anthropic(self):
-        """Existing/flat entries with no endpoint/protocol keep old behaviour."""
+    def test_new_fields_default_to_bedrock_anthropic(self):
+        """A bare ModelEntry keeps the original bedrock/anthropic behaviour."""
         e = ModelEntry(bedrock_id="us.anthropic.claude-x")
         assert e.endpoint == "runtime"
-        assert e.protocol == "anthropic"
+        assert e.transport == "bedrock"
+        assert e.dialect == "anthropic"
 
-    def test_flat_yaml_without_new_fields(self):
-        """A legacy flat config (three keys only) still parses & defaults."""
+    def test_flat_yaml_maps_to_axes(self):
+        """A legacy flat config (three keys only) parses & maps to axes."""
         models = _parse_models(
             {"legacy": {"bedrock_id": "us.anthropic.foo",
                         "context_length": 200000, "max_output": 4096}}
         )
-        assert models["legacy"].protocol == "anthropic"
+        assert models["legacy"].transport == "bedrock"
+        assert models["legacy"].dialect == "anthropic"
         assert models["legacy"].endpoint == "runtime"
 
+    def test_legacy_protocol_maps_to_axes(self):
+        """The legacy openai-responses protocol maps to bedrock + responses."""
+        models = _parse_models(
+            {"m": {"bedrock_id": "openai.x", "endpoint": "mantle",
+                   "protocol": "openai-responses"}}
+        )
+        assert models["m"].transport == "bedrock"
+        assert models["m"].dialect == "openai-responses"
+
     def test_all_claude_defaults_are_anthropic(self):
-        """No Claude model accidentally got a non-anthropic protocol.
+        """No Claude model accidentally got a non-anthropic dialect.
 
         Only the explicitly-known mantle/Responses models may differ; every
-        other default must stay on the runtime/anthropic path.
+        other default must stay on the bedrock/anthropic path.
         """
         responses_models = {GPT55_ALIAS, GROK_ALIAS}
         models = _parse_models(_DEFAULT_MODELS)
         for alias, e in models.items():
             if alias in responses_models:
-                assert e.protocol == "openai-responses", alias
+                assert e.dialect == "openai-responses", alias
                 assert e.endpoint == "mantle", alias
                 continue
-            assert e.protocol == "anthropic", alias
+            assert e.dialect == "anthropic", alias
+            assert e.transport == "bedrock", alias
             assert e.endpoint == "runtime", alias
 
 
 # ---------------------------------------------------------------------------
-# Layer 3 — provider selection
+# Layer 3 — transport / dialect selection
 # ---------------------------------------------------------------------------
 
 class TestProviderSelection:
-    def test_gpt55_selects_responses_provider(self):
-        e = ModelEntry(bedrock_id=GPT55_BEDROCK_ID, protocol="openai-responses")
-        assert get_provider(e).name == "openai-responses"
+    def test_gpt55_selects_responses_dialect(self):
+        e = _parse_models(_DEFAULT_MODELS)[GPT55_ALIAS]
+        assert get_dialect(e).name == "openai-responses"
+        assert get_transport(e).name == "bedrock"
 
-    def test_claude_selects_anthropic_provider(self):
+    def test_claude_selects_anthropic_dialect(self):
         e = ModelEntry(bedrock_id="us.anthropic.claude-x")
-        assert get_provider(e).name == "anthropic"
+        assert get_dialect(e).name == "anthropic"
+        assert get_transport(e).name == "bedrock"
 
-    def test_unknown_protocol_raises(self):
-        e = ModelEntry(bedrock_id="x", protocol="does-not-exist")
+    def test_unknown_dialect_raises(self):
+        e = ModelEntry(bedrock_id="x", dialect="does-not-exist")
         with pytest.raises(UnsupportedProtocolError):
-            get_provider(e)
+            get_dialect(e)
+
+    def test_unknown_transport_raises(self):
+        e = ModelEntry(bedrock_id="x", transport="no-such-cloud")
+        with pytest.raises(UnsupportedProtocolError):
+            get_transport(e)
 
     def test_registry_get_entry_resolves_alias(self):
         cfg = GatewayConfig(models=_parse_models(_DEFAULT_MODELS))
         reg = ModelRegistry(cfg)
-        assert reg.get_entry("gpt-55").protocol == "openai-responses"
+        assert reg.get_entry("gpt-55").dialect == "openai-responses"
         assert reg.get_entry("gpt-5.5").bedrock_id == GPT55_BEDROCK_ID
-        # unregistered raw id → None (falls back to default provider)
+        # unregistered raw id → None (falls back to default entry)
         assert reg.get_entry("some.raw.id") is None
 
 
 # ---------------------------------------------------------------------------
-# Layer 4 — OpenAIResponsesProvider unit behaviour
+# Layer 4 — Responses dialect + Bedrock/mantle transport unit behaviour
 # ---------------------------------------------------------------------------
 
 class TestResponsesProviderUnit:
-    provider = OpenAIResponsesProvider()
+    dialect = ResponsesPassthroughDialect()
+    transport = BedrockTransport()
+
+    def _mantle_entry(self, region_id=GPT55_BEDROCK_ID):
+        return ModelEntry(bedrock_id=region_id, endpoint="mantle",
+                          transport="bedrock", dialect="openai-responses")
 
     def test_urls_target_mantle(self):
-        u = self.provider.sync_url("us-east-1", GPT55_BEDROCK_ID)
+        e = self._mantle_entry()
+        op = self.dialect.operation_path(e, False)
+        u = self.transport.build_url(op, "us-east-1", e)
         assert u == "https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses"
         # sync and stream hit the same URL (stream toggled in body)
-        assert self.provider.stream_url("us-east-1", GPT55_BEDROCK_ID) == u
+        op_s = self.dialect.operation_path(e, True)
+        assert self.transport.build_url(op_s, "us-east-1", e) == u
 
     def test_url_respects_region(self):
-        u = self.provider.sync_url("us-east-2", GPT55_BEDROCK_ID)
+        e = self._mantle_entry()
+        op = self.dialect.operation_path(e, False)
+        u = self.transport.build_url(op, "us-east-2", e)
         assert "bedrock-mantle.us-east-2.api.aws" in u
 
     def test_render_sync_is_verbatim(self):
@@ -182,7 +214,7 @@ class TestResponsesProviderUnit:
                 {"type": "output_text", "text": "hello"}]}],
             "usage": {"input_tokens": 7, "output_tokens": 5},
         }
-        body, log = self.provider.render_sync(upstream, GPT55_ALIAS)
+        body, log = self.dialect.render_sync(upstream, GPT55_ALIAS)
         # passthrough → identical object
         assert body is upstream
         assert log["input_tokens"] == 7
@@ -190,7 +222,7 @@ class TestResponsesProviderUnit:
         assert log["finish"] == "completed"
 
     def test_render_sync_missing_usage(self):
-        body, log = self.provider.render_sync({"status": "x"}, GPT55_ALIAS)
+        body, log = self.dialect.render_sync({"status": "x"}, GPT55_ALIAS)
         assert log["input_tokens"] == "?"
 
     async def test_transform_stream_passthrough(self):
@@ -199,7 +231,7 @@ class TestResponsesProviderUnit:
             yield b"event: response.completed\ndata: {}\n\n"
 
         out = "".join(
-            [c async for c in self.provider.transform_stream(
+            [c async for c in self.dialect.transform_stream(
                 byte_iter(), GPT55_ALIAS, "msg_1")]
         )
         assert "response.created" in out
@@ -216,14 +248,14 @@ class TestResponsesProviderUnit:
             yield raw[mid:]
 
         out = "".join(
-            [c async for c in self.provider.transform_stream(
+            [c async for c in self.dialect.transform_stream(
                 byte_iter(), GPT55_ALIAS, "msg_1")]
         )
         assert text in out
         assert "�" not in out  # no replacement char
 
     def test_stream_error_is_sse_event(self):
-        s = self.provider.stream_error("boom", 500)
+        s = self.dialect.stream_error("boom", 500)
         assert s.startswith("event: error\n")
         assert '"message": "boom"' in s
         assert '"code": 500' in s
@@ -239,7 +271,7 @@ class TestResponsesProviderUnit:
             yield raw[:2]
 
         out = "".join(
-            [c async for c in self.provider.transform_stream(
+            [c async for c in self.dialect.transform_stream(
                 byte_iter(), GPT55_ALIAS, "msg_1")]
         )
         # replacement char emitted at flush (not dropped, not crashing)
@@ -464,21 +496,29 @@ class TestResponsesEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# Regression guard — Anthropic provider still faithful
+# Regression guard — Anthropic dialect + Bedrock transport still faithful
 # ---------------------------------------------------------------------------
 
 class TestAnthropicProviderUnit:
-    provider = AnthropicBedrockProvider()
+    dialect = AnthropicMessagesDialect()
+    transport = BedrockTransport()
+
+    def _entry(self):
+        return ModelEntry(bedrock_id="us.anthropic.claude-x")
 
     def test_sync_url_is_runtime_invoke(self):
-        u = self.provider.sync_url("us-east-1", "us.anthropic.claude-x")
+        e = self._entry()
+        op = self.dialect.operation_path(e, False)
+        u = self.transport.build_url(op, "us-east-1", e)
         assert u == (
             "https://bedrock-runtime.us-east-1.amazonaws.com"
             "/model/us.anthropic.claude-x/invoke"
         )
 
     def test_stream_url_is_invoke_with_stream(self):
-        u = self.provider.stream_url("us-east-1", "us.anthropic.claude-x")
+        e = self._entry()
+        op = self.dialect.operation_path(e, True)
+        u = self.transport.build_url(op, "us-east-1", e)
         assert u.endswith("/invoke-with-response-stream")
 
     def test_render_sync_produces_chat_completion(self):
@@ -487,7 +527,7 @@ class TestAnthropicProviderUnit:
             "usage": {"input_tokens": 10, "output_tokens": 20},
             "stop_reason": "end_turn",
         }
-        body, log = self.provider.render_sync(upstream, "claude-haiku")
+        body, log = self.dialect.render_sync(upstream, "claude-haiku")
         assert body["object"] == "chat.completion"
         assert body["choices"][0]["message"]["content"] == "answer"
         assert body["usage"]["total_tokens"] == 30
@@ -495,7 +535,7 @@ class TestAnthropicProviderUnit:
 
     def test_stream_error_emits_chunk_and_done(self):
         """Mid-stream error → OpenAI error chunk + [DONE] terminator."""
-        s = self.provider.stream_error("kaboom", 504)
+        s = self.dialect.stream_error("kaboom", 504)
         assert '"message": "kaboom"' in s
         assert '"code": 504' in s
         assert s.rstrip().endswith("data: [DONE]")

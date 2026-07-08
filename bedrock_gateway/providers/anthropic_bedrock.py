@@ -23,25 +23,31 @@ from ..converter import (
     parse_bedrock_error,
     parse_bedrock_response,
 )
-from .base import Provider
+from typing import TYPE_CHECKING
+
+from .base import Dialect
+
+if TYPE_CHECKING:
+    from ..config import ModelEntry
 
 
-class AnthropicBedrockProvider(Provider):
-    """``bedrock-runtime`` + Anthropic Messages format (Claude family)."""
+class AnthropicMessagesDialect(Dialect):
+    """Anthropic Messages wire format (Claude family, on Bedrock runtime).
+
+    Request bodies are built by the server today (OpenAI→Anthropic conversion
+    happens there), so ``build_request`` is identity in this dialect; response
+    and stream shaping are the substantive part.
+    """
 
     name = "anthropic"
 
-    def sync_url(self, region: str, bedrock_id: str) -> str:
-        return (
-            f"https://bedrock-runtime.{region}.amazonaws.com"
-            f"/model/{bedrock_id}/invoke"
-        )
+    def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
+        op = "invoke-with-response-stream" if stream else "invoke"
+        return f"/model/{entry.bedrock_id}/{op}"
 
-    def stream_url(self, region: str, bedrock_id: str) -> str:
-        return (
-            f"https://bedrock-runtime.{region}.amazonaws.com"
-            f"/model/{bedrock_id}/invoke-with-response-stream"
-        )
+    def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:
+        # Server already assembled the Anthropic body before dispatch.
+        return client_body
 
     # ------------------------------------------------------------------
     # Sync

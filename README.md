@@ -14,6 +14,7 @@
 - [快速开始](#快速开始)
 - [安装与更新](#安装与更新)
 - [配置](#配置)
+- [多云与 Azure](#多云与-azure)
 - [使用](#使用)
 - [部署（生产）](#部署生产)
 - [监控面板 Dashboard](#监控面板-dashboard)
@@ -48,23 +49,27 @@
 | `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K | 同上 |
 | `gpt-5.5` | `openai.gpt-5.5` | 272K | 64K | **`/openai/v1/responses`** |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
+| Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
 - Claude 系别名有大量常见变体自动解析（如 `claude-3-5-sonnet-latest`、`claude-sonnet-4-20250514`、Anthropic SDK 默认模型名）。
-- GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`。
-- Grok 4.3 别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` / `grok-4-3`。
+- GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；Grok 4.3 别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` / `grok-4-3`。
+- **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 
 **端点速查**
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 系，同步 + 流式） |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages（Claude 系，同步 + 流式） |
-| `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5 / Grok 4.3，透传，同步 + 流式） |
+| `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5 / Grok 4.3 / Azure，透传，同步 + 流式） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
 | `GET` | `/health` | 健康检查（公开，无需鉴权） |
 | `GET` | `/dashboard/` | 监控界面 |
 | `GET` | `/api/metrics/*` | 监控 JSON API |
+
+**架构：Transport × Dialect 两轴**。每个模型 = 一对 `(transport, dialect)`：
+`transport` 决定去哪个云、怎么鉴权（`bedrock` 默认 / `azure`）；`dialect` 决定请求/响应形状（`anthropic` 默认 / `openai-responses` / `openai-chat`）。加一个云 = 加一个 transport；加一种格式 = 加一个 dialect。详见 [`docs/multi-cloud-multimodal-design.md`](docs/multi-cloud-multimodal-design.md)。
 
 ---
 
@@ -264,6 +269,63 @@ dashboard:
 | `BEDROCK_LOG_LEVEL` | `info` | `server.log_level` |
 | `BEDROCK_AUTH_MODE` | `bearer_token` | `auth.mode` |
 | `BEDROCK_MAX_RETRIES` | `3` | `retry.max_retries` |
+
+---
+
+## 多云与 Azure
+
+网关按 **Transport × Dialect 两轴** 支持多云。除 AWS Bedrock 外，可接入 **Azure OpenAI**。
+
+### 概念
+
+- **Azure 凭据是资源级的**：每个 Azure OpenAI 资源有自己独立的 endpoint 和 api-key（跨资源不通用）。一个资源下可部署多个模型（deployment），共享该资源的 endpoint + key。
+- 配置分两层：`azure_resources`（资源 = endpoint + key）+ `models`（模型引用资源 + 指定 deployment）。
+
+### 配置样例
+
+```yaml
+# 资源级：endpoint + key（一个资源配一次）
+azure_resources:
+  my-azure:
+    base_url: https://<resource>.cognitiveservices.azure.com/openai
+    api_key: ${AZURE_OPENAI_KEY}
+
+models:
+  # Responses 模型 → 走 /openai/v1/responses
+  azure-gpt-5:
+    transport: azure
+    dialect: openai-responses
+    azure_resource: my-azure       # 引用上面的资源
+    deployment: gpt-5              # 你的 Azure deployment 名 → 请求体 model 字段
+
+  # Chat Completions 模型 → 走 /v1/chat/completions
+  azure-gpt-4o:
+    transport: azure
+    dialect: openai-chat
+    azure_resource: my-azure
+    deployment: gpt-4o
+```
+
+> ⚠️ 配了 `models:` 就会**替换**内置默认模型（不合并）。若还要用 Claude/GPT-5.5/Grok，需在 `models:` 里一并列出。
+
+### 调用
+
+Azure 模型的对外端点由其 `dialect` 决定，客户端用法与 Bedrock 上同类模型完全一致——只是 `model` 换成你配的别名：
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:4000/openai/v1", api_key="<gateway-key>")
+
+# Azure Responses 模型
+client.responses.create(model="azure-gpt-5", input="分析这份财报")
+
+# Azure Chat 模型（base_url 用 /v1）
+OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="<gateway-key>") \
+    .chat.completions.create(model="azure-gpt-4o",
+        messages=[{"role": "user", "content": "hi"}])
+```
+
+网关对 Azure 做**透传**（仅把别名换成 deployment 名），响应含 Azure 的 `content_filter_results` 字段原样保留；鉴权自动用 `api-key` header。URL 里保留资源 base 上的 `?api-version=...`（若有）。
 
 ---
 

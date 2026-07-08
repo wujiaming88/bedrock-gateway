@@ -111,3 +111,32 @@ models:
     max_output: 131072
     endpoint: mantle
     protocol: openai-responses
+
+  # ── Azure OpenAI models (see azure_resources below) ─────
+  # Two orthogonal axes describe every model:
+  #   transport: bedrock (default) | azure    — where + how to auth
+  #   dialect:   anthropic (default) | openai-responses | openai-chat
+  # Azure models reference an azure_resources entry (endpoint + key) and set a
+  # deployment name (goes into the upstream request body's "model" field).
+  #
+  # azure-gpt-5:                    # exposed on POST /openai/v1/responses
+  #   transport: azure
+  #   dialect: openai-responses
+  #   azure_resource: my-azure      # ← key in azure_resources
+  #   deployment: gpt-5             # ← your Azure deployment name
+  # azure-gpt-4o:                   # exposed on POST /v1/chat/completions
+  #   transport: azure
+  #   dialect: openai-chat
+  #   azure_resource: my-azure
+  #   deployment: gpt-4o
+
+# ─── Azure OpenAI resources ───────────────────────────────
+# One entry per Azure OpenAI resource. Credentials are resource-scoped: each
+# resource has its own endpoint + api-key (keys are NOT interchangeable across
+# resources). One resource can host many deployments sharing this endpoint/key.
+# base_url is the resource endpoint up to /openai; keep any ?api-version=... a
+# specific resource requires — it is preserved in the final URL.
+# azure_resources:
+#   my-azure:
+#     base_url: https://<resource>.cognitiveservices.azure.com/openai
+#     api_key: ${AZURE_OPENAI_KEY}

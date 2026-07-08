@@ -125,19 +125,58 @@ class DashboardConfig:
 
 
 @dataclass
+class AzureResource:
+    """A single Azure OpenAI resource: its endpoint + api-key.
+
+    Azure credentials are resource-scoped (each resource has its own endpoint
+    and key; keys are not interchangeable across resources). One resource can
+    host many deployments that all share this endpoint + key.
+
+    ``base_url`` is the full Azure endpoint up to (but not including) the
+    operation, e.g.::
+
+        https://my-res.cognitiveservices.azure.com/openai/v1
+
+    or the api-version-style base a specific resource exposes. The provider
+    appends the operation path (``/responses``, ``/embeddings`` …) and any
+    query string already present is preserved.
+    """
+    base_url: str
+    api_key: str = ""
+
+
+@dataclass
 class ModelEntry:
     """A single model's metadata.
 
-    ``endpoint`` / ``protocol`` select the upstream dialect (see
-    ``bedrock_gateway.providers``). They default to the original behaviour —
-    ``bedrock-runtime`` + Anthropic Messages — so existing models and flat
-    YAML configs that omit them are unaffected.
+    The upstream is described on two orthogonal axes (see
+    ``docs/multi-cloud-multimodal-design.md``):
+
+      * ``transport`` — *where + how to auth*: ``bedrock`` (default) | ``azure``
+      * ``dialect``   — *request/response/stream shape*: ``anthropic`` (default)
+        | ``openai-responses`` | ``openai-chat`` | ``embeddings``
+
+    ``endpoint`` is a transport-scoped hint (Bedrock: ``runtime`` | ``mantle``).
+
+    **Backward compatibility**: the legacy ``protocol`` field is still accepted
+    and mapped onto ``transport``/``dialect`` by :func:`_parse_models`, so
+    existing models and flat YAML keep working unchanged.
+
+    Azure models reference an :class:`AzureResource`; the loader resolves its
+    endpoint + key onto ``azure_endpoint`` / ``azure_api_key`` and sets
+    ``deployment`` (the name that goes into the request body's ``model`` field).
     """
     bedrock_id: str
     context_length: int = 200000
     max_output: int = 64000
-    endpoint: str = "runtime"     # "runtime" | "mantle"
-    protocol: str = "anthropic"   # "anthropic" | "openai-responses"
+    endpoint: str = "runtime"     # transport hint: "runtime" | "mantle"
+    protocol: str = "anthropic"   # LEGACY — mapped to transport/dialect
+    transport: str = "bedrock"    # "bedrock" | "azure"
+    dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "embeddings"
+    # ── Azure-only fields (unused for Bedrock models) ──
+    deployment: str = ""          # Azure deployment name → request body "model"
+    azure_endpoint: str = ""      # resolved from AzureResource.base_url
+    azure_api_key: str = ""       # resolved from AzureResource.api_key
 
 
 @dataclass
@@ -149,6 +188,7 @@ class GatewayConfig:
     retry: RetryConfig = field(default_factory=RetryConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     models: dict[str, ModelEntry] = field(default_factory=dict)
+    azure_resources: dict[str, AzureResource] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Env-var override for region
@@ -275,20 +315,85 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
-def _parse_models(raw: dict[str, Any] | None) -> dict[str, ModelEntry]:
-    """Parse model entries from raw dict, falling back to defaults."""
+def _parse_azure_resources(
+    raw: dict[str, Any] | None,
+) -> dict[str, AzureResource]:
+    """Parse the ``azure_resources`` section into AzureResource objects."""
+    resources: dict[str, AzureResource] = {}
+    for name, info in (raw or {}).items():
+        if isinstance(info, dict):
+            resources[name] = AzureResource(
+                base_url=str(info.get("base_url", "")).rstrip("/"),
+                api_key=str(info.get("api_key", "")),
+            )
+    return resources
+
+
+def _parse_models(
+    raw: dict[str, Any] | None,
+    azure_resources: dict[str, AzureResource] | None = None,
+) -> dict[str, ModelEntry]:
+    """Parse model entries from raw dict, falling back to defaults.
+
+    Azure models reference a resource by name via ``azure_resource``; the
+    referenced :class:`AzureResource`'s endpoint + key are resolved onto the
+    entry here so downstream providers stay stateless. An unknown reference
+    raises ``ValueError`` rather than silently producing an unauthenticated
+    entry.
+    """
+    resources = azure_resources or {}
     source = raw if raw else _DEFAULT_MODELS
     models: dict[str, ModelEntry] = {}
     for name, info in source.items():
-        if isinstance(info, dict):
-            models[name] = ModelEntry(
-                bedrock_id=info.get("bedrock_id", name),
-                context_length=int(info.get("context_length", 200_000)),
-                max_output=int(info.get("max_output", 64_000)),
-                endpoint=info.get("endpoint", "runtime"),
-                protocol=info.get("protocol", "anthropic"),
-            )
+        if not isinstance(info, dict):
+            continue
+        endpoint = info.get("endpoint", "runtime")
+        protocol = info.get("protocol", "anthropic")
+        transport, dialect = _resolve_axes(info, protocol)
+        entry = ModelEntry(
+            bedrock_id=info.get("bedrock_id", name),
+            context_length=int(info.get("context_length", 200_000)),
+            max_output=int(info.get("max_output", 64_000)),
+            endpoint=endpoint,
+            protocol=protocol,
+            transport=transport,
+            dialect=dialect,
+        )
+        # Resolve Azure resource reference → concrete endpoint + key.
+        res_ref = info.get("azure_resource")
+        if res_ref is not None:
+            if res_ref not in resources:
+                raise ValueError(
+                    f"model {name!r} references unknown azure_resource "
+                    f"{res_ref!r}; defined resources: {list(resources)}"
+                )
+            res = resources[res_ref]
+            entry.azure_endpoint = res.base_url
+            entry.azure_api_key = res.api_key
+            entry.transport = "azure"
+            # deployment defaults to the alias when omitted
+            entry.deployment = str(info.get("deployment", name))
+        models[name] = entry
     return models
+
+
+# Legacy ``protocol`` → (transport, dialect) mapping. Keeps existing configs
+# and _DEFAULT_MODELS working after the two-axis split (see design doc §4.2).
+_PROTOCOL_TO_AXES: dict[str, tuple[str, str]] = {
+    "anthropic": ("bedrock", "anthropic"),
+    "openai-responses": ("bedrock", "openai-responses"),
+}
+
+
+def _resolve_axes(info: dict[str, Any], protocol: str) -> tuple[str, str]:
+    """Determine (transport, dialect) for a model entry.
+
+    Explicit ``transport``/``dialect`` keys win; otherwise fall back to
+    mapping the legacy ``protocol`` value. An Azure resource reference forces
+    ``transport=azure`` (applied by the caller after resource resolution).
+    """
+    default_t, default_d = _PROTOCOL_TO_AXES.get(protocol, ("bedrock", protocol))
+    return info.get("transport", default_t), info.get("dialect", default_d)
 
 
 def load_config(path: str | Path | None = None) -> GatewayConfig:
@@ -364,8 +469,11 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         storage=storage,
     )
 
+    # Azure resources (parsed before models so references can resolve)
+    azure_resources = _parse_azure_resources(raw.get("azure_resources"))
+
     # Models
-    models = _parse_models(raw.get("models"))
+    models = _parse_models(raw.get("models"), azure_resources)
 
     return GatewayConfig(
         auth=auth,
@@ -374,4 +482,5 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         retry=retry,
         dashboard=dashboard,
         models=models,
+        azure_resources=azure_resources,
     )

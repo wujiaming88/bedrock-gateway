@@ -1,51 +1,96 @@
 """
-Provider abstraction — the *upstream dialect* layer.
+Provider abstraction — two orthogonal axes: **Transport** × **Dialect**.
 
-A :class:`Provider` encapsulates everything that differs between the ways the
-gateway can talk to an upstream model service:
+A model's upstream behaviour decomposes into two independent concerns:
 
-  * which host / URL path to hit (``sync_url`` / ``stream_url``)
-  * how to render a successful upstream response into the client-facing shape
-    (``render_sync``)
-  * how to transform the upstream byte stream into client-facing SSE
-    (``transform_stream``), plus how to format a mid-stream error for that
-    protocol (``stream_error``)
+  * **Transport** — *where* to send bytes and *how to authenticate*: the host,
+    the URL assembly, and the auth headers. One per cloud (Bedrock, Azure, …).
+  * **Dialect** — *what shape* the request / response / stream take: request
+    building, sync rendering, stream transformation. One per wire format
+    (Anthropic Messages, OpenAI Responses passthrough, OpenAI Chat passthrough,
+    Embeddings, …).
 
-Everything *protocol-agnostic* — retries, backoff, timeouts, metrics, the
-pre-stream error preflight (``_open_upstream_stream``), error-severity logging —
-stays in ``server.py`` and is shared by every provider. Adding a new upstream
-(model family, endpoint, wire format) means adding one Provider subclass and one
-``ModelEntry``; ``server.py`` does not change.
+A model = one ``(Transport, Dialect)`` pair. This keeps the matrix additive:
+adding a cloud = one Transport; adding a modality/format = one Dialect —
+instead of N clouds × M formats concrete classes.
 
-Two concrete providers exist today:
+Everything *cross-cutting* — retries, backoff, timeouts, metrics, the
+pre-stream error preflight, error-severity logging — stays in ``server.py`` and
+is shared by every (Transport, Dialect) combination.
 
-  * :class:`~bedrock_gateway.providers.anthropic_bedrock.AnthropicBedrockProvider`
-    — ``bedrock-runtime`` + Anthropic Messages wire format (all Claude models).
-  * :class:`~bedrock_gateway.providers.openai_responses.OpenAIResponsesProvider`
-    — ``bedrock-mantle`` + OpenAI Responses API (GPT-5.5), passthrough.
+See ``docs/multi-cloud-multimodal-design.md``.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
+
+if TYPE_CHECKING:
+    from ..config import ModelEntry
 
 
-class Provider(ABC):
-    """Upstream-dialect strategy consumed by the shared server orchestration."""
+# ---------------------------------------------------------------------------
+# Transport — where + how to authenticate
+# ---------------------------------------------------------------------------
 
-    #: Stable identifier, also used as the registry key's mirror for guards.
-    name: str = "base"
+class Transport(ABC):
+    """Locates the upstream and authenticates. Format-agnostic."""
 
-    # -- URL construction ------------------------------------------------
+    #: Stable identifier (config ``transport`` value).
+    name: str = "base-transport"
 
     @abstractmethod
-    def sync_url(self, region: str, bedrock_id: str) -> str:
-        """Full URL for a non-streaming call to *bedrock_id* in *region*."""
+    def build_url(
+        self, operation_path: str, region: str, entry: "ModelEntry"
+    ) -> str:
+        """Assemble the full upstream URL.
+
+        *operation_path* is the dialect-supplied path fragment (e.g.
+        ``/model/{id}/invoke`` for Bedrock, ``/responses`` for Azure). The
+        transport prepends its host and, for Azure, preserves any query string
+        already carried by ``entry.azure_endpoint``.
+        """
+
+    def auth_headers(self, entry: "ModelEntry") -> dict[str, str] | None:
+        """Auth headers for this upstream, or ``None`` to use the gateway's
+        global :class:`AuthProvider` (SigV4 / Bearer — the Bedrock case).
+
+        Azure overrides this to inject the resource's ``api-key`` header.
+        """
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Dialect — request / response / stream shape
+# ---------------------------------------------------------------------------
+
+class Dialect(ABC):
+    """Shapes the request, response, and stream. Transport-agnostic."""
+
+    #: Stable identifier (config ``dialect`` value).
+    name: str = "base-dialect"
+
+    #: Whether this dialect supports streaming (embeddings: False).
+    supports_stream: bool = True
+
+    # -- URL operation path (transport prepends the host) ----------------
 
     @abstractmethod
-    def stream_url(self, region: str, bedrock_id: str) -> str:
-        """Full URL for a streaming call to *bedrock_id* in *region*."""
+    def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
+        """Path fragment for this operation, e.g. ``/responses`` or
+        ``/model/{bedrock_id}/invoke-with-response-stream``.
+        """
+
+    # -- Request shaping -------------------------------------------------
+
+    @abstractmethod
+    def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:
+        """Shape the client request into the upstream request body.
+
+        Passthrough dialects only swap the model/deployment id; the Anthropic
+        dialect performs OpenAI→Anthropic conversion (done upstream in server
+        today — see migration notes)."""
 
     # -- Sync response rendering ----------------------------------------
 
@@ -55,29 +100,25 @@ class Provider(ABC):
     ) -> tuple[dict, dict]:
         """Render a 200 upstream JSON body into the client-facing response.
 
-        Returns ``(client_body, log_info)`` where *client_body* is the dict
-        serialised back to the caller and *log_info* is a small dict with
+        Returns ``(client_body, log_info)`` where *log_info* carries
         ``input_tokens`` / ``output_tokens`` / ``finish`` for the access log.
         """
 
     # -- Streaming ------------------------------------------------------
 
-    @abstractmethod
     def transform_stream(
         self, byte_iter: AsyncIterator[bytes], model: str, msg_id: str
     ) -> AsyncIterator[str]:
         """Transform the upstream byte stream into client-facing SSE strings.
 
-        Must yield fully-formed SSE payloads (``"data: ...\\n\\n"`` etc.),
-        handle any mid-stream upstream fault frames, and emit the protocol's
-        stream terminator. Implemented as an async generator.
+        Default raises — non-streaming dialects (embeddings) leave it unset.
         """
+        raise NotImplementedError(
+            f"dialect {self.name!r} does not support streaming"
+        )
 
-    @abstractmethod
     def stream_error(self, message: str, status: int) -> str:
-        """Format a mid-stream/timeout error as one client-facing SSE payload.
-
-        Called by the server's stream wrapper when the connection faults
-        *after* a 200 was already committed, so the client sees a clean error
-        instead of a truncated stream.
-        """
+        """Format a mid-stream/timeout error as one client-facing SSE payload."""
+        raise NotImplementedError(
+            f"dialect {self.name!r} does not support streaming"
+        )

@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import __version__
 from .auth import AuthProvider
-from .config import GatewayConfig, load_config
+from .config import GatewayConfig, ModelEntry, load_config
 from .converter import (
     convert_tool_choice,
     convert_tools,
@@ -49,16 +49,20 @@ from .dashboard import (
 )
 from .dashboard.storage import MetricsStorage
 from .models import ModelRegistry, UnknownModelError
-from .providers import Provider, get_provider
+from .providers import (
+    Dialect,
+    Transport,
+    get_dialect,
+    get_transport,
+)
 
 logger = logging.getLogger("bedrock_gateway")
 
-# Fallback provider for aliases that resolve to a raw Bedrock ID with no
-# registered ModelEntry (e.g. a pass-through vendor ID). These are always the
-# original runtime/Anthropic dialect.
-from .providers.anthropic_bedrock import AnthropicBedrockProvider
-
-_default_provider: Provider = AnthropicBedrockProvider()
+# Fallback ModelEntry for aliases that resolve to a raw Bedrock ID with no
+# registered entry (e.g. a pass-through vendor ID). Defaults put it on the
+# original bedrock-runtime / Anthropic-Messages path.
+def _fallback_entry(bedrock_id: str) -> ModelEntry:
+    return ModelEntry(bedrock_id=bedrock_id)
 
 
 # ---------------------------------------------------------------------------
@@ -341,21 +345,47 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         except UnknownModelError as exc:
             return _oai_error(400, str(exc), "invalid_request_error")
 
-        # Select the upstream dialect. Unregistered aliases (raw Bedrock IDs
-        # passed through) fall back to the default anthropic/runtime provider.
-        entry = registry.get_entry(raw_model)
-        provider = get_provider(entry) if entry else _default_provider
-        # This endpoint speaks OpenAI chat/completions → Anthropic. Models that
-        # require a different protocol (e.g. GPT-5.5 / Responses) are not served
-        # here; direct callers to the endpoint that fits their wire format.
-        if provider.name != "anthropic":
+        # Select transport + dialect. Unregistered aliases (raw Bedrock IDs
+        # passed through) fall back to the default bedrock/anthropic entry.
+        entry = registry.get_entry(raw_model) or _fallback_entry(model)
+        transport = get_transport(entry)
+        dialect = get_dialect(entry)
+        stream = body.get("stream", False)
+
+        # This endpoint serves two dialects:
+        #   * anthropic   → OpenAI chat converted to Anthropic Messages (below)
+        #   * openai-chat → verbatim passthrough (Azure / mantle chat models)
+        # The Responses dialect belongs on /openai/v1/responses; reject it here.
+        if dialect.name == "openai-chat":
+            # Passthrough: swap alias for upstream id (Azure deployment or
+            # resolved Bedrock id); forward the body untouched.
+            upstream_id = (
+                entry.deployment if entry.transport == "azure" else model
+            )
+            upstream_body = dict(body)
+            upstream_body["model"] = upstream_id
+            logger.info(
+                "REQ [chat-passthrough] model=%s -> %s (%s) stream=%s",
+                raw_model, upstream_id, entry.transport, stream,
+            )
+            if stream:
+                return await _handle_stream(
+                    transport, dialect, entry, upstream_id, config.region,
+                    upstream_body, auth, max_retries, retry_base_delay,
+                    request=request, health=health,
+                )
+            return await _handle_sync(
+                transport, dialect, entry, upstream_id, config.region,
+                upstream_body, auth, max_retries, retry_base_delay,
+                request=request, health=health,
+            )
+        if dialect.name != "anthropic":
             return _oai_error(
                 400,
                 f"Model '{raw_model}' is not available on /v1/chat/completions; "
                 f"use /openai/v1/responses instead.",
                 "invalid_request_error",
             )
-        stream = body.get("stream", False)
 
         logger.info(
             "REQ model=%s -> %s msgs=%d tools=%d stream=%s",
@@ -427,13 +457,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         if stream:
             return await _handle_stream(
-                provider, model, config.region, bedrock_body, auth,
-                max_retries, retry_base_delay,
+                transport, dialect, entry, model, config.region, bedrock_body,
+                auth, max_retries, retry_base_delay,
                 request=request, health=health,
             )
         return await _handle_sync(
-            provider, model, config.region, bedrock_body, auth,
-            max_retries, retry_base_delay,
+            transport, dialect, entry, model, config.region, bedrock_body,
+            auth, max_retries, retry_base_delay,
             request=request, health=health,
         )
 
@@ -454,10 +484,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         except UnknownModelError as exc:
             return _oai_error(400, str(exc), "invalid_request_error")
 
-        entry = registry.get_entry(raw_model)
-        provider = get_provider(entry) if entry else _default_provider
-        # This endpoint only serves Responses-protocol models.
-        if provider.name != "openai-responses":
+        entry = registry.get_entry(raw_model) or _fallback_entry(model)
+        dialect = get_dialect(entry)
+        transport = get_transport(entry)
+        # This endpoint only serves the Responses dialect.
+        if dialect.name != "openai-responses":
             return _oai_error(
                 400,
                 f"Model '{raw_model}' is not available on /openai/v1/responses; "
@@ -467,26 +498,27 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         stream = body.get("stream", False)
 
         # Passthrough: the client body is already native Responses format.
-        # Only swap the client-facing alias for the upstream Bedrock model ID;
-        # every other field (input, image blocks, reasoning, tools) flows
-        # through untouched.
+        # Swap the client-facing alias for the upstream id — the Azure
+        # deployment name for Azure models, else the resolved Bedrock id.
+        # Every other field (input, image blocks, reasoning, tools) is untouched.
+        upstream_id = entry.deployment if entry.transport == "azure" else model
         upstream_body = dict(body)
-        upstream_body["model"] = model
+        upstream_body["model"] = upstream_id
 
         logger.info(
-            "REQ [responses] model=%s -> %s stream=%s",
-            raw_model, model, stream,
+            "REQ [responses] model=%s -> %s (%s) stream=%s",
+            raw_model, upstream_id, entry.transport, stream,
         )
 
         if stream:
             return await _handle_stream(
-                provider, model, config.region, upstream_body, auth,
-                max_retries, retry_base_delay,
+                transport, dialect, entry, upstream_id, config.region,
+                upstream_body, auth, max_retries, retry_base_delay,
                 request=request, health=health,
             )
         return await _handle_sync(
-            provider, model, config.region, upstream_body, auth,
-            max_retries, retry_base_delay,
+            transport, dialect, entry, upstream_id, config.region,
+            upstream_body, auth, max_retries, retry_base_delay,
             request=request, health=health,
         )
 
@@ -520,11 +552,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 },
             )
 
-        # Guard: this Anthropic-format endpoint only serves anthropic-protocol
-        # models. A Responses-protocol model (GPT-5.5) misrouted here is a
-        # client mistake — surface it clearly rather than mangling the request.
+        # Guard: this Anthropic-format endpoint only serves the anthropic
+        # dialect. A different-dialect model (GPT-5.5 / Azure) misrouted here is
+        # a client mistake — surface it clearly rather than mangling the request.
         _entry = registry.get_entry(raw_model)
-        if _entry is not None and _entry.protocol != "anthropic":
+        if _entry is not None and _entry.dialect != "anthropic":
             return JSONResponse(
                 status_code=400,
                 content=format_anthropic_error(
@@ -661,7 +693,9 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 async def _handle_sync(
-    provider: Provider,
+    transport: Transport,
+    dialect: Dialect,
+    entry: ModelEntry,
     model: str,
     region: str,
     bedrock_body: dict,
@@ -672,19 +706,23 @@ async def _handle_sync(
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
-    url = provider.sync_url(region, model)
+    url = transport.build_url(dialect.operation_path(entry, False), region, entry)
     body_bytes = json.dumps(bedrock_body).encode()
     last_error: str | None = None
 
     for attempt in range(max_retries):
         try:
-            headers = auth.get_headers(method="POST", url=url, body=body_bytes)
+            # Transport-specific headers (e.g. Azure api-key) override the
+            # gateway's global auth; None → use the global SigV4/Bearer path.
+            headers = transport.auth_headers(entry) or auth.get_headers(
+                method="POST", url=url, body=body_bytes
+            )
             async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
                 result = resp.json()
-                client_body, log_info = provider.render_sync(result, model)
+                client_body, log_info = dialect.render_sync(result, model)
                 logger.info(
                     "RES model=%s finish=%s in=%s out=%s attempt=%d",
                     model,
@@ -761,6 +799,7 @@ async def _open_upstream_stream(
     request: Request | None,
     health: HealthMonitor | None,
     log_tag: str,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[Any, AsyncExitStack | None, dict | None]:
     """Open the Bedrock streaming connection and inspect the HTTP status
     *before* any bytes are handed to the client.
@@ -782,7 +821,10 @@ async def _open_upstream_stream(
     last_message = "upstream unavailable"
     for attempt in range(max_retries):
         stack = AsyncExitStack()
-        headers = auth.get_headers(method="POST", url=url, body=body_bytes)
+        # Transport-specific headers (Azure api-key) override the global auth.
+        headers = extra_headers or auth.get_headers(
+            method="POST", url=url, body=body_bytes
+        )
         try:
             await stack.enter_async_context(_track_upstream(health))
             client = await stack.enter_async_context(
@@ -870,7 +912,9 @@ async def _open_upstream_stream(
 # ---------------------------------------------------------------------------
 
 async def _handle_stream(
-    provider: Provider,
+    transport: Transport,
+    dialect: Dialect,
+    entry: ModelEntry,
     model: str,
     region: str,
     bedrock_body: dict,
@@ -881,7 +925,7 @@ async def _handle_stream(
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> JSONResponse | StreamingResponse:
-    url = provider.stream_url(region, model)
+    url = transport.build_url(dialect.operation_path(entry, True), region, entry)
     body_bytes = json.dumps(bedrock_body).encode()
     msg_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
@@ -890,16 +934,17 @@ async def _handle_stream(
     resp, stack, err = await _open_upstream_stream(
         url, body_bytes, auth, max_retries, retry_base_delay,
         request=request, health=health, log_tag=f"chat model={model}",
+        extra_headers=transport.auth_headers(entry),
     )
     if err is not None:
         return _oai_error(err["status"], err["message"], err["type"])
 
     async def generate():
         try:
-            # Provider-specific transform: decode the upstream stream and
+            # Dialect-specific transform: decode the upstream stream and
             # re-emit client-facing SSE (OpenAI chunks for Anthropic, or a
             # verbatim passthrough for Responses).
-            async for chunk in provider.transform_stream(
+            async for chunk in dialect.transform_stream(
                 resp.aiter_bytes(), model, msg_id
             ):
                 yield chunk
@@ -907,10 +952,10 @@ async def _handle_stream(
             # Connection dropped mid-stream after data may have flowed.
             _note_timeout(request)
             logger.warning("STREAM-MID timeout [chat] model=%s", model)
-            yield provider.stream_error("Upstream timeout mid-stream", 504)
+            yield dialect.stream_error("Upstream timeout mid-stream", 504)
         except Exception as exc:  # noqa: BLE001
             logger.exception("UNEXPECTED [stream] model=%s during chat.completions", model)
-            yield provider.stream_error(str(exc), 500)
+            yield dialect.stream_error(str(exc), 500)
         finally:
             await stack.aclose()
 
