@@ -33,6 +33,7 @@ _BEDROCK_ID_PREFIXES: tuple[str, ...] = (
     "ai21.",
     "stability.",
     "openai.",
+    "xai.",
 )
 
 

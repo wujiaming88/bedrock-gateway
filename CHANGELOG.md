@@ -3,6 +3,21 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.2.1] — 2026-07-08
+
+### 新增
+
+- **接入 xAI Grok 4.3**（`xai.grok-4.3`，1M 上下文）。与 GPT-5.5 同一
+  `bedrock-mantle` + Responses 透传通道，经 `POST /openai/v1/responses` 调用，
+  纯配置接入、零新代码。别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` /
+  `grok-4-3`。官方定位金融 / 法律文档分析，适配投研场景。
+- `xai.` 前缀纳入 passthrough 识别（可直接传原始 Bedrock ID）。
+
+### 修复
+
+- `pyproject.toml` 版本号补齐到位（0.2.0 时遗漏，导致构建的 wheel 元数据版本
+  标签滞后）。新增版本一致性测试，防止 `__init__.py` 与 `pyproject.toml` 再脱节。
+
 ## [0.2.0] — 2026-07-08
 
 ### 新增

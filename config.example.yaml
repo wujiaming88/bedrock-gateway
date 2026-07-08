@@ -101,3 +101,13 @@ models:
     max_output: 64000
     endpoint: mantle              # runtime (default) | mantle
     protocol: openai-responses    # anthropic (default) | openai-responses
+
+  # ── xAI Grok 4.3 ────────────────────────────────────────
+  # Same mantle + Responses transport as GPT-5.5; exposed on
+  # POST /openai/v1/responses. Strong on financial/legal document analysis.
+  grok-4.3:
+    bedrock_id: xai.grok-4.3
+    context_length: 1000000
+    max_output: 131072
+    endpoint: mantle
+    protocol: openai-responses

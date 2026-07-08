@@ -207,6 +207,14 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
+    # ── xAI Grok 4.3 (mantle endpoint, Responses API) ─────────────────
+    "grok-4.3": {
+        "bedrock_id": "xai.grok-4.3",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+    },
 }
 
 # Common model name variations → canonical alias
@@ -257,6 +265,13 @@ _MODEL_ALIASES: dict[str, str] = {
     "gpt-5-5": "gpt-5.5",
     "openai.gpt-5.5": "gpt-5.5",
     "openai-gpt-5.5": "gpt-5.5",
+    # Grok 4.3 variations
+    "grok": "grok-4.3",
+    "grok-4": "grok-4.3",
+    "grok4.3": "grok-4.3",
+    "grok-4-3": "grok-4.3",
+    "xai.grok-4.3": "grok-4.3",
+    "xai-grok-4.3": "grok-4.3",
 }
 
 

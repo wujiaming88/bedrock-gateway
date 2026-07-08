@@ -41,6 +41,8 @@ from bedrock_gateway.server import create_app
 
 GPT55_ALIAS = "gpt-5.5"
 GPT55_BEDROCK_ID = "openai.gpt-5.5"
+GROK_ALIAS = "grok-4.3"
+GROK_BEDROCK_ID = "xai.grok-4.3"
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,26 @@ class TestRegistration:
         assert e.protocol == "openai-responses"
 
 
+class TestGrokRegistration:
+    def test_grok_registered(self):
+        assert GROK_ALIAS in _DEFAULT_MODELS
+        e = _DEFAULT_MODELS[GROK_ALIAS]
+        assert e["bedrock_id"] == GROK_BEDROCK_ID
+        assert e["endpoint"] == "mantle"
+        assert e["protocol"] == "openai-responses"
+        assert e["context_length"] == 1_000_000
+
+    @pytest.mark.parametrize(
+        "alias", ["grok", "grok-4", "grok4.3", "grok-4-3", "xai.grok-4.3", "xai-grok-4.3"]
+    )
+    def test_aliases_resolve(self, alias):
+        assert _MODEL_ALIASES[alias] == GROK_ALIAS
+
+    def test_selects_responses_provider(self):
+        e = ModelEntry(bedrock_id=GROK_BEDROCK_ID, protocol="openai-responses")
+        assert get_provider(e).name == "openai-responses"
+
+
 # ---------------------------------------------------------------------------
 # Layer 2 — ModelEntry backward compatibility
 # ---------------------------------------------------------------------------
@@ -91,10 +113,17 @@ class TestModelEntryDefaults:
         assert models["legacy"].endpoint == "runtime"
 
     def test_all_claude_defaults_are_anthropic(self):
-        """No existing Claude model accidentally got the new protocol."""
+        """No Claude model accidentally got a non-anthropic protocol.
+
+        Only the explicitly-known mantle/Responses models may differ; every
+        other default must stay on the runtime/anthropic path.
+        """
+        responses_models = {GPT55_ALIAS, GROK_ALIAS}
         models = _parse_models(_DEFAULT_MODELS)
         for alias, e in models.items():
-            if alias == GPT55_ALIAS:
+            if alias in responses_models:
+                assert e.protocol == "openai-responses", alias
+                assert e.endpoint == "mantle", alias
                 continue
             assert e.protocol == "anthropic", alias
             assert e.endpoint == "runtime", alias
@@ -333,6 +362,25 @@ class TestResponsesEndToEnd:
         })
         assert resp.status_code == 200
         assert _sent(mock_cls)["model"] == GPT55_BEDROCK_ID
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_grok_routes_to_mantle(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_responses_body())
+        resp = client.post("/openai/v1/responses", json={
+            "model": "grok", "input": "hi",   # alias → grok-4.3
+        })
+        assert resp.status_code == 200
+        url = mock_cls.return_value.post.call_args[0][0]
+        assert "bedrock-mantle.us-east-1.api.aws/openai/v1/responses" in url
+        assert _sent(mock_cls)["model"] == GROK_BEDROCK_ID
+
+    def test_grok_rejected_on_chat_completions(self, client):
+        resp = client.post("/v1/chat/completions", json={
+            "model": "grok-4.3",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 400
+        assert "/openai/v1/responses" in resp.json()["error"]["message"]
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_image_block_preserved(self, mock_cls, client):

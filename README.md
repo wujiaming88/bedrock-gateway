@@ -47,10 +47,12 @@
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K | 同上 |
 | `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K | 同上 |
 | `gpt-5.5` | `openai.gpt-5.5` | 272K | 64K | **`/openai/v1/responses`** |
+| `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
 
 - Claude 系别名有大量常见变体自动解析（如 `claude-3-5-sonnet-latest`、`claude-sonnet-4-20250514`、Anthropic SDK 默认模型名）。
 - GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`。
-- 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` 等开头的按 passthrough 处理）。
+- Grok 4.3 别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` / `grok-4-3`。
+- 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 
 **端点速查**
 
@@ -58,7 +60,7 @@
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 系，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages（Claude 系，同步 + 流式） |
-| `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5，透传，同步 + 流式） |
+| `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5 / Grok 4.3，透传，同步 + 流式） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
 | `GET` | `/health` | 健康检查（公开，无需鉴权） |
 | `GET` | `/dashboard/` | 监控界面 |
@@ -296,9 +298,9 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-### GPT-5.5 —— OpenAI SDK（Responses）
+### GPT-5.5 / Grok 4.3 —— OpenAI SDK（Responses）
 
-GPT-5.5 在 Bedrock 上仅经 `bedrock-mantle` 的 OpenAI Responses API 提供；网关**原样透传**请求（仅把模型别名替换为上游 ID），响应与 SSE 流也原样回吐。注意 base_url 用 **`/openai/v1`**：
+这类模型在 Bedrock 上经 `bedrock-mantle` 的 OpenAI Responses API 提供；网关**原样透传**请求（仅把模型别名替换为上游 ID），响应与 SSE 流也原样回吐。注意 base_url 用 **`/openai/v1`**：
 
 ```python
 from openai import OpenAI
@@ -306,6 +308,9 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:4000/openai/v1", api_key="<gateway-key>")
 resp = client.responses.create(model="gpt-5.5", input="用一句话解释 ETF")
 print(resp.output[0].content[0].text)
+
+# Grok 4.3 同一用法，换 model 即可（官方定位金融/法律文档分析）
+resp = client.responses.create(model="grok-4.3", input="分析这份财报的关键风险")
 ```
 
 **图片输入**（`input_image` 支持 `data:` base64 与 `s3://`，**不支持公网 http(s) URL**）：
