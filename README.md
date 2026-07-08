@@ -1,7 +1,7 @@
 # Bedrock Gateway
 
-把发往 **OpenAI / Anthropic** 的 API 请求转发到 **AWS Bedrock**。
-任何兼容 OpenAI 或 Anthropic SDK 的客户端，都可以**不改一行业务代码**接入 Bedrock —— 只需把 `base_url` 指向本网关。
+把发往 **OpenAI / Anthropic** 的 API 请求转发到 **AWS Bedrock** 与 **Azure OpenAI**。
+任何兼容 OpenAI 或 Anthropic SDK 的客户端，都可以**不改一行业务代码**接入多云模型 —— 只需把 `base_url` 指向本网关。
 
 [English](README.en.md) · [更新日志](CHANGELOG.md)
 
@@ -26,10 +26,11 @@
 
 ## 为什么用它
 
-- **现有应用零改造切到 Bedrock**：把 `base_url` 改到本网关即可，OpenAI / Anthropic 两套 SDK 都兼容。
-- **免 boto3 / SigV4**：Bearer Token 模式开箱即用；也支持 AK/SK、IAM Role、Profile。
-- **凭据集中托管**：客户端只持有一个网关 API key，AWS 凭据不下发到调用方。
-- **多上游方言**：Claude 系走 Messages / Chat Completions，OpenAI GPT-5.5 走 Responses API，同一网关统一入口。
+- **现有应用零改造切换后端**：把 `base_url` 改到本网关即可，OpenAI / Anthropic 两套 SDK 都兼容。
+- **多云统一入口**：AWS Bedrock（Claude / GPT-5.5 / Grok）与 Azure OpenAI 经同一网关调用，客户端不感知底层是哪个云。
+- **免 boto3 / SigV4**：Bearer Token 模式开箱即用；也支持 AK/SK、IAM Role、Profile；Azure 用 api-key。
+- **凭据集中托管**：客户端只持有一个网关 API key，云厂商凭据不下发到调用方。
+- **多上游方言**：Claude 走 Messages / Chat Completions（转换），OpenAI / Azure 走 Responses / Chat Completions（透传），由 Transport × Dialect 两轴统一编排。
 - **自带可观测性**：内置 dashboard，按模型 / 状态 / 时间维度展示请求量与延迟。
 
 ---
@@ -581,12 +582,12 @@ server {
 
 - [ ] `BEDROCK_API_KEY` 设为强随机值（`bgw-$(openssl rand -base64 48)`）
 - [ ] `BEDROCK_DASHBOARD_KEY` 设为强随机值，且与 `BEDROCK_API_KEY` 不同
-- [ ] 密钥仅写入 `.env`（权限 `600`），不写入 `config.yaml`
+- [ ] 所有云凭据（`AWS_BEARER_TOKEN_BEDROCK`、`AZURE_OPENAI_KEY` 等）仅写入 `.env`（权限 `600`），`config.yaml` 里只用 `${VAR}` 插值引用，不写明文
 - [ ] 绑定 `0.0.0.0` 时前面**必须**有 TLS 终止（Nginx / ALB / Cloudflare）
 - [ ] 设 `dashboard.api_key`（或 `dashboard.enabled: false`），并保持 `require_auth: true`
 - [ ] 非 root 运行（systemd `User=` 或 Docker 非 root 用户）
 - [ ] 日志接入集中收集（journalctl、容器日志驱动）
-- [ ] Bedrock IAM 账号最小权限，仅保留必要的 `bedrock:InvokeModel*`
+- [ ] Bedrock IAM 账号最小权限，仅保留必要的 `bedrock:InvokeModel*`；Azure api-key 定期轮换（资源有 key1/key2 可无缝切换）
 
 ---
 
