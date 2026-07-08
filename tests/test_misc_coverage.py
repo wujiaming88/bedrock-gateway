@@ -3,16 +3,36 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
 
+import bedrock_gateway
 from bedrock_gateway.config import _deep_resolve, load_config
 from bedrock_gateway.converter import (
     _convert_image_url,
     convert_tool_choice,
     decode_event_stream_chunk,
 )
+
+
+class TestVersionConsistency:
+    """The version lives in two files that must never drift apart:
+    ``bedrock_gateway/__init__.py`` (runtime / /health) and
+    ``pyproject.toml`` (packaging / the pip-installed dist name).
+    A mismatch silently ships a wheel labelled with the wrong version."""
+
+    def test_init_matches_pyproject(self):
+        pyproject = (
+            Path(__file__).resolve().parent.parent / "pyproject.toml"
+        ).read_text()
+        m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+        assert m, "no version found in pyproject.toml [project]"
+        assert m.group(1) == bedrock_gateway.__version__, (
+            f"pyproject version {m.group(1)!r} != "
+            f"__init__ {bedrock_gateway.__version__!r}"
+        )
 
 
 class TestDeepResolveList:
