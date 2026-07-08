@@ -1,0 +1,121 @@
+# CLAUDE.md
+
+Guidance for AI agents (and humans) working in this repository.
+
+## What this is
+
+An OpenAI/Anthropic-compatible **proxy gateway** for multiple LLM clouds. A
+client points its SDK's `base_url` at this gateway and calls models on AWS
+Bedrock or Azure OpenAI without changing code. FastAPI + httpx, no boto3
+required for the common (bearer-token / api-key) auth paths.
+
+## Architecture: Transport × Dialect (read this first)
+
+The core abstraction is **two orthogonal axes** — internalise this before
+touching provider code. See `docs/multi-cloud-multimodal-design.md` for the
+full rationale.
+
+- **Transport** (`bedrock_gateway/providers/transports.py`) — *where + how to
+  authenticate*: builds the upstream URL and returns auth headers.
+  `BedrockTransport` (runtime/mantle hosts, global SigV4/Bearer auth →
+  `auth_headers` returns `None`), `AzureTransport` (per-resource endpoint +
+  `api-key` header).
+- **Dialect** (`anthropic_bedrock.py`, `openai_responses.py`, `openai_chat.py`)
+  — *request/response/stream shape*: `operation_path`, `build_request`,
+  `render_sync`, `transform_stream`, `stream_error`.
+  `anthropic` converts OpenAI↔Anthropic; the `openai-*` dialects are verbatim
+  passthrough.
+
+A model = one `(transport, dialect)` pair, chosen from `ModelEntry`. **Adding a
+cloud = one Transport; adding a wire format = one Dialect.** Never add an
+`if azure:` branch to a dialect or an `if responses:` branch to a transport —
+that reintroduces the N×M coupling this design removed.
+
+The server (`server.py`) owns everything cross-cutting — retries, backoff,
+timeouts, metrics, the pre-stream error preflight (`_open_upstream_stream`),
+error-severity logging — and is transport-/dialect-agnostic. Handlers thread
+`(transport, dialect, entry)`.
+
+### Endpoints → dialects
+- `POST /v1/chat/completions` — branches by dialect: `anthropic` (Claude,
+  converted) vs `openai-chat` (Azure/mantle, passthrough).
+- `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.5, Grok, Azure).
+- `POST /v1/messages` — Anthropic Messages (Claude only).
+- Wrong-endpoint-for-model returns a 400 with guidance (dialect guards).
+
+## Adding a model
+
+1. Bedrock model, same dialect as an existing one → add one entry to
+   `_DEFAULT_MODELS` in `config.py` + aliases in `_MODEL_ALIASES`. Zero code.
+2. New Bedrock vendor prefix → also add it to `_BEDROCK_ID_PREFIXES` in
+   `models.py` so raw-id passthrough works.
+3. Azure model → add an `azure_resources` entry (endpoint + key) and a model
+   entry referencing it with a `deployment` name.
+4. New cloud or new wire format → add a Transport or Dialect, register it in
+   `providers/__init__.py`.
+
+**Always verify a new model actually resolves before writing config**: some
+require a Marketplace subscription / IAM permission the account may lack
+(Sonnet 5 → 403, GPT-5.4 → 401 as of this writing). curl the upstream with the
+bearer/api-key first.
+
+## Commands
+
+```bash
+pip install -e ".[dev]"                     # dev setup (needs pytest-asyncio)
+python -m pytest -q                          # full suite (671 tests)
+python -m pytest tests/test_azure.py -q      # one file
+ruff check bedrock_gateway/ tests/
+python -m bedrock_gateway                    # run locally (reads ./config.yaml)
+
+# Real end-to-end smoke (needs live creds; NOT part of pytest):
+AWS_BEARER_TOKEN_BEDROCK=... AZURE_OPENAI_ENDPOINT=... AZURE_OPENAI_KEY=... \
+  python scripts/smoke_e2e.py --port 4199
+```
+
+## Gotchas (hard-won — don't relearn these)
+
+- **Version lives in two files**: bump BOTH `bedrock_gateway/__init__.py` and
+  `pyproject.toml`. `TestVersionConsistency` enforces it; a mismatch ships a
+  wheel with the wrong dist label.
+- **`models:` in config REPLACES the built-in defaults** (does not merge). If
+  you add a custom model you must re-list any Claude/GPT/Grok defaults you still
+  want. Pinned by `test_custom_models_replace_defaults`.
+- **Running e2e/the gateway writes `data/metrics.db`**, which then pollutes the
+  dashboard tests. `rm -f data/metrics.db*` before `pytest`.
+- **Azure auth is `api-key:` header, not `Authorization: Bearer`.** Azure
+  endpoint URL forms differ per operation (responses may carry
+  `?api-version=...`, chat uses `/v1`) — keep `azure_endpoint` fully
+  configurable, don't hardcode a form.
+- **Passthrough dialects must not strip unknown fields** — Azure's
+  `content_filter_results` and Responses `input_image` blocks flow through
+  verbatim. No field whitelisting.
+- **Streaming passthrough uses an incremental UTF-8 decoder** — multi-byte
+  (CJK) chars split across upstream chunks would otherwise corrupt.
+
+## Deployment (this box)
+
+systemd `bedrock-gateway.service`, port 4000, `User=bedrock`, runtime venv at
+`/opt/bedrock-gateway` (**regular pip install, not `-e`**).
+
+```bash
+# Update:
+/opt/bedrock-gateway/bin/pip install --upgrade --force-reinstall --no-deps \
+  git+<repo-url>
+systemctl restart bedrock-gateway          # restart alone is NOT enough — reinstall first
+```
+
+Verify the installed version from a **neutral directory** (`cd /tmp`), else
+Python loads the source-tree copy and shows a misleading version:
+```bash
+cd /tmp && /opt/bedrock-gateway/bin/python -c "import bedrock_gateway; print(bedrock_gateway.__version__)"
+```
+`systemctl status` uses a pager — add `--no-pager` (it looks "stuck" otherwise).
+
+## Conventions
+
+- Match the surrounding code's comment density and docstring style — modules
+  carry a purpose docstring; non-obvious logic gets a *why* comment.
+- Every change keeps the suite green; new behaviour gets tests. Passthrough and
+  streaming paths especially need boundary tests.
+- Config changes: update `config.example.yaml` + README + CHANGELOG together.
