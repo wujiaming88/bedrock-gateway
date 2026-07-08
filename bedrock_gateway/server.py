@@ -31,17 +31,13 @@ from .config import GatewayConfig, load_config
 from .converter import (
     convert_tool_choice,
     convert_tools,
-    convert_usage,
     decode_event_stream_chunk,
     extract_system_and_messages,
     format_anthropic_error,
     format_anthropic_response,
     make_anthropic_sse,
-    make_stream_chunk,
     map_reasoning_effort,
     parse_bedrock_error,
-    parse_bedrock_response,
-    stream_exception_status,
 )
 from .dashboard import (
     DashboardAuth,
@@ -53,8 +49,16 @@ from .dashboard import (
 )
 from .dashboard.storage import MetricsStorage
 from .models import ModelRegistry, UnknownModelError
+from .providers import Provider, get_provider
 
 logger = logging.getLogger("bedrock_gateway")
+
+# Fallback provider for aliases that resolve to a raw Bedrock ID with no
+# registered ModelEntry (e.g. a pass-through vendor ID). These are always the
+# original runtime/Anthropic dialect.
+from .providers.anthropic_bedrock import AnthropicBedrockProvider
+
+_default_provider: Provider = AnthropicBedrockProvider()
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +340,21 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             model = registry.resolve(raw_model)
         except UnknownModelError as exc:
             return _oai_error(400, str(exc), "invalid_request_error")
+
+        # Select the upstream dialect. Unregistered aliases (raw Bedrock IDs
+        # passed through) fall back to the default anthropic/runtime provider.
+        entry = registry.get_entry(raw_model)
+        provider = get_provider(entry) if entry else _default_provider
+        # This endpoint speaks OpenAI chat/completions → Anthropic. Models that
+        # require a different protocol (e.g. GPT-5.5 / Responses) are not served
+        # here; direct callers to the endpoint that fits their wire format.
+        if provider.name != "anthropic":
+            return _oai_error(
+                400,
+                f"Model '{raw_model}' is not available on /v1/chat/completions; "
+                f"use /openai/v1/responses instead.",
+                "invalid_request_error",
+            )
         stream = body.get("stream", False)
 
         logger.info(
@@ -408,11 +427,66 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         if stream:
             return await _handle_stream(
-                model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
+                provider, model, config.region, bedrock_body, auth,
+                max_retries, retry_base_delay,
                 request=request, health=health,
             )
         return await _handle_sync(
-            model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
+            provider, model, config.region, bedrock_body, auth,
+            max_retries, retry_base_delay,
+            request=request, health=health,
+        )
+
+    # ------------------------------------------------------------------
+    # POST /openai/v1/responses  (OpenAI Responses API — GPT-5.5 via mantle)
+    # ------------------------------------------------------------------
+
+    @app.post("/openai/v1/responses")
+    async def responses(request: Request) -> Any:
+        try:
+            body = await request.json()
+        except Exception:
+            return _oai_error(400, "Invalid JSON body")
+
+        raw_model = body.get("model", "gpt-5.5")
+        try:
+            model = registry.resolve(raw_model)
+        except UnknownModelError as exc:
+            return _oai_error(400, str(exc), "invalid_request_error")
+
+        entry = registry.get_entry(raw_model)
+        provider = get_provider(entry) if entry else _default_provider
+        # This endpoint only serves Responses-protocol models.
+        if provider.name != "openai-responses":
+            return _oai_error(
+                400,
+                f"Model '{raw_model}' is not available on /openai/v1/responses; "
+                f"use /v1/chat/completions instead.",
+                "invalid_request_error",
+            )
+        stream = body.get("stream", False)
+
+        # Passthrough: the client body is already native Responses format.
+        # Only swap the client-facing alias for the upstream Bedrock model ID;
+        # every other field (input, image blocks, reasoning, tools) flows
+        # through untouched.
+        upstream_body = dict(body)
+        upstream_body["model"] = model
+
+        logger.info(
+            "REQ [responses] model=%s -> %s stream=%s",
+            raw_model, model, stream,
+        )
+
+        if stream:
+            return await _handle_stream(
+                provider, model, config.region, upstream_body, auth,
+                max_retries, retry_base_delay,
+                request=request, health=health,
+            )
+        return await _handle_sync(
+            provider, model, config.region, upstream_body, auth,
+            max_retries, retry_base_delay,
             request=request, health=health,
         )
 
@@ -444,6 +518,20 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                         "message": str(exc),
                     },
                 },
+            )
+
+        # Guard: this Anthropic-format endpoint only serves anthropic-protocol
+        # models. A Responses-protocol model (GPT-5.5) misrouted here is a
+        # client mistake — surface it clearly rather than mangling the request.
+        _entry = registry.get_entry(raw_model)
+        if _entry is not None and _entry.protocol != "anthropic":
+            return JSONResponse(
+                status_code=400,
+                content=format_anthropic_error(
+                    400,
+                    f"Model '{raw_model}' is not available on /v1/messages; "
+                    f"use /openai/v1/responses instead.",
+                ),
             )
         stream = body.get("stream", False)
 
@@ -573,9 +661,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 async def _handle_sync(
+    provider: Provider,
     model: str,
+    region: str,
     bedrock_body: dict,
-    bedrock_base: str,
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
@@ -583,7 +672,7 @@ async def _handle_sync(
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
-    url = f"{bedrock_base}/model/{model}/invoke"
+    url = provider.sync_url(region, model)
     body_bytes = json.dumps(bedrock_body).encode()
     last_error: str | None = None
 
@@ -595,26 +684,16 @@ async def _handle_sync(
 
             if resp.status_code == 200:
                 result = resp.json()
-                message, finish = parse_bedrock_response(result)
-                usage = result.get("usage", {})
+                client_body, log_info = provider.render_sync(result, model)
                 logger.info(
                     "RES model=%s finish=%s in=%s out=%s attempt=%d",
                     model,
-                    finish,
-                    usage.get("input_tokens", "?"),
-                    usage.get("output_tokens", "?"),
+                    log_info.get("finish", "?"),
+                    log_info.get("input_tokens", "?"),
+                    log_info.get("output_tokens", "?"),
                     attempt + 1,
                 )
-                return {
-                    "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": model,
-                    "choices": [
-                        {"index": 0, "message": message, "finish_reason": finish}
-                    ],
-                    "usage": convert_usage(usage),
-                }
+                return client_body
 
             if resp.status_code in (429, 529, 503):
                 last_error = resp.text[:200]
@@ -791,9 +870,10 @@ async def _open_upstream_stream(
 # ---------------------------------------------------------------------------
 
 async def _handle_stream(
+    provider: Provider,
     model: str,
+    region: str,
     bedrock_body: dict,
-    bedrock_base: str,
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
@@ -801,7 +881,7 @@ async def _handle_stream(
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> JSONResponse | StreamingResponse:
-    url = f"{bedrock_base}/model/{model}/invoke-with-response-stream"
+    url = provider.stream_url(region, model)
     body_bytes = json.dumps(bedrock_body).encode()
     msg_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
@@ -814,143 +894,23 @@ async def _handle_stream(
     if err is not None:
         return _oai_error(err["status"], err["message"], err["type"])
 
-    async def generate():  # noqa: C901
-        buf = b""
-        stream_input_tokens = 0
-        stream_output_tokens = 0
-        current_tool_id: str | None = None
-        current_tool_name: str | None = None
+    async def generate():
         try:
-            async for raw in resp.aiter_bytes():
-                buf += raw
-                events, consumed = decode_event_stream_chunk(buf)
-                if consumed > 0:
-                    buf = buf[consumed:]
-                for event in events:
-                    etype = event.get("type", "")
-
-                    if etype == "_exception":
-                        # Mid-stream upstream fault: surface it as a visible
-                        # error chunk + proper [DONE] terminator so the client
-                        # never hangs waiting for more frames.
-                        _log_upstream_error(
-                            event.get("status", 500),
-                            "STREAM-MID error [chat] model=%s type=%s msg=%s",
-                            model,
-                            event.get("exception_type", "?"),
-                            event.get("message", "")[:300],
-                        )
-                        yield f'data: {json.dumps({"error": {"message": event.get("message", "upstream stream error"), "type": parse_bedrock_error(event.get("status", 500), "")["type"], "code": event.get("status", 500)}})}\n\n'
-                        yield "data: [DONE]\n\n"
-                        return
-
-                    if etype == "message_start":
-                        _mu = event.get("message", {}).get("usage", {})
-                        stream_input_tokens = _mu.get("input_tokens", 0)
-                        # Send initial role chunk (OpenAI spec)
-                        yield make_stream_chunk(
-                            msg_id, model, {"role": "assistant"}
-                        )
-
-                    elif etype == "content_block_start":
-                        cb = event.get("content_block", {})
-                        if cb.get("type") == "tool_use":
-                            current_tool_id = cb.get("id", "")
-                            current_tool_name = cb.get("name", "")
-                            yield make_stream_chunk(
-                                msg_id,
-                                model,
-                                {
-                                    "tool_calls": [{
-                                        "index": 0,
-                                        "id": current_tool_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": current_tool_name,
-                                            "arguments": "",
-                                        },
-                                    }]
-                                },
-                            )
-                        elif cb.get("type") == "thinking":
-                            # Start of a thinking block — no output needed
-                            pass
-
-                    elif etype == "content_block_delta":
-                        delta = event.get("delta", {})
-                        dtype = delta.get("type", "")
-                        if dtype == "text_delta":
-                            yield make_stream_chunk(
-                                msg_id,
-                                model,
-                                {"content": delta.get("text", "")},
-                            )
-                        elif dtype == "input_json_delta":
-                            partial = delta.get("partial_json", "")
-                            yield make_stream_chunk(
-                                msg_id,
-                                model,
-                                {
-                                    "tool_calls": [{
-                                        "index": 0,
-                                        "function": {
-                                            "arguments": partial,
-                                        },
-                                    }]
-                                },
-                            )
-                        elif dtype == "thinking_delta":
-                            yield make_stream_chunk(
-                                msg_id,
-                                model,
-                                {
-                                    "reasoning_content": delta.get(
-                                        "thinking", ""
-                                    )
-                                },
-                            )
-                        elif dtype == "signature_delta":
-                            # Signature associated with thinking block;
-                            # no user-visible output needed.
-                            pass
-
-                    elif etype == "content_block_stop":
-                        current_tool_id = None
-                        current_tool_name = None
-
-                    elif etype == "message_delta":
-                        sr = event.get("delta", {}).get(
-                            "stop_reason", "end_turn"
-                        )
-                        fr = "tool_calls" if sr == "tool_use" else "stop"
-                        _du = event.get("usage", {})
-                        if _du.get("output_tokens"):
-                            stream_output_tokens = _du["output_tokens"]
-                        if _du.get("input_tokens"):
-                            stream_input_tokens = _du["input_tokens"]
-                        yield make_stream_chunk(
-                            msg_id, model, {}, fr
-                        )
-                        # Send separate usage-only chunk (OpenAI stream_options format)
-                        _usage = {
-                            "prompt_tokens": stream_input_tokens,
-                            "completion_tokens": stream_output_tokens,
-                            "total_tokens": stream_input_tokens + stream_output_tokens,
-                        }
-                        yield f'data: {json.dumps({"id": msg_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [], "usage": _usage})}\n\n'
-
-            yield "data: [DONE]\n\n"
-
+            # Provider-specific transform: decode the upstream stream and
+            # re-emit client-facing SSE (OpenAI chunks for Anthropic, or a
+            # verbatim passthrough for Responses).
+            async for chunk in provider.transform_stream(
+                resp.aiter_bytes(), model, msg_id
+            ):
+                yield chunk
         except httpx.TimeoutException:
             # Connection dropped mid-stream after data may have flowed.
             _note_timeout(request)
             logger.warning("STREAM-MID timeout [chat] model=%s", model)
-            yield f'data: {json.dumps({"error": {"message": "Upstream timeout mid-stream", "type": "api_error", "code": 504}})}\n\n'
-            yield "data: [DONE]\n\n"
+            yield provider.stream_error("Upstream timeout mid-stream", 504)
         except Exception as exc:  # noqa: BLE001
             logger.exception("UNEXPECTED [stream] model=%s during chat.completions", model)
-            yield f'data: {json.dumps({"error": {"message": str(exc), "type": "api_error", "code": 500}})}\n\n'
-            yield "data: [DONE]\n\n"
+            yield provider.stream_error(str(exc), 500)
         finally:
             await stack.aclose()
 

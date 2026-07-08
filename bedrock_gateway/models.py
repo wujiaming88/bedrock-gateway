@@ -32,6 +32,7 @@ _BEDROCK_ID_PREFIXES: tuple[str, ...] = (
     "cohere.",
     "ai21.",
     "stability.",
+    "openai.",
 )
 
 
@@ -111,6 +112,22 @@ class ModelRegistry:
             raise UnknownModelError(alias)
 
         return alias
+
+    def get_entry(self, alias: str) -> ModelEntry | None:
+        """Return the registered :class:`ModelEntry` for *alias*.
+
+        Resolves through the common alias table, mirroring :meth:`resolve`.
+        Returns ``None`` when *alias* is not a registered model (e.g. a raw
+        Bedrock ID passed straight through) — callers then fall back to the
+        default (runtime / anthropic) upstream dialect.
+        """
+        entry = self._models.get(alias)
+        if entry is not None:
+            return entry
+        canonical = _MODEL_ALIASES.get(alias)
+        if canonical:
+            return self._models.get(canonical)
+        return None
 
     def get_info(self, alias: str) -> ModelInfo | None:
         """Return full metadata for *alias*, or ``None`` if unknown."""

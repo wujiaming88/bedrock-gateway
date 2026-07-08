@@ -126,10 +126,18 @@ class DashboardConfig:
 
 @dataclass
 class ModelEntry:
-    """A single model's metadata."""
+    """A single model's metadata.
+
+    ``endpoint`` / ``protocol`` select the upstream dialect (see
+    ``bedrock_gateway.providers``). They default to the original behaviour —
+    ``bedrock-runtime`` + Anthropic Messages — so existing models and flat
+    YAML configs that omit them are unaffected.
+    """
     bedrock_id: str
     context_length: int = 200000
     max_output: int = 64000
+    endpoint: str = "runtime"     # "runtime" | "mantle"
+    protocol: str = "anthropic"   # "anthropic" | "openai-responses"
 
 
 @dataclass
@@ -191,6 +199,14 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "context_length": 200_000,
         "max_output": 64_000,
     },
+    # ── OpenAI GPT-5.5 (mantle endpoint, Responses API) ───────────────
+    "gpt-5.5": {
+        "bedrock_id": "openai.gpt-5.5",
+        "context_length": 272_000,
+        "max_output": 64_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+    },
 }
 
 # Common model name variations → canonical alias
@@ -235,6 +251,12 @@ _MODEL_ALIASES: dict[str, str] = {
     "claude-opus-4-8": "claude-opus-4.8",
     "claude-4.8-opus": "claude-opus-4.8",
     "claude-4-8-opus": "claude-opus-4.8",
+    # GPT-5.5 variations
+    "gpt-55": "gpt-5.5",
+    "gpt5.5": "gpt-5.5",
+    "gpt-5-5": "gpt-5.5",
+    "openai.gpt-5.5": "gpt-5.5",
+    "openai-gpt-5.5": "gpt-5.5",
 }
 
 
@@ -248,6 +270,8 @@ def _parse_models(raw: dict[str, Any] | None) -> dict[str, ModelEntry]:
                 bedrock_id=info.get("bedrock_id", name),
                 context_length=int(info.get("context_length", 200_000)),
                 max_output=int(info.get("max_output", 64_000)),
+                endpoint=info.get("endpoint", "runtime"),
+                protocol=info.get("protocol", "anthropic"),
             )
     return models
 

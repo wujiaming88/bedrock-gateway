@@ -3,6 +3,43 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.2.0] — 2026-07-08
+
+### 新增
+
+- **接入 OpenAI GPT-5.5**（`openai.gpt-5.5`，272K 上下文）。经 Bedrock 的
+  `bedrock-mantle` 端点 + OpenAI Responses API 调用，**不同于**现有 Claude 走
+  的 `bedrock-runtime` + Anthropic Messages 链路。
+  - 新增对外端点 **`POST /openai/v1/responses`**：客户端直发 OpenAI Responses
+    原生格式，网关**透传**给 mantle（仅把模型别名替换为上游 ID，其余字段原样
+    转发）。图片、reasoning、工具字段天然对齐、零转换损耗。客户端设
+    `OPENAI_BASE_URL=http://<gateway>/openai/v1` 即可直用。
+  - 支持**图片输入**（`input_image`）：base64 data URI 与 `s3://` 两种 scheme
+    可用；公网 http(s) URL 不受 mantle 支持（会返回 400）。
+  - 同步 + 流式（标准 SSE 透传，UTF-8 增量解码保证 CJK 不跨块损坏）。
+- **Provider 抽象层**（`bedrock_gateway/providers/`）：将"如何与某个上游对话"
+  （URL 构造、响应渲染、流转换）从 server 的编排逻辑（重试/退避/超时/metrics/
+  流式预检）中解耦。新增模型/厂商 = 加一个 Provider + 一条 `ModelEntry`，
+  `server.py` 不再改。现有 Claude 全家收敛为 `AnthropicBedrockProvider`，
+  GPT-5.5 为 `OpenAIResponsesProvider`。
+- **`ModelEntry` 新增 `endpoint` / `protocol` 字段**（默认 `runtime` /
+  `anthropic`），向后兼容：现有模型与旧扁平 YAML 不写这两个字段即保持原行为。
+
+### 变更
+
+- `_handle_sync` / `_handle_stream` 参数化 `provider`，URL 与响应渲染委托给
+  provider；重试/预检/超时/metrics 逻辑不变、两个 provider 共享。
+- 端点守卫：`/v1/chat/completions`、`/v1/messages` 拒绝 Responses 协议模型；
+  `/openai/v1/responses` 拒绝 Anthropic 协议模型，均返回带指引的 400。
+
+### 测试
+
+- 新增 35 个用例（`test_gpt55_responses.py`）：注册/别名、ModelEntry 向后兼容、
+  provider 选择、Responses provider 单元行为（URL/透传/UTF-8 跨块/错误帧）、
+  端点路由与守卫、透传端到端（模型替换、图片块保留、流式透传）。
+- 真机端到端验证：经网关实调 GPT-5.5 同步/流式/图片（base64），Claude 回归。
+- 总测试 **630 个全部通过**（595 基线零回归 + 35 新增）。
+
 ## [0.1.4] — 2026-05-29
 
 ### 修复
