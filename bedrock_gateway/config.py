@@ -84,9 +84,10 @@ class ServerConfig:
 
 @dataclass
 class RetryConfig:
-    """Retry configuration."""
+    """Upstream-call tuning: retries, backoff, and request timeout."""
     max_retries: int = 3
     base_delay: float = 1.0
+    timeout: float = 300.0  # seconds per upstream attempt (connect + read)
 
 
 @dataclass
@@ -469,6 +470,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
     retry = RetryConfig(
         max_retries=int(retry_raw.get("max_retries", os.environ.get("BEDROCK_MAX_RETRIES", "3"))),
         base_delay=float(retry_raw.get("base_delay", "1.0")),
+        timeout=float(retry_raw.get("timeout", os.environ.get("BEDROCK_TIMEOUT", "300"))),
     )
 
     # Dashboard

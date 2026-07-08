@@ -12,10 +12,10 @@ Dialect. The server orchestration consumes both, staying format-/cloud-agnostic.
 from __future__ import annotations
 
 from ..config import ModelEntry
-from .anthropic_bedrock import AnthropicMessagesDialect
 from .base import Dialect, Transport
-from .openai_chat import ChatPassthroughDialect
-from .openai_responses import ResponsesPassthroughDialect
+from .dialect_anthropic import AnthropicMessagesDialect
+from .dialect_chat import ChatPassthroughDialect
+from .dialect_responses import ResponsesPassthroughDialect
 from .transports import AzureTransport, BedrockTransport
 
 

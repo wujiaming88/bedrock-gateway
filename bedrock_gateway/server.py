@@ -160,6 +160,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     bedrock_base = f"https://bedrock-runtime.{config.region}.amazonaws.com"
     max_retries = config.retry.max_retries
     retry_base_delay = config.retry.base_delay
+    request_timeout = config.retry.timeout
 
     # Metrics collector (shared across middleware + dashboard router)
     storage: MetricsStorage | None = None
@@ -379,12 +380,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 return await _handle_stream(
                     transport, dialect, entry, upstream_id, config.region,
                     upstream_body, auth, max_retries, retry_base_delay,
-                    request=request, health=health,
+                    timeout=request_timeout, request=request, health=health,
                 )
             return await _handle_sync(
                 transport, dialect, entry, upstream_id, config.region,
                 upstream_body, auth, max_retries, retry_base_delay,
-                request=request, health=health,
+                timeout=request_timeout, request=request, health=health,
             )
         if dialect.name != "anthropic":
             return _oai_error(
@@ -466,12 +467,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             return await _handle_stream(
                 transport, dialect, entry, model, config.region, bedrock_body,
                 auth, max_retries, retry_base_delay,
-                request=request, health=health,
+                timeout=request_timeout, request=request, health=health,
             )
         return await _handle_sync(
             transport, dialect, entry, model, config.region, bedrock_body,
             auth, max_retries, retry_base_delay,
-            request=request, health=health,
+            timeout=request_timeout, request=request, health=health,
         )
 
     # ------------------------------------------------------------------
@@ -529,12 +530,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             return await _handle_stream(
                 transport, dialect, entry, upstream_id, config.region,
                 upstream_body, auth, max_retries, retry_base_delay,
-                request=request, health=health,
+                timeout=request_timeout, request=request, health=health,
             )
         return await _handle_sync(
             transport, dialect, entry, upstream_id, config.region,
             upstream_body, auth, max_retries, retry_base_delay,
-            request=request, health=health,
+            timeout=request_timeout, request=request, health=health,
         )
 
     # ------------------------------------------------------------------
@@ -639,11 +640,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         if stream:
             return await _handle_messages_stream(
                 model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
-                request=request, health=health,
+                timeout=request_timeout, request=request, health=health,
             )
         return await _handle_messages_sync(
             model, bedrock_body, bedrock_base, auth, max_retries, retry_base_delay,
-            request=request, health=health,
+            timeout=request_timeout, request=request, health=health,
         )
 
     # ------------------------------------------------------------------
@@ -718,6 +719,7 @@ async def _handle_sync(
     max_retries: int,
     retry_base_delay: float,
     *,
+    timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
@@ -732,7 +734,7 @@ async def _handle_sync(
             headers = transport.auth_headers(entry) or auth.get_headers(
                 method="POST", url=url, body=body_bytes
             )
-            async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
+            async with _track_upstream(health), httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
@@ -815,6 +817,7 @@ async def _open_upstream_stream(
     health: HealthMonitor | None,
     log_tag: str,
     extra_headers: dict[str, str] | None = None,
+    timeout: float = 300.0,
 ) -> tuple[Any, AsyncExitStack | None, dict | None]:
     """Open the Bedrock streaming connection and inspect the HTTP status
     *before* any bytes are handed to the client.
@@ -843,7 +846,7 @@ async def _open_upstream_stream(
         try:
             await stack.enter_async_context(_track_upstream(health))
             client = await stack.enter_async_context(
-                httpx.AsyncClient(timeout=300)
+                httpx.AsyncClient(timeout=timeout)
             )
             resp = await stack.enter_async_context(
                 client.stream("POST", url, headers=headers, content=body_bytes)
@@ -937,6 +940,7 @@ async def _handle_stream(
     max_retries: int,
     retry_base_delay: float,
     *,
+    timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> JSONResponse | StreamingResponse:
@@ -950,6 +954,7 @@ async def _handle_stream(
         url, body_bytes, auth, max_retries, retry_base_delay,
         request=request, health=health, log_tag=f"chat model={model}",
         extra_headers=transport.auth_headers(entry),
+        timeout=timeout,
     )
     if err is not None:
         return _oai_error(err["status"], err["message"], err["type"])
@@ -989,6 +994,7 @@ async def _handle_messages_sync(
     max_retries: int,
     retry_base_delay: float,
     *,
+    timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
@@ -999,7 +1005,7 @@ async def _handle_messages_sync(
     for attempt in range(max_retries):
         try:
             headers = auth.get_headers(method="POST", url=url, body=body_bytes)
-            async with _track_upstream(health), httpx.AsyncClient(timeout=300) as client:
+            async with _track_upstream(health), httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
             if resp.status_code == 200:
@@ -1090,6 +1096,7 @@ async def _handle_messages_stream(
     max_retries: int,
     retry_base_delay: float,
     *,
+    timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> JSONResponse | StreamingResponse:
@@ -1105,6 +1112,7 @@ async def _handle_messages_stream(
     resp, stack, err = await _open_upstream_stream(
         url, body_bytes, auth, max_retries, retry_base_delay,
         request=request, health=health, log_tag=f"messages model={model}",
+        timeout=timeout,
     )
     if err is not None:
         return JSONResponse(

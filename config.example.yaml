@@ -30,10 +30,12 @@ server:
   log_level: info   # debug | info | warning | error
   # api_key: ${BEDROCK_API_KEY}  # uncomment to require authentication
 
-# ─── Retry ────────────────────────────────────────────────
+# ─── Retry / upstream-call tuning ─────────────────────────
 retry:
   max_retries: 3
   base_delay: 1.0   # seconds, exponential backoff: delay * 2^attempt
+  timeout: 300      # seconds per upstream attempt (connect + read); raise for
+                    # slow reasoning models, lower to fail fast. Env: BEDROCK_TIMEOUT
 
 # ─── Dashboard ────────────────────────────────────────────
 # Observability UI at /dashboard/ and the /api/metrics/* JSON API.

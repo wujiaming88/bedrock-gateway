@@ -143,7 +143,7 @@ class TestTransportOwnsApiRoot:
 
     def test_bedrock_mantle_adds_openai_v1_root(self):
         from bedrock_gateway.providers import BedrockTransport
-        from bedrock_gateway.providers.openai_responses import (
+        from bedrock_gateway.providers.dialect_responses import (
             ResponsesPassthroughDialect,
         )
         t, d = BedrockTransport(), ResponsesPassthroughDialect()
@@ -155,7 +155,7 @@ class TestTransportOwnsApiRoot:
         )
 
     def test_azure_base_already_has_root(self):
-        from bedrock_gateway.providers.openai_responses import (
+        from bedrock_gateway.providers.dialect_responses import (
             ResponsesPassthroughDialect,
         )
         t, d = AzureTransport(), ResponsesPassthroughDialect()
