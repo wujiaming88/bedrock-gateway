@@ -47,8 +47,22 @@ error-severity logging — and is transport-/dialect-agnostic. Handlers thread
 - `POST /v1/chat/completions` — branches by dialect: `anthropic` (Claude,
   converted) vs `openai-chat` (Azure/mantle, passthrough).
 - `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.5, Grok, Azure).
-- `POST /v1/messages` — Anthropic Messages (Claude only).
-- Wrong-endpoint-for-model returns a 400 with guidance (dialect guards).
+- `POST /v1/messages` — branches by dialect: `anthropic` (Claude, passthrough,
+  unchanged) vs `openai-responses` (GPT-5.5/Grok/`azure/<dep>`, **translated**
+  Anthropic Messages ⇄ Responses via `messages_to_responses.py`). This is what
+  lets Claude Code (`ANTHROPIC_BASE_URL`) use non-Anthropic models. The inbound
+  translation reuses the same generic `_handle_sync` / `_open_upstream_stream`
+  primitives — it is transport-agnostic, so Bedrock mantle and Azure share it.
+- Wrong-endpoint-for-model returns a 400 with guidance (dialect guards); an
+  `openai-chat` model on `/v1/messages` is still a 400 (only responses is
+  translated there).
+
+### Inbound vs outbound translation (the two directions)
+- `converter.py` — OpenAI Chat → Anthropic (for Claude on `/v1/chat/completions`).
+- `messages_to_responses.py` — Anthropic Messages → OpenAI Responses (mirror; for
+  any-model on `/v1/messages`). Kept as an isolated, 100%-covered module; if a
+  second inbound format ever appears, this is the first instance to generalise
+  into an InboundProtocol abstraction — do NOT abstract prematurely for one case.
 
 ## Adding a model
 
@@ -100,6 +114,16 @@ AWS_BEARER_TOKEN_BEDROCK=... AZURE_OPENAI_ENDPOINT=... AZURE_OPENAI_KEY=... \
   verbatim. No field whitelisting.
 - **Streaming passthrough uses an incremental UTF-8 decoder** — multi-byte
   (CJK) chars split across upstream chunks would otherwise corrupt.
+- **Verifying the Claude Code → gateway path: `CLAUDE_CODE_USE_BEDROCK` wins
+  over `ANTHROPIC_BASE_URL`.** If that env var (or `CLAUDE_CODE_USE_VERTEX`) is
+  present and non-empty — *any* value, including `"0"` — Claude Code connects
+  directly to the cloud and ignores the gateway entirely; `gpt-5.5` then 400s
+  client-side with "provided model identifier is invalid". It must be *unset*,
+  not `0`. Also: a `claude` subprocess spawned *inside* a Claude Code session
+  does NOT honour a custom `ANTHROPIC_BASE_URL` (the outer harness shadows its
+  networking — point it at a dead port and it still answers). So the reliable
+  E2E check is `curl` straight at the gateway's `/v1/messages`, not spawning
+  `claude` from within a session.
 
 ## Deployment (this box)
 

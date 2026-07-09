@@ -16,6 +16,7 @@
 - [配置](#配置)
 - [多云与 Azure](#多云与-azure)
 - [使用](#使用)
+- [Claude Code 接入任意模型](#claude-code-接入任意模型)
 - [部署（生产）](#部署生产)
 - [监控面板 Dashboard](#监控面板-dashboard)
 - [日志与可观测性](#日志与可观测性)
@@ -62,7 +63,7 @@
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
-| `POST` | `/v1/messages` | Anthropic Messages（Claude 系，同步 + 流式） |
+| `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
 | `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5 / Grok 4.3 / Azure，透传，同步 + 流式） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
 | `GET` | `/health` | 健康检查（公开，无需鉴权） |
@@ -88,7 +89,7 @@ bedrock-gateway
 
 ```bash
 curl http://127.0.0.1:4000/health
-# {"status":"ok","version":"0.2.0","auth_mode":"bearer_token","region":"us-east-1","models":8}
+# {"status":"ok","version":"0.4.0","auth_mode":"bearer_token","region":"us-east-1","models":8}
 ```
 
 发一条 Claude 请求：
@@ -445,6 +446,78 @@ resp = client.responses.create(
 
 ---
 
+## Claude Code 接入任意模型
+
+Claude Code 只会说 Anthropic Messages 协议（它把请求发往 `/v1/messages`）。网关在这个端点上按目标模型**自动分流**：Claude 系模型原样透传；而 **GPT-5.5 / Grok / `azure/<deployment>`** 这类 Responses 模型会被**翻译**（Anthropic Messages ⇄ OpenAI Responses）后转发。于是把 `ANTHROPIC_BASE_URL` 指向网关，就能让 Claude Code（或任何 Anthropic-only 的 agent）用上非 Anthropic 模型——业务代码零改动。
+
+> ⚠️ **最容易踩的坑：`CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX`。**
+> 只要这些云厂商直连开关**存在且非空**，Claude Code 就会直连该云、**完全忽略
+> `ANTHROPIC_BASE_URL`**，请求根本不经过网关（表现为它自己报
+> `400 The provided model identifier is invalid`——因为 `gpt-5.5` 不是合法的
+> Bedrock 模型名）。而且它对**任何非空值都视为开启**，设 `"0"` 也没用——
+> **必须整个删掉这个变量**。接入网关前先确认：
+> ```bash
+> env | grep -E 'CLAUDE_CODE_USE_(BEDROCK|VERTEX)|ANTHROPIC_(BASE_URL|MODEL)'
+> unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX   # 若存在，必须清掉
+> ```
+
+**方式 A —— 环境变量（临时试用）**
+
+```bash
+# 让 Claude Code 用 GPT-5.5（经 Bedrock mantle）
+unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX    # 关键：清掉云直连开关
+export ANTHROPIC_BASE_URL="http://127.0.0.1:4000"
+export ANTHROPIC_AUTH_TOKEN="<gateway-key>"     # 网关的 server.api_key（→ Bearer）
+export ANTHROPIC_MODEL="gpt-5.5"                # 也可 grok-4.3
+claude
+
+# 或用 Azure 上的 GPT-5.5（前缀透传，需资源配 prefix: azure）
+export ANTHROPIC_MODEL="azure/gpt-5.5"
+```
+
+`ANTHROPIC_AUTH_TOKEN` 走 `Authorization: Bearer`，`ANTHROPIC_API_KEY` 走
+`x-api-key`——网关两者都收，任配其一即可。未设 `server.api_key` 时随便填一个。
+
+**方式 B —— settings.json（推荐，持久且不受环境残留影响）**
+
+写入 `~/.claude/settings.json`（或某项目的 `.claude/settings.json`）。**关键：不要
+在 `env` 里写 `CLAUDE_CODE_USE_BEDROCK`**——它一旦出现就压过 `ANTHROPIC_BASE_URL`：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4000",
+    "ANTHROPIC_AUTH_TOKEN": "<gateway-key>",
+    "ANTHROPIC_MODEL": "gpt-5.5"
+  },
+  "model": "gpt-5.5"
+}
+```
+
+**先验证网关这条链路通不通（不依赖 Claude Code）**：直接 curl `/v1/messages`，
+成功即说明翻译链路 OK，接下来只是把 Claude Code 指过来的问题：
+
+```bash
+curl -s http://127.0.0.1:4000/v1/messages \
+  -H "x-api-key: <gateway-key>" -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
+# 返回 {"type":"message","role":"assistant","content":[{"type":"text",...}]} 即通
+```
+
+工作机制：Claude Code POST `/v1/messages` → 网关识别 `gpt-5.5` 是 Responses 模型 → 把请求（system / messages / tools / tool_use / tool_result / 图片）翻译成 OpenAI Responses → 经对应 transport 转发（Bedrock mantle 或 Azure api-key）→ 把响应与 SSE 流翻译回 Anthropic 事件（`message_start` / `content_block_*` / `message_delta` / `message_stop`，工具调用用 `input_json_delta` 拼装）。工具调用（Claude Code 的 Read/Edit/Bash 等）完整往返。
+
+**限制（当前版本）**：
+
+- 仅翻译到 **Responses** 目标（GPT-5.5 / Grok / Azure Responses 部署）。Anthropic 端点上的 openai-chat 模型仍返回 400。
+- `thinking` / reasoning 块**不回传**（无签名往返）；`cache_control` 被剥离（prompt caching 不生效）。功能不受影响，均为无损降级。
+- `count_tokens` 用字符估算兜底（Bedrock/上游不暴露精确计数）。
+- SigV4 鉴权模式（`credentials`/`iam_role`/`profile`）签不了 mantle/Azure；用 `bearer_token`（mantle）或资源 `api_key`（Azure）。
+
+Claude 模型本身（`ANTHROPIC_MODEL=claude-opus-4.8` 等）在此端点走原生透传路径，行为与直连 Anthropic 一致。
+
+---
+
 ## 部署（生产）
 
 ### systemd（推荐）
@@ -622,7 +695,7 @@ git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e ".[dev]"
 
-pytest -q                                   # 632 用例
+pytest -q                                   # 786 用例
 ruff check bedrock_gateway/ tests/
 mypy bedrock_gateway/ --ignore-missing-imports
 ```

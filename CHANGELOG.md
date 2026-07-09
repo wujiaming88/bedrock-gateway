@@ -3,6 +3,45 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.0] — 2026-07-09
+
+### 新增
+
+- **Anthropic 客户端可调任意 Responses 模型**（Claude Code 接任意模型）。
+  `POST /v1/messages` 现按目标模型的 dialect 分叉：Claude（`anthropic`）走原
+  路径**完全不变**；GPT-5.5 / Grok / `azure/<deployment>`（`openai-responses`）
+  被**翻译**（Anthropic Messages ⇄ OpenAI Responses）后转发。这样只会说 Anthropic
+  Messages 协议的客户端（如 Claude Code 经 `ANTHROPIC_BASE_URL`）可直接用非
+  Anthropic 模型——设 `ANTHROPIC_MODEL=gpt-5.5` 或 `ANTHROPIC_MODEL=azure/gpt-5.5`
+  即可。**唯一的行为变化**：这类模型此前在 `/v1/messages` 返回 400，现改为翻译转发；
+  `/openai/v1/responses`、`/v1/chat/completions`、Claude 的 `/v1/messages` 一律零改动。
+  - 新增翻译模块 `messages_to_responses.py`（`converter.py` 的镜像方向）：请求
+    （system→instructions、messages→input、tool_use↔function_call、tool_result→
+    function_call_output、tools/tool_choice、图片、max_tokens→max_output_tokens）、
+    同步响应、以及**有状态流适配器**（Responses SSE → Anthropic message_start /
+    content_block_* / message_delta / message_stop，含工具调用 `input_json_delta`
+    增量拼装）。
+  - 复用现有 Transport × Dialect 的全部横切逻辑（重试 / 超时预算 / 预检 / metrics）
+    与两种 transport：`gpt-5.5`（Bedrock mantle）与 `azure/gpt-5.5`（Azure api-key）
+    **共用同一份翻译代码**，后者零额外成本——两轴设计的直接回报。
+  - **范围（v1）**：仅 Anthropic-in → Responses-out。`thinking`/reasoning 块丢弃
+    （不回传签名）、`cache_control` 剥离（prompt caching 不生效），均为无损降级。
+    暂不含 Chat 目标格式。
+  - **接入注意**：Claude Code 的 `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX`
+    一旦存在且非空（含 `"0"`）就会直连云、忽略 `ANTHROPIC_BASE_URL`——必须整个
+    unset 才能走网关。README「Claude Code 接入」小节含完整配置与验证步骤。
+
+### 测试
+
+- 新增 `test_messages_to_responses.py`（80 例，模块**行覆盖 100%**）：请求/响应
+  各类块翻译 + **Anthropic Messages 协议一致性校验器**（严格断言事件顺序、
+  content block 生命周期、合法 `stop_reason`、`input_json_delta` 拼装、UTF-8 跨块）。
+- 新增 `test_messages_inbound_integration.py`（16 例）：端点分叉端到端（mantle +
+  Azure 两条 transport、同步 + 流式）、上游错误→Anthropic 信封、流中途超时/异常
+  收尾、**Claude 回归（原生 invoke 路径不变）**、openai-chat 模型仍拒绝。
+- 变更行覆盖率 **100%**（新模块 + server.py 新增分支/处理器）。总测试 **786 全绿**
+  （691 基线零回归 + 95 新增）。
+
 ## [0.3.5] — 2026-07-08
 
 ### 修复

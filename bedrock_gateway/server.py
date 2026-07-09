@@ -48,6 +48,11 @@ from .dashboard import (
     metrics_middleware_factory,
 )
 from .dashboard.storage import MetricsStorage
+from .messages_to_responses import (
+    AnthropicStreamAdapter,
+    to_anthropic_response,
+    to_responses_request,
+)
 from .models import ModelRegistry, UnknownModelError
 from .providers import (
     Dialect,
@@ -577,34 +582,66 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
 
         raw_model = body.get("model", "claude-haiku")
-        try:
-            model = registry.resolve(raw_model)
-        except UnknownModelError as exc:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "type": "error",
-                    "error": {
-                        "type": "invalid_request_error",
-                        "message": str(exc),
-                    },
-                },
-            )
 
-        # Guard: this Anthropic-format endpoint only serves the anthropic
-        # dialect. A different-dialect model (GPT-5.5 / Azure) misrouted here is
-        # a client mistake — surface it clearly rather than mangling the request.
-        _entry = registry.get_entry(raw_model)
-        if _entry is not None and _entry.dialect != "anthropic":
+        # Resolve the target model. Prefix passthrough (``azure/<deployment>``)
+        # is tried first so an Anthropic-only client (e.g. Claude Code via
+        # ANTHROPIC_BASE_URL) can name an Azure Responses model too.
+        _prefixed = registry.resolve_prefixed(raw_model, "openai-responses")
+        if _prefixed is not None:
+            entry = _prefixed
+            model = entry.deployment
+        else:
+            try:
+                model = registry.resolve(raw_model)
+            except UnknownModelError as exc:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": str(exc),
+                        },
+                    },
+                )
+            entry = registry.get_entry(raw_model) or _fallback_entry(model)
+
+        stream = body.get("stream", False)
+
+        # Dialect fork — the ONLY behaviour change on this endpoint:
+        #   * anthropic       → existing Claude path (unchanged, below)
+        #   * openai-responses → translate Anthropic Messages ⇄ Responses so an
+        #     Anthropic-only client can drive GPT-5.5 / Grok / azure/<dep>.
+        #   * anything else (openai-chat) → still a client mistake → 400.
+        if entry.dialect == "openai-responses":
+            upstream_id = entry.deployment if entry.transport == "azure" else model
+            transport = get_transport(entry)
+            dialect = get_dialect(entry)
+            responses_body = to_responses_request(body, upstream_id)
+            logger.info(
+                "REQ [messages->responses] model=%s -> %s (%s) stream=%s",
+                raw_model, upstream_id, entry.transport, stream,
+            )
+            if stream:
+                return await _handle_messages_via_responses_stream(
+                    transport, dialect, entry, upstream_id, config.region,
+                    responses_body, auth, max_retries, retry_base_delay,
+                    timeout=request_timeout, request=request, health=health,
+                )
+            return await _handle_messages_via_responses_sync(
+                transport, dialect, entry, upstream_id, config.region,
+                responses_body, auth, max_retries, retry_base_delay,
+                timeout=request_timeout, request=request, health=health,
+            )
+        if entry.dialect != "anthropic":
             return JSONResponse(
                 status_code=400,
                 content=format_anthropic_error(
                     400,
                     f"Model '{raw_model}' is not available on /v1/messages; "
-                    f"use /openai/v1/responses instead.",
+                    f"use /openai/v1/responses or /v1/chat/completions instead.",
                 ),
             )
-        stream = body.get("stream", False)
 
         # max_tokens is required by the Anthropic API spec
         max_tokens = body.get("max_tokens")
@@ -1305,6 +1342,126 @@ async def _handle_messages_stream(
                     "error": {"type": "api_error", "message": str(exc)},
                 },
             )
+        finally:
+            await stack.aclose()
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages ⇄ OpenAI Responses (inbound translation)
+# ---------------------------------------------------------------------------
+#
+# Lets an Anthropic-only client (Claude Code via ANTHROPIC_BASE_URL) drive a
+# Responses-dialect model. The request was already translated to a Responses
+# body by ``to_responses_request``; these handlers reuse the SAME generic
+# upstream primitives as every other path (``_handle_sync`` /
+# ``_open_upstream_stream`` — retries, timeout budget, preflight, metrics) and
+# only add the response-direction translation back to Anthropic Messages.
+
+
+def _oai_error_to_anthropic(resp: JSONResponse) -> JSONResponse:
+    """Re-wrap an OpenAI-style error JSONResponse as an Anthropic error.
+
+    ``_handle_sync`` emits OpenAI-shaped error envelopes; on the /v1/messages
+    path the client expects the Anthropic shape, so translate the envelope
+    while preserving the status code and message.
+    """
+    status = resp.status_code
+    message = "upstream error"
+    try:
+        payload = json.loads(bytes(resp.body))
+        message = payload.get("error", {}).get("message", message)
+    except (ValueError, TypeError, AttributeError):  # noqa: BLE001
+        pass
+    return JSONResponse(
+        status_code=status, content=format_anthropic_error(status, message)
+    )
+
+
+async def _handle_messages_via_responses_sync(
+    transport: Transport,
+    dialect: Dialect,
+    entry: ModelEntry,
+    model: str,
+    region: str,
+    responses_body: dict,
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+    *,
+    timeout: float = 300.0,
+    request: Request | None = None,
+    health: HealthMonitor | None = None,
+) -> dict | JSONResponse:
+    # Reuse the generic sync path: for the Responses dialect it returns the
+    # upstream JSON verbatim (render_sync passthrough) or an error JSONResponse.
+    result = await _handle_sync(
+        transport, dialect, entry, model, region, responses_body, auth,
+        max_retries, retry_base_delay,
+        timeout=timeout, request=request, health=health,
+    )
+    if isinstance(result, JSONResponse):
+        return _oai_error_to_anthropic(result)
+    return to_anthropic_response(result, model)
+
+
+async def _handle_messages_via_responses_stream(
+    transport: Transport,
+    dialect: Dialect,
+    entry: ModelEntry,
+    model: str,
+    region: str,
+    responses_body: dict,
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+    *,
+    timeout: float = 300.0,
+    request: Request | None = None,
+    health: HealthMonitor | None = None,
+) -> JSONResponse | StreamingResponse:
+    responses_body = dict(responses_body)
+    responses_body["stream"] = True
+    url = transport.build_url(dialect.operation_path(entry, True), region, entry)
+    body_bytes = json.dumps(responses_body).encode()
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    # Same pre-stream preflight as every streaming path: a failure before any
+    # bytes flow is returned as a real HTTP error (Anthropic-shaped here).
+    resp, stack, err = await _open_upstream_stream(
+        url, body_bytes, auth, max_retries, retry_base_delay,
+        request=request, health=health,
+        log_tag=f"messages->responses model={model}",
+        extra_headers=transport.auth_headers(entry),
+        timeout=timeout,
+    )
+    if err is not None:
+        return JSONResponse(
+            status_code=err["status"],
+            content={
+                "type": "error",
+                "error": {"type": err["type"], "message": err["message"]},
+            },
+        )
+
+    adapter = AnthropicStreamAdapter(model, msg_id)
+
+    async def generate():
+        try:
+            async for frame in adapter.translate(resp.aiter_bytes()):
+                yield frame
+        except httpx.TimeoutException:
+            _note_timeout(request)
+            logger.warning(
+                "STREAM-MID timeout [messages->responses] model=%s", model
+            )
+            yield adapter.error_event("Upstream timeout mid-stream")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "UNEXPECTED [messages->responses stream] model=%s", model
+            )
+            yield adapter.error_event(str(exc))
         finally:
             await stack.aclose()
 

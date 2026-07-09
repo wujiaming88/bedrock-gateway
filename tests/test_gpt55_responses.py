@@ -333,14 +333,34 @@ class TestEndpointGuards:
         assert resp.status_code == 400
         assert "/openai/v1/responses" in resp.json()["error"]["message"]
 
-    def test_gpt55_rejected_on_messages(self, client):
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_gpt55_translated_on_messages(self, mock_cls, client):
+        # Contract change (v0.4.0): a Responses-dialect model on /v1/messages is
+        # no longer a 400 — it is translated (Anthropic Messages ⇄ Responses) so
+        # an Anthropic-only client (Claude Code) can drive GPT-5.5. The upstream
+        # receives a Responses body; the client gets an Anthropic Messages body.
+        mock_cls.return_value = _mock_sync_client(_responses_body())
         resp = client.post("/v1/messages", json={
             "model": GPT55_ALIAS,
             "max_tokens": 10,
             "messages": [{"role": "user", "content": "hi"}],
         })
-        assert resp.status_code == 400
-        assert "/openai/v1/responses" in resp.json()["error"]["message"]
+        assert resp.status_code == 200
+        data = resp.json()
+        # Anthropic-shaped response
+        assert data["type"] == "message"
+        assert data["role"] == "assistant"
+        assert data["content"] == [{"type": "text", "text": "hi"}]
+        assert data["stop_reason"] == "end_turn"
+        assert data["usage"]["input_tokens"] == 3
+        assert data["usage"]["output_tokens"] == 2
+        # Upstream received a translated Responses body (input, not messages)
+        sent = _sent(mock_cls)
+        assert sent["model"] == GPT55_BEDROCK_ID
+        assert sent["max_output_tokens"] == 10
+        assert sent["input"] == [
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+        ]
 
     def test_claude_rejected_on_responses(self, client):
         resp = client.post("/openai/v1/responses", json={

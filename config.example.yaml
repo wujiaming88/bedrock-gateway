@@ -98,8 +98,10 @@ models:
 
   # ── OpenAI GPT-5.5 ──────────────────────────────────────
   # Reached via the bedrock-mantle endpoint's OpenAI Responses API
-  # (NOT bedrock-runtime). Exposed on POST /openai/v1/responses only —
-  # clients speak native Responses format, the gateway passes it through.
+  # (NOT bedrock-runtime). Exposed on POST /openai/v1/responses (native
+  # Responses passthrough) AND on POST /v1/messages (Anthropic Messages, auto-
+  # translated to Responses) — the latter lets Claude Code / Anthropic-only
+  # clients drive it via ANTHROPIC_BASE_URL + ANTHROPIC_MODEL=gpt-5.5.
   # endpoint/protocol default to runtime/anthropic when omitted, so existing
   # entries above are unaffected.
   gpt-5.5:
