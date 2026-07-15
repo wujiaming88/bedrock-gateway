@@ -3,6 +3,33 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.1] — 2026-07-15
+
+### 移除
+
+- **下线两个失效的 Claude 默认模型**（经真机探测确认不可用）：
+  - `claude-sonnet-3.5`（`...claude-3-5-sonnet-20241022-v2:0`）——AWS 已标记
+    **EOL**（reached end of life）。
+  - `claude-sonnet-4`（`...claude-sonnet-4-20250514-v1:0`）——被标记 **Legacy**
+    且账号 30 天未调用而锁定，已有 4.6 / 4.8 替代。
+  - 指向这两者的所有别名一并移除；裸 `claude-sonnet` / `claude-4-sonnet` 改指向
+    当前最新的 **`claude-sonnet-4.6`**。保留 `claude-haiku`（探测 200 正常）。
+  - 仍可用原始 Bedrock ID 直传（passthrough 不受影响）。
+
+### 修复
+
+- **Opus 别名遗漏导致的 `Unknown model` 400**：`claude-opus-4.7`（点号）可用，但
+  `claude-opus-4-7`（连字符）报 400——别名表只为 4.8 补了连字符写法，4.7 / 4.6 漏了。
+  现补齐 Opus 全家族两种写法：`claude-opus-4-7` / `claude-4-7-opus` / `claude-4.7-opus`
+  → 4.7；`claude-opus-4-6` / `claude-opus-4.6` → opus-4；并加 `claude-sonnet-4-6`
+  → sonnet-4.6。真机验证 `claude-opus-4-7` 与 `claude-opus-4.7` 均 200 且解析到同一
+  上游 id。
+
+### 测试
+
+- 新增回归：Opus 点号/连字符解析一致、被删模型条目+别名值双清零、裸 `claude-sonnet`
+  重定向到存活模型;既有别名一致性测试保证所有别名指向有效默认。全绿。
+
 ## [0.4.0] — 2026-07-09
 
 ### 新增

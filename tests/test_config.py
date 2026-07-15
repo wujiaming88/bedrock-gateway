@@ -72,10 +72,14 @@ class TestModelAliases:
 
     def test_aliases_exist(self):
         from bedrock_gateway.config import _MODEL_ALIASES
-        assert "claude-3.5-sonnet" in _MODEL_ALIASES
         assert "claude-3-5-haiku" in _MODEL_ALIASES
         assert "claude-opus" in _MODEL_ALIASES
         assert "claude-sonnet" in _MODEL_ALIASES
+        # hyphen forms resolve for the whole Opus family (regression: 4-7 was
+        # missing while 4-8 worked, causing an "Unknown model" 400).
+        assert "claude-opus-4-7" in _MODEL_ALIASES
+        assert "claude-opus-4-8" in _MODEL_ALIASES
+        assert "claude-opus-4-6" in _MODEL_ALIASES
 
     def test_aliases_point_to_valid_defaults(self):
         from bedrock_gateway.config import _MODEL_ALIASES, _DEFAULT_MODELS
@@ -83,6 +87,67 @@ class TestModelAliases:
             assert canonical in _DEFAULT_MODELS, (
                 f"Alias {alias!r} -> {canonical!r} not in _DEFAULT_MODELS"
             )
+
+    def test_opus_hyphen_and_dotted_forms_resolve_equally(self):
+        """Regression: opus-4.7 accepted the dotted form but not the hyphen
+        form (claude-opus-4-7 → 400 Unknown model), because the hyphen alias
+        was only added for 4.8. Every Opus in the family must resolve from both
+        the dotted registered name and its hyphen variant to the same id."""
+        from bedrock_gateway.config import load_config
+        from bedrock_gateway.models import ModelRegistry
+
+        registry = ModelRegistry(load_config("/nonexistent/config.yaml"))
+        pairs = [
+            ("claude-opus-4.8", "claude-opus-4-8"),
+            ("claude-opus-4.7", "claude-opus-4-7"),
+        ]
+        for dotted, hyphen in pairs:
+            assert registry.resolve(dotted) == registry.resolve(hyphen), (
+                f"{dotted} and {hyphen} resolve differently"
+            )
+        # opus-4 is registered as "claude-opus-4"; the 4.6 spellings alias to it.
+        assert (
+            registry.resolve("claude-opus-4-6")
+            == registry.resolve("claude-opus-4.6")
+            == registry.resolve("claude-opus-4")
+        )
+
+    def test_deleted_models_are_gone(self):
+        """sonnet-4 (Legacy, 30-day lock) and sonnet-3.5 (EOL) were removed;
+        neither the entries nor any alias pointing at them may remain."""
+        from bedrock_gateway.config import _DEFAULT_MODELS, _MODEL_ALIASES
+
+        assert "claude-sonnet-4" not in _DEFAULT_MODELS
+        assert "claude-sonnet-3.5" not in _DEFAULT_MODELS
+        assert "claude-sonnet-4" not in _MODEL_ALIASES.values()
+        assert "claude-sonnet-3.5" not in _MODEL_ALIASES.values()
+
+    @pytest.mark.parametrize("alias,expected_id", [
+        # newly added / re-pointed aliases (0.4.1) — each must resolve to the
+        # right upstream Bedrock id.
+        ("claude-opus-4-7", "us.anthropic.claude-opus-4-7"),
+        ("claude-4-7-opus", "us.anthropic.claude-opus-4-7"),
+        ("claude-4.7-opus", "us.anthropic.claude-opus-4-7"),
+        ("claude-opus-4-6", "us.anthropic.claude-opus-4-6-v1"),
+        ("claude-opus-4.6", "us.anthropic.claude-opus-4-6-v1"),
+        ("claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-6"),
+        ("claude-sonnet", "us.anthropic.claude-sonnet-4-6"),
+        ("claude-4-sonnet", "us.anthropic.claude-sonnet-4-6"),
+    ])
+    def test_added_aliases_resolve(self, alias, expected_id):
+        from bedrock_gateway.config import load_config
+        from bedrock_gateway.models import ModelRegistry
+
+        registry = ModelRegistry(load_config("/nonexistent/config.yaml"))
+        assert registry.resolve(alias) == expected_id
+
+    def test_bare_sonnet_alias_points_to_live_model(self):
+        """The bare `claude-sonnet` alias moved off the deleted sonnet-4 onto
+        the newest live Sonnet (4.6)."""
+        from bedrock_gateway.config import _MODEL_ALIASES
+
+        assert _MODEL_ALIASES["claude-sonnet"] == "claude-sonnet-4.6"
+        assert _MODEL_ALIASES["claude-4-sonnet"] == "claude-sonnet-4.6"
 
 
 class TestModelParsing:

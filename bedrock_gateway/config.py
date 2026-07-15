@@ -240,20 +240,9 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "context_length": 1_000_000,
         "max_output": 64_000,
     },
-    "claude-sonnet-4": {
-        "bedrock_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-        "context_length": 200_000,
-        "max_output": 64_000,
-    },
     # ── Haiku ─────────────────────────────────────────────────────────
     "claude-haiku": {
         "bedrock_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "context_length": 200_000,
-        "max_output": 64_000,
-    },
-    # ── Sonnet 3.5 ────────────────────────────────────────────────────
-    "claude-sonnet-3.5": {
-        "bedrock_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
         "context_length": 200_000,
         "max_output": 64_000,
     },
@@ -286,9 +275,9 @@ _MODEL_ALIASES: dict[str, str] = {
     "claude-4-opus": "claude-opus-4",
     "claude-3-opus": "claude-opus-4",
     "claude-3-opus-20240229": "claude-opus-4",
-    # Sonnet 4 variations
-    "claude-sonnet": "claude-sonnet-4",
-    "claude-4-sonnet": "claude-sonnet-4",
+    # Sonnet variations (bare name → newest available Sonnet)
+    "claude-sonnet": "claude-sonnet-4.6",
+    "claude-4-sonnet": "claude-sonnet-4.6",
     # Haiku variations
     "claude-3-haiku": "claude-haiku",
     "claude-3.5-haiku": "claude-haiku",
@@ -300,27 +289,26 @@ _MODEL_ALIASES: dict[str, str] = {
     "claude-haiku-4.5": "claude-haiku",
     "claude-haiku-4-5": "claude-haiku",
     "claude-3-5-haiku-20241022": "claude-haiku",
-    # Sonnet 3.5 variations
-    "claude-3.5-sonnet": "claude-sonnet-3.5",
-    "claude-3-5-sonnet": "claude-sonnet-3.5",
-    "claude-3-5-sonnet-v2": "claude-sonnet-3.5",
-    "claude-3-5-sonnet-20241022": "claude-sonnet-3.5",
-    "claude-sonnet-3-5": "claude-sonnet-3.5",
     # Anthropic API names (as sent by some SDKs)
-    "claude-3-5-sonnet-latest": "claude-sonnet-3.5",
     "claude-3-5-haiku-latest": "claude-haiku",
-    "claude-sonnet-4-0-20250514": "claude-sonnet-4",
     # Anthropic official model names (sent by Claude Code / Anthropic SDK)
     "claude-haiku-4-5-20251001": "claude-haiku",
     "claude-3-5-haiku-20251022": "claude-haiku",
-    "claude-sonnet-4-20250514": "claude-sonnet-4",
     "claude-opus-4-20250115": "claude-opus-4",
     "claude-opus-4-7-20250428": "claude-opus-4.7",
     "claude-sonnet-4-6-20250627": "claude-sonnet-4.6",
-    # Opus 4.8 variations
+    # Opus variations — hyphen + dotted forms both resolve (keep parity across
+    # the whole Opus family so e.g. claude-opus-4-7 works like claude-opus-4.7).
     "claude-opus-4-8": "claude-opus-4.8",
     "claude-4.8-opus": "claude-opus-4.8",
     "claude-4-8-opus": "claude-opus-4.8",
+    "claude-opus-4-7": "claude-opus-4.7",
+    "claude-4.7-opus": "claude-opus-4.7",
+    "claude-4-7-opus": "claude-opus-4.7",
+    "claude-opus-4-6": "claude-opus-4",
+    "claude-opus-4.6": "claude-opus-4",
+    # Sonnet 4.6 hyphen form
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
     # GPT-5.5 variations
     "gpt-55": "gpt-5.5",
     "gpt5.5": "gpt-5.5",

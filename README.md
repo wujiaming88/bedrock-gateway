@@ -46,14 +46,12 @@
 | `claude-opus-4.7` | `us.anthropic.claude-opus-4-7` | 1M | 128K | 同上 |
 | `claude-opus-4` | `us.anthropic.claude-opus-4-6-v1` | 1M | 128K | 同上 |
 | `claude-sonnet-4.6` | `us.anthropic.claude-sonnet-4-6` | 1M | 64K | 同上 |
-| `claude-sonnet-4` | `us.anthropic.claude-sonnet-4-20250514-v1:0` | 200K | 64K | 同上 |
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K | 同上 |
-| `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K | 同上 |
-| `gpt-5.5` | `openai.gpt-5.5` | 272K | 64K | **`/openai/v1/responses`** |
+| `gpt-5.5` | `openai.gpt-5.5` | 1.05M | 128K | **`/openai/v1/responses`** |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
 | Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
-- Claude 系别名有大量常见变体自动解析（如 `claude-3-5-sonnet-latest`、`claude-sonnet-4-20250514`、Anthropic SDK 默认模型名）。
+- Claude 系别名有大量常见变体自动解析：Opus 的点号与连字符写法均可（`claude-opus-4.7` ＝ `claude-opus-4-7`，4.8 / 4.6 同理），以及 Anthropic SDK 默认模型名、带日期的官方名（如 `claude-opus-4-7-20250428`）。裸 `claude-sonnet` 解析到当前最新的 Sonnet（4.6）。
 - GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；Grok 4.3 别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` / `grok-4-3`。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
@@ -360,7 +358,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="<gateway-key>")
 resp = client.chat.completions.create(
-    model="claude-sonnet-4",
+    model="claude-sonnet-4.6",
     messages=[{"role": "user", "content": "hello"}],
 )
 print(resp.choices[0].message.content)
@@ -373,7 +371,7 @@ from anthropic import Anthropic
 
 client = Anthropic(base_url="http://127.0.0.1:4000", api_key="<gateway-key>")
 msg = client.messages.create(
-    model="claude-sonnet-4",
+    model="claude-sonnet-4.6",
     max_tokens=1024,
     messages=[{"role": "user", "content": "hello"}],
 )
@@ -413,7 +411,7 @@ resp = client.responses.create(
 
 ```json
 {
-  "model": "claude-sonnet-4",
+  "model": "claude-sonnet-4.6",
   "max_tokens": 4096,
   "thinking": {"type": "enabled", "budget_tokens": 4096},
   "messages": [{"role": "user", "content": "..."}]

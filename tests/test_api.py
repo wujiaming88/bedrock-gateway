@@ -384,8 +384,8 @@ class TestModelResolution:
         from bedrock_gateway.models import ModelRegistry
         cfg = load_config("/nonexistent/config.yaml")  # loads default models
         registry = ModelRegistry(cfg)
-        # claude-3.5-sonnet -> claude-sonnet-3.5 -> bedrock id
-        resolved = registry.resolve("claude-3.5-sonnet")
+        # claude-sonnet -> claude-sonnet-4.6 -> bedrock id
+        resolved = registry.resolve("claude-sonnet")
         assert "sonnet" in resolved and "anthropic" in resolved
         # claude-opus -> claude-opus-4 -> bedrock id
         resolved = registry.resolve("claude-opus")
