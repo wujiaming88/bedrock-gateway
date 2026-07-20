@@ -44,6 +44,7 @@ _LLM_PATHS = frozenset({
     "/v1/chat/completions",
     "/v1/messages",
     "/openai/v1/responses",
+    "/openai/v1/images/generations",
 })
 
 # Headers that describe the upstream body we buffer/replace; re-computed

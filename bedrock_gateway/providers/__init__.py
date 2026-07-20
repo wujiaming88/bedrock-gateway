@@ -15,6 +15,7 @@ from ..config import ModelEntry
 from .base import Dialect, Transport
 from .dialect_anthropic import AnthropicMessagesDialect
 from .dialect_chat import ChatPassthroughDialect
+from .dialect_images import ImagesPassthroughDialect
 from .dialect_responses import ResponsesPassthroughDialect
 from .transports import AzureTransport, BedrockTransport
 
@@ -36,6 +37,7 @@ _DIALECTS: dict[str, Dialect] = {
     AnthropicMessagesDialect.name: AnthropicMessagesDialect(),
     ResponsesPassthroughDialect.name: ResponsesPassthroughDialect(),
     ChatPassthroughDialect.name: ChatPassthroughDialect(),
+    ImagesPassthroughDialect.name: ImagesPassthroughDialect(),
 }
 
 
@@ -63,6 +65,7 @@ __all__ = [
     "AnthropicMessagesDialect",
     "ResponsesPassthroughDialect",
     "ChatPassthroughDialect",
+    "ImagesPassthroughDialect",
     "UnsupportedProtocolError",
     "get_transport",
     "get_dialect",

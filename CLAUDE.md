@@ -32,7 +32,7 @@ cloud = one Transport; adding a wire format = one Dialect.** Never add an
 that reintroduces the N×M coupling this design removed.
 
 Boundary rule for URLs: a dialect's `operation_path` returns the **bare
-operation** (`/responses`, `/chat/completions`) — never a cloud-specific
+operation** (`/responses`, `/chat/completions`, `/images/generations`) — never a cloud-specific
 prefix. The **transport** owns the API root: `BedrockTransport` adds
 `/openai/v1` for the mantle endpoint; `AzureTransport` uses whatever the
 resource `base_url` already ends in. If you find yourself checking
@@ -47,6 +47,8 @@ error-severity logging — and is transport-/dialect-agnostic. Handlers thread
 - `POST /v1/chat/completions` — branches by dialect: `anthropic` (Claude,
   converted) vs `openai-chat` (Azure/mantle, passthrough).
 - `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.5, Grok, Azure).
+- `POST /openai/v1/images/generations` — `openai-images` dialect (Azure
+  `gpt-image-2`, passthrough, sync JSON only; no streaming).
 - `POST /v1/messages` — branches by dialect: `anthropic` (Claude, passthrough,
   unchanged) vs `openai-responses` (GPT-5.5/Grok/`azure/<dep>`, **translated**
   Anthropic Messages ⇄ Responses via `messages_to_responses.py`). This is what
@@ -106,12 +108,15 @@ AWS_BEARER_TOKEN_BEDROCK=... AZURE_OPENAI_ENDPOINT=... AZURE_OPENAI_KEY=... \
 - **Running e2e/the gateway writes `data/metrics.db`**, which then pollutes the
   dashboard tests. `rm -f data/metrics.db*` before `pytest`.
 - **Azure auth is `api-key:` header, not `Authorization: Bearer`.** Azure
-  endpoint URL forms differ per operation (responses may carry
-  `?api-version=...`, chat uses `/v1`) — keep `azure_endpoint` fully
-  configurable, don't hardcode a form.
+  endpoint URL forms differ per operation (responses/chat/images may share a
+  `/openai/v1` root; legacy bases may carry `?api-version=...`) — keep
+  `azure_endpoint` fully configurable, don't hardcode a form.
+- **Image generation models don't go through Responses.** `gpt-image-2` returns
+  "operation unsupported" on `/responses`; use `/openai/v1/images/generations`
+  with the `openai-images` dialect.
 - **Passthrough dialects must not strip unknown fields** — Azure's
-  `content_filter_results` and Responses `input_image` blocks flow through
-  verbatim. No field whitelisting.
+  `content_filter_results`, Responses `input_image`, and Images `b64_json` blocks
+  flow through verbatim. No field whitelisting.
 - **Streaming passthrough uses an incremental UTF-8 decoder** — multi-byte
   (CJK) chars split across upstream chunks would otherwise corrupt.
 - **Verifying the Claude Code → gateway path: `CLAUDE_CODE_USE_BEDROCK` wins

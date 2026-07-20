@@ -190,7 +190,7 @@ class ModelEntry:
     endpoint: str = "runtime"     # transport hint: "runtime" | "mantle"
     protocol: str = "anthropic"   # LEGACY — mapped to transport/dialect
     transport: str = "bedrock"    # "bedrock" | "azure"
-    dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "embeddings"
+    dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "openai-images" | "embeddings"
     # ── Azure-only fields (unused for Bedrock models) ──
     deployment: str = ""          # Azure deployment name → request body "model"
     azure_endpoint: str = ""      # resolved from AzureResource.base_url
@@ -411,6 +411,7 @@ def _parse_models(
 _PROTOCOL_TO_AXES: dict[str, tuple[str, str]] = {
     "anthropic": ("bedrock", "anthropic"),
     "openai-responses": ("bedrock", "openai-responses"),
+    "openai-images": ("bedrock", "openai-images"),
 }
 
 

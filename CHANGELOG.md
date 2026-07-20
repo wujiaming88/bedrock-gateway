@@ -3,6 +3,31 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.2] — 2026-07-20
+
+### 新增
+
+- **支持 Azure OpenAI 图片生成透传**：新增 `POST /openai/v1/images/generations`，
+  用于 `gpt-image-2` 这类 OpenAI Images Generations 模型。现有 Azure 前缀透传
+  直接复用：客户端传 `model: "azure/gpt-image-2"`，网关剥离为上游 deployment
+  `gpt-image-2`，经 `AzureTransport` 使用 `api-key` 转发到
+  `.../openai/v1/images/generations`，响应中的 `data[].b64_json` / URL 原样返回。
+  图片端点为同步 JSON，不支持 `stream=true`。
+- 新增 `openai-images` dialect，继续保持 **Transport × Dialect** 职责边界：图片
+  格式归 dialect，Azure endpoint/auth 归 transport；不改 Responses/Chat/Anthropic
+  既有路径。
+- dashboard metrics 纳入 `/openai/v1/images/generations`，可统计 model/status/latency
+  和错误；图片接口无 token usage 时 token 计数保持 0。
+
+### 测试
+
+- 新增 `test_images_generations.py`：覆盖 images dialect、provider registry、Azure
+  prefix 路由、非法 JSON、stream 拒绝、错误模型 guard、上游错误/坏 JSON、metrics。
+- 变更行覆盖率 **100%**（`dialect_images.py` 100%；server 新 endpoint 变更区 100%；
+  middleware 新路径变更行 100%）。全量测试通过。
+- 真机验证：上游 Azure `gpt-image-2` `/images/generations` 返回 `b64_json`；本机
+  网关 `/openai/v1/images/generations` 将在部署步骤中验证。
+
 ## [0.4.1] — 2026-07-15
 
 ### 移除

@@ -114,7 +114,7 @@ models:
   # ── Azure OpenAI models (see azure_resources below) ─────
   # Two orthogonal axes describe every model:
   #   transport: bedrock (default) | azure    — where + how to auth
-  #   dialect:   anthropic (default) | openai-responses | openai-chat
+  #   dialect:   anthropic (default) | openai-responses | openai-chat | openai-images
   # Azure models reference an azure_resources entry (endpoint + key) and set a
   # deployment name (goes into the upstream request body's "model" field).
   #
@@ -142,8 +142,9 @@ models:
 # any client model `azure/<deployment>` is routed to this resource with
 # <deployment> as the Azure deployment name — NO per-model entry needed. The
 # dialect is picked by the endpoint hit (/openai/v1/responses → responses,
-# /v1/chat/completions → chat). This is the lightest way to expose a whole Azure
-# resource: configure it once, then call azure/<anything> as your deployments
+# /v1/chat/completions → chat, /openai/v1/images/generations → images). This is
+# the lightest way to expose a whole Azure resource: configure it once, then call
+# azure/<anything> as your deployments
 # come and go. (You can still register explicit models in `models:` too.)
 # azure_resources:
 #   my-azure:

@@ -63,6 +63,7 @@
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
 | `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5 / Grok 4.3 / Azure，透传，同步 + 流式） |
+| `POST` | `/openai/v1/images/generations` | OpenAI Images Generations（Azure `gpt-image-2`，透传，同步） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
 | `GET` | `/health` | 健康检查（公开，无需鉴权） |
 | `GET` | `/dashboard/` | 监控界面 |
@@ -87,7 +88,7 @@ bedrock-gateway
 
 ```bash
 curl http://127.0.0.1:4000/health
-# {"status":"ok","version":"0.4.0","auth_mode":"bearer_token","region":"us-east-1","models":8}
+# {"status":"ok","version":"0.4.2","auth_mode":"bearer_token","region":"us-east-1","models":7}
 ```
 
 发一条 Claude 请求：
@@ -307,7 +308,7 @@ models:
 
 ### 前缀透传（零模型登记，推荐）
 
-给资源加 `prefix`，即可**不逐个登记模型**——客户端用 `<prefix>/<deployment>` 调用，网关自动路由到该资源、剥离前缀作为 deployment，dialect 由端点决定（`/openai/v1/responses` → responses，`/v1/chat/completions` → chat）：
+给资源加 `prefix`，即可**不逐个登记模型**——客户端用 `<prefix>/<deployment>` 调用，网关自动路由到该资源、剥离前缀作为 deployment，dialect 由端点决定（`/openai/v1/responses` → responses，`/v1/chat/completions` → chat，`/openai/v1/images/generations` → images）：
 
 ```yaml
 azure_resources:
@@ -322,6 +323,7 @@ azure_resources:
 # 客户端：deployment 想调哪个就写哪个，网关不用改
 client.responses.create(model="azure/gpt-5.5", input="...")          # → responses
 client.chat.completions.create(model="azure/gpt-5", messages=[...])  # → chat
+client.images.generate(model="azure/gpt-image-2", prompt="...")     # → images
 ```
 
 deployment 增删换名都不用动网关配置。代价：`/v1/models` 列不出这些透传模型（网关事先不知道有哪些）。需要别名/模型清单/dashboard 分模型统计时，用上面的显式 `models:` 登记；两者可共存。
@@ -407,6 +409,25 @@ resp = client.responses.create(
 
 **流式**：`stream=True`，标准 SSE（`response.output_text.delta` 增量、末尾 `response.completed` 携带 usage）。请求体不做字段清洗，`reasoning`、`tools`、`input_image` 等原样转发。
 
+### Azure 图片生成 —— OpenAI SDK（Images）
+
+Azure 的图片模型（如 `gpt-image-2`）不走 Responses 文本端点，而是走 **`/openai/v1/images/generations`**。如果 `azure_resources` 配了 `prefix: azure`，无需登记模型，直接用 `azure/<deployment>`：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:4000/openai/v1", api_key="<gateway-key>")
+img = client.images.generate(
+    model="azure/gpt-image-2",
+    prompt="a small red square icon",
+    size="1024x1024",
+    n=1,
+)
+print(img.data[0].b64_json[:40])
+```
+
+网关对 Images 请求做**透传**（仅把 `azure/gpt-image-2` 剥离成上游 deployment `gpt-image-2`），响应的 `b64_json` / URL 字段原样返回。该端点当前为同步 JSON，不支持 `stream=true`。
+
 ### 扩展思考（Extended Thinking，Claude）
 
 ```json
@@ -441,6 +462,8 @@ resp = client.responses.create(
 **`/v1/messages`（Anthropic 透传）**：`messages`、`system`、`max_tokens`、`temperature`、`top_p`、`top_k`、`stop_sequences`、`metadata`、`tools`、`tool_choice`、`thinking`、`stream` 均直接透传；思考流事件（`thinking_delta` / `signature_delta` / `redacted_thinking`）与 cache-token usage 原样保留。
 
 **`/openai/v1/responses`（Responses 透传）**：请求体除模型别名替换外不做改写，字段原样转发上游。
+
+**`/openai/v1/images/generations`（Images 透传）**：请求体除模型别名/前缀剥离外不做改写，字段原样转发上游；响应的 `data[].b64_json` / URL 原样返回；不支持 `stream=true`。
 
 ---
 
@@ -693,7 +716,7 @@ git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e ".[dev]"
 
-pytest -q                                   # 786 用例
+pytest -q                                   # 815 用例
 ruff check bedrock_gateway/ tests/
 mypy bedrock_gateway/ --ignore-missing-imports
 ```

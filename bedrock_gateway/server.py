@@ -567,6 +567,61 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         )
 
     # ------------------------------------------------------------------
+    # POST /openai/v1/images/generations  (OpenAI Images API — Azure)
+    # ------------------------------------------------------------------
+
+    @app.post("/openai/v1/images/generations")
+    async def image_generations(request: Request) -> Any:
+        try:
+            body = await request.json()
+        except Exception:
+            return _oai_error(400, "Invalid JSON body")
+
+        raw_model = body.get("model", "gpt-image-2")
+
+        # Prefix passthrough first: ``azure/<deployment>`` → Azure resource,
+        # dialect fixed by this endpoint (images). Falls through otherwise.
+        entry = registry.resolve_prefixed(raw_model, "openai-images")
+        if entry is not None:
+            model = entry.deployment
+        else:
+            try:
+                model = registry.resolve(raw_model)
+            except UnknownModelError as exc:
+                return _oai_error(400, str(exc), "invalid_request_error")
+            entry = registry.get_entry(raw_model) or _fallback_entry(model)
+
+        dialect = get_dialect(entry)
+        transport = get_transport(entry)
+        if dialect.name != "openai-images":
+            return _oai_error(
+                400,
+                f"Model '{raw_model}' is not available on /openai/v1/images/generations; "
+                f"use /openai/v1/responses instead.",
+                "invalid_request_error",
+            )
+        if body.get("stream", False):
+            return _oai_error(
+                400,
+                "/openai/v1/images/generations does not support streaming.",
+                "invalid_request_error",
+            )
+
+        upstream_id = entry.deployment if entry.transport == "azure" else model
+        upstream_body = dict(body)
+        upstream_body["model"] = upstream_id
+
+        logger.info(
+            "REQ [images] model=%s -> %s (%s)",
+            raw_model, upstream_id, entry.transport,
+        )
+        return await _handle_sync(
+            transport, dialect, entry, upstream_id, config.region,
+            upstream_body, auth, max_retries, retry_base_delay,
+            timeout=request_timeout, request=request, health=health,
+        )
+
+    # ------------------------------------------------------------------
     # POST /v1/messages  (Anthropic Messages API)
     # ------------------------------------------------------------------
 
