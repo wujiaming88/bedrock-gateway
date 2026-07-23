@@ -3,6 +3,23 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.4] — 2026-07-23
+
+### 新增
+
+- **上游 schema 错误的脱敏请求结构日志**：当上游返回非重试错误（同步 `_handle_sync`
+  或流式 `_open_upstream_stream` 开流前失败）时，网关现在额外打印 `REQ-SHAPE`
+  诊断行，记录 request body 的结构摘要：top-level keys、model、stream、Responses
+  `input` item types/roles/content block types、messages/tools/reasoning/max token 字段。
+- 诊断日志**不记录正文、tool 参数值、headers、密钥**，只记录类型/长度/keys，便于定位
+  `Invalid 'input': value did not match any expected variant` 这类上游 schema 错误，
+  同时避免泄露用户内容。
+
+### 测试
+
+- 新增 `test_request_shape_logging.py`：覆盖结构摘要脱敏、同步上游错误日志、流式开流
+  上游错误日志，断言用户正文不会出现在日志里。全量测试通过。
+
 ## [0.4.3] — 2026-07-23
 
 ### 新增

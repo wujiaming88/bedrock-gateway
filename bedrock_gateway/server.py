@@ -140,6 +140,143 @@ def _log_upstream_error(status_code: int, fmt: str, *args: Any) -> None:
         logger.error(fmt, *args)
 
 
+def _value_shape(value: Any) -> Any:
+    """Return a redacted structural summary of an arbitrary JSON-ish value.
+
+    This is intentionally value-free: it records types/counts/keys only, never
+    user text, tool arguments, headers, or credentials. It is safe for logs and
+    is useful when an upstream rejects the request body with a schema error.
+    """
+    if isinstance(value, dict):
+        return {"type": "object", "keys": sorted(str(k) for k in value.keys())}
+    if isinstance(value, list):
+        return {"type": "array", "len": len(value)}
+    if isinstance(value, str):
+        return {"type": "string", "len": len(value)}
+    if value is None:
+        return {"type": "null"}
+    return {"type": type(value).__name__}
+
+
+def _content_shape(content: Any) -> dict[str, Any]:
+    """Summarize message/content blocks without exposing text or arguments."""
+    if isinstance(content, str):
+        return {"type": "string", "len": len(content)}
+    if not isinstance(content, list):
+        return _value_shape(content)
+    blocks: list[dict[str, Any]] = []
+    for block in content[:12]:
+        if isinstance(block, dict):
+            blocks.append({
+                "type": block.get("type", "object"),
+                "keys": sorted(str(k) for k in block.keys()),
+            })
+        else:
+            blocks.append(_value_shape(block))
+    return {"type": "array", "len": len(content), "blocks": blocks}
+
+
+def _input_shape(input_value: Any) -> dict[str, Any]:
+    """Summarize Responses ``input`` variants for upstream-schema debugging."""
+    if isinstance(input_value, str):
+        return {"type": "string", "len": len(input_value)}
+    if not isinstance(input_value, list):
+        return _value_shape(input_value)
+    items: list[dict[str, Any]] = []
+    for item in input_value[:20]:
+        if isinstance(item, dict):
+            summary: dict[str, Any] = {
+                "type": item.get("type", "message" if "role" in item else "object"),
+                "role": item.get("role"),
+                "keys": sorted(str(k) for k in item.keys()),
+            }
+            if "content" in item:
+                summary["content"] = _content_shape(item.get("content"))
+            items.append(summary)
+        else:
+            items.append(_value_shape(item))
+    return {"type": "array", "len": len(input_value), "items": items}
+
+
+def _messages_shape(messages: Any) -> dict[str, Any]:
+    """Summarize chat/messages arrays without text."""
+    if not isinstance(messages, list):
+        return _value_shape(messages)
+    out: list[dict[str, Any]] = []
+    for msg in messages[:20]:
+        if isinstance(msg, dict):
+            item = {
+                "role": msg.get("role"),
+                "keys": sorted(str(k) for k in msg.keys()),
+            }
+            if "content" in msg:
+                item["content"] = _content_shape(msg.get("content"))
+            out.append(item)
+        else:
+            out.append(_value_shape(msg))
+    return {"type": "array", "len": len(messages), "messages": out}
+
+
+def _tools_shape(tools: Any) -> dict[str, Any]:
+    """Summarize tool declarations without schemas/arguments."""
+    if not isinstance(tools, list):
+        return _value_shape(tools)
+    out: list[dict[str, Any]] = []
+    for tool in tools[:30]:
+        if isinstance(tool, dict):
+            out.append({
+                "type": tool.get("type", "function" if "function" in tool else "object"),
+                "name": tool.get("name") or (tool.get("function") or {}).get("name")
+                if isinstance(tool.get("function"), dict) else tool.get("name"),
+                "keys": sorted(str(k) for k in tool.keys()),
+            })
+        else:
+            out.append(_value_shape(tool))
+    return {"type": "array", "len": len(tools), "tools": out}
+
+
+def _request_shape_summary(body: dict[str, Any]) -> dict[str, Any]:
+    """Redacted request-body structure summary for error logs."""
+    summary: dict[str, Any] = {
+        "top_keys": sorted(str(k) for k in body.keys()),
+        "model": body.get("model") if isinstance(body.get("model"), str) else None,
+        "stream": body.get("stream") if isinstance(body.get("stream"), bool) else None,
+    }
+    if "input" in body:
+        summary["input"] = _input_shape(body.get("input"))
+    if "messages" in body:
+        summary["messages"] = _messages_shape(body.get("messages"))
+    if "tools" in body:
+        summary["tools"] = _tools_shape(body.get("tools"))
+    if "reasoning" in body:
+        reasoning = body.get("reasoning")
+        summary["reasoning"] = (
+            {"type": "object", "keys": sorted(str(k) for k in reasoning.keys())}
+            if isinstance(reasoning, dict) else _value_shape(reasoning)
+        )
+    for key in ("max_output_tokens", "max_tokens", "max_completion_tokens"):
+        if key in body:
+            summary[key] = _value_shape(body.get(key))
+    return summary
+
+
+def _log_request_shape_for_upstream_error(
+    *, status: int, model: str, body: dict[str, Any], err_text: str
+) -> None:
+    """Log a redacted request structure when upstream rejects the body."""
+    try:
+        shape = _request_shape_summary(body)
+        logger.warning(
+            "REQ-SHAPE upstream_error status=%s model=%s err=%s shape=%s",
+            status,
+            model,
+            err_text[:160],
+            json.dumps(shape, ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:  # noqa: BLE001 — diagnostics must never break requests
+        logger.exception("REQ-SHAPE failed model=%s", model)
+
+
 # Connections should fail fast (DNS/refused/TLS is not something a long read
 # timeout should mask); reads must be generous for slow reasoning models. So we
 # split the single ``timeout`` value: it governs read/write/pool, while connect
@@ -909,6 +1046,12 @@ async def _handle_sync(
                 model,
                 error["message"][:300],
             )
+            _log_request_shape_for_upstream_error(
+                status=resp.status_code,
+                model=model,
+                body=bedrock_body,
+                err_text=error["message"],
+            )
             return _oai_error(
                 resp.status_code, error["message"], error["type"]
             )
@@ -1051,6 +1194,17 @@ async def _open_upstream_stream(
             "STREAM-OPEN error %d [%s] msg=%s",
             status, log_tag, error["message"][:300],
         )
+        try:
+            body_json = json.loads(body_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
+            body_json = None
+        if isinstance(body_json, dict):
+            _log_request_shape_for_upstream_error(
+                status=status,
+                model=str(body_json.get("model") or log_tag),
+                body=body_json,
+                err_text=error["message"],
+            )
         return None, None, {
             "status": status,
             "type": error["type"],
