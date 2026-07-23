@@ -66,7 +66,7 @@
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
-| `POST` | `/openai/v1/responses` | OpenAI Responses（GPT-5.5 / Grok 4.3 / Azure，透传，同步 + 流式） |
+| `POST` | `/openai/v1/responses` | OpenAI Responses（Bedrock GPT-5.x / Grok 4.3 / Azure，同步 + 流式；Bedrock GPT-5.x 会做最小兼容 normalizer 以适配 Codex input） |
 | `POST` | `/openai/v1/images/generations` | OpenAI Images Generations（Azure `gpt-image-2`，透传，同步） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
 | `GET` | `/health` | 健康检查（公开，无需鉴权） |
@@ -384,9 +384,9 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-### GPT-5.5 / Grok 4.3 —— OpenAI SDK（Responses）
+### GPT-5.x / Grok 4.3 —— OpenAI SDK（Responses）
 
-这类模型在 Bedrock 上经 `bedrock-mantle` 的 OpenAI Responses API 提供；网关**原样透传**请求（仅把模型别名替换为上游 ID），响应与 SSE 流也原样回吐。注意 base_url 用 **`/openai/v1`**：
+这类模型在 Bedrock 上经 `bedrock-mantle` 的 OpenAI Responses API 提供；网关转发到上游前会把模型别名替换为上游 ID。对 Bedrock GPT-5.x,网关还会做一层**最小兼容 normalizer**：Codex 的 `additional_tools` input item 会提升到 top-level `tools`,developer message 会合并到 `instructions`,并把 `text` content block 标准化为 `input_text`。其他字段（`reasoning`、`tool_choice`、`stream` 等）保持透传。注意 base_url 用 **`/openai/v1`**：
 
 ```python
 from openai import OpenAI
@@ -465,7 +465,7 @@ print(img.data[0].b64_json[:40])
 
 **`/v1/messages`（Anthropic 透传）**：`messages`、`system`、`max_tokens`、`temperature`、`top_p`、`top_k`、`stop_sequences`、`metadata`、`tools`、`tool_choice`、`thinking`、`stream` 均直接透传；思考流事件（`thinking_delta` / `signature_delta` / `redacted_thinking`）与 cache-token usage 原样保留。
 
-**`/openai/v1/responses`（Responses 透传）**：请求体除模型别名替换外不做改写，字段原样转发上游。
+**`/openai/v1/responses`（Responses）**：请求体除模型别名替换外基本透传；Bedrock GPT-5.x 会做最小兼容 normalizer（`additional_tools`→`tools`、developer message→`instructions`、`text` block→`input_text`）以适配 Codex/Bedrock 方言差异。
 
 **`/openai/v1/images/generations`（Images 透传）**：请求体除模型别名/前缀剥离外不做改写，字段原样转发上游；响应的 `data[].b64_json` / URL 原样返回；不支持 `stream=true`。
 

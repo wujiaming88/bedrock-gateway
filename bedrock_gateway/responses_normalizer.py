@@ -1,0 +1,175 @@
+"""
+Compatibility normalization for Bedrock OpenAI Responses requests.
+
+Bedrock mantle implements the OpenAI Responses surface, but its GPT-5.x request
+validator accepts a narrower set of ``input`` item variants than some clients
+(Codex in particular) emit. This module performs small, semantics-preserving
+normalizations at the gateway boundary, before forwarding to Bedrock:
+
+* ``additional_tools`` input items are lifted into top-level ``tools``.
+* ``developer`` messages are folded into top-level ``instructions``.
+* Codex ``reasoning.context`` objects are reduced to Bedrock's supported
+  ``"auto"`` selector.
+
+The normalizer is deliberately conservative: it only touches known incompatible
+Codex extension shapes (``input`` plus the corresponding top-level ``tools`` /
+``instructions`` destinations, and ``reasoning.context``), preserves
+user/assistant/tool items, never rewrites text values, and is idempotent.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def is_bedrock_gpt5x_responses_model(transport: str, dialect: str, model: str) -> bool:
+    """Return True for Bedrock OpenAI GPT-5.x Responses models.
+
+    Azure deployments and non-Responses dialects are intentionally excluded: the
+    compatibility gap is observed on Bedrock mantle's GPT-5.x validator.
+    """
+    return (
+        transport == "bedrock"
+        and dialect == "openai-responses"
+        and model.startswith("openai.gpt-5")
+    )
+
+
+def normalize_bedrock_gpt5x_responses_request(body: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Codex/OpenAI-extended Responses input for Bedrock GPT-5.x.
+
+    Returns a shallow copy when a change is needed; otherwise returns a copy with
+    equivalent content. The input object is never mutated.
+    """
+    out = dict(body)
+    input_value = body.get("input")
+    if not isinstance(input_value, list):
+        return out
+
+    kept_input: list[Any] = []
+    lifted_tools: list[Any] = []
+    developer_texts: list[str] = []
+
+    for item in input_value:
+        if not isinstance(item, dict):
+            kept_input.append(item)
+            continue
+
+        item_type = item.get("type")
+        role = item.get("role")
+
+        if item_type == "additional_tools":
+            tools = item.get("tools")
+            if isinstance(tools, list):
+                lifted_tools.extend(tools)
+            continue
+
+        if item_type == "message" and role == "developer":
+            text = _extract_text_from_content(item.get("content"))
+            if text:
+                developer_texts.append(text)
+            continue
+
+        kept_input.append(_normalize_input_item(item))
+
+    if lifted_tools:
+        out["tools"] = _merge_tools(out.get("tools"), lifted_tools)
+    if developer_texts:
+        out["instructions"] = _merge_instructions(out.get("instructions"), developer_texts)
+    if "reasoning" in out:
+        out["reasoning"] = _normalize_reasoning(out.get("reasoning"))
+    out["input"] = kept_input
+    return out
+
+
+_BEDROCK_REASONING_CONTEXT_VALUES = {"auto", "current_turn", "all_turns"}
+
+
+def _normalize_reasoning(reasoning: Any) -> Any:
+    """Normalize Codex reasoning context to Bedrock's accepted enum values."""
+    if not isinstance(reasoning, dict):
+        return reasoning
+    out = dict(reasoning)
+    context = out.get("context")
+    if context is not None and (
+        not isinstance(context, str) or context not in _BEDROCK_REASONING_CONTEXT_VALUES
+    ):
+        out["context"] = "auto"
+    return out
+
+
+def _normalize_input_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize known compatible message content while preserving item keys."""
+    if "content" not in item:
+        return dict(item)
+    copy = dict(item)
+    copy["content"] = _normalize_content(copy.get("content"))
+    return copy
+
+
+def _normalize_content(content: Any) -> Any:
+    if not isinstance(content, list):
+        return content
+    return [_normalize_content_block(block) for block in content]
+
+
+def _normalize_content_block(block: Any) -> Any:
+    if not isinstance(block, dict):
+        return block
+    out = dict(block)
+    if out.get("type") == "text":
+        out["type"] = "input_text"
+    return out
+
+
+def _extract_text_from_content(content: Any) -> str:
+    """Extract developer instruction text without inventing new content."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") in {"input_text", "text"}:
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        elif isinstance(block, str) and block:
+            parts.append(block)
+    return "\n".join(parts)
+
+
+def _merge_instructions(existing: Any, developer_texts: list[str]) -> str:
+    additions = [t for t in developer_texts if t]
+    if isinstance(existing, str) and existing:
+        return "\n\n".join([existing, *additions]) if additions else existing
+    return "\n\n".join(additions)
+
+
+def _tool_key(tool: Any) -> tuple[str, str]:
+    """Best-effort stable key for tool de-duplication."""
+    if not isinstance(tool, dict):
+        return (type(tool).__name__, repr(tool))
+    name = tool.get("name")
+    if isinstance(name, str) and name:
+        return (str(tool.get("type") or ""), name)
+    fn = tool.get("function")
+    if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+        return (str(tool.get("type") or "function"), fn["name"])
+    return (str(tool.get("type") or ""), repr(sorted(tool.keys())))
+
+
+def _merge_tools(existing: Any, lifted: list[Any]) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for tool in (existing if isinstance(existing, list) else []):
+        key = _tool_key(tool)
+        if key not in seen:
+            merged.append(tool)
+            seen.add(key)
+    for tool in lifted:
+        key = _tool_key(tool)
+        if key not in seen:
+            merged.append(tool)
+            seen.add(key)
+    return merged

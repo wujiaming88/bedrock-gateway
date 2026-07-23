@@ -106,19 +106,19 @@ models:
   # Context/output values are advisory until a model card publishes specifics.
   gpt-5.6-sol:
     bedrock_id: openai.gpt-5.6-sol
-    context_length: 1050000
+    context_length: 272000
     max_output: 128000
     endpoint: mantle
     protocol: openai-responses
   gpt-5.6-terra:
     bedrock_id: openai.gpt-5.6-terra
-    context_length: 1050000
+    context_length: 272000
     max_output: 128000
     endpoint: mantle
     protocol: openai-responses
   gpt-5.6-luna:
     bedrock_id: openai.gpt-5.6-luna
-    context_length: 1050000
+    context_length: 272000
     max_output: 128000
     endpoint: mantle
     protocol: openai-responses

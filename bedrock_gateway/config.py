@@ -260,25 +260,25 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
     },
     # ── OpenAI GPT-5.6 family (mantle endpoint, Responses API) ─────────
     # Live-probed on Bedrock mantle: Sol / Terra / Luna all return HTTP 200.
-    # Context/output fields are advisory; use the current GPT-5.x 1.05M/128K
-    # convention until a more specific official model card is available.
+    # AWS model cards list a 272K context window. Max output remains advisory
+    # until a more specific official limit is published.
     "gpt-5.6-sol": {
         "bedrock_id": "openai.gpt-5.6-sol",
-        "context_length": 1_050_000,
+        "context_length": 272_000,
         "max_output": 128_000,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
     "gpt-5.6-terra": {
         "bedrock_id": "openai.gpt-5.6-terra",
-        "context_length": 1_050_000,
+        "context_length": 272_000,
         "max_output": 128_000,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
     "gpt-5.6-luna": {
         "bedrock_id": "openai.gpt-5.6-luna",
-        "context_length": 1_050_000,
+        "context_length": 272_000,
         "max_output": 128_000,
         "endpoint": "mantle",
         "protocol": "openai-responses",

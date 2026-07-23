@@ -46,7 +46,7 @@ error-severity logging — and is transport-/dialect-agnostic. Handlers thread
 ### Endpoints → dialects
 - `POST /v1/chat/completions` — branches by dialect: `anthropic` (Claude,
   converted) vs `openai-chat` (Azure/mantle, passthrough).
-- `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.5, Grok, Azure).
+- `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.x, Grok, Azure). Bedrock GPT-5.x requests pass through a small compatibility normalizer (`responses_normalizer.py`) before upstream dispatch: Codex `additional_tools` items are lifted to top-level `tools`, developer messages become `instructions`, and text blocks are normalized to `input_text`. Keep this dialect-adjacent; do not put it in transport.
 - `POST /openai/v1/images/generations` — `openai-images` dialect (Azure
   `gpt-image-2`, passthrough, sync JSON only; no streaming).
 - `POST /v1/messages` — branches by dialect: `anthropic` (Claude, passthrough,

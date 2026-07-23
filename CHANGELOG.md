@@ -3,6 +3,28 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.5] — 2026-07-23
+
+### 修复
+
+- **修复 Codex 调 Bedrock GPT-5.6 Sol 的 Responses `input` schema 400**。Codex 会在
+  `/openai/v1/responses` 的 `input` 中发送扩展 item，例如 `additional_tools` 与
+  `role=developer` 的 message；Bedrock mantle GPT-5.6 的 validator 不接受这些
+  variant，返回 `Invalid 'input': value did not match any expected variant`。
+- 新增 `responses_normalizer.py`，仅对 **Bedrock + OpenAI GPT-5.x + Responses** 路径启用：
+  - `additional_tools` input item → 合并到 top-level `tools`；
+  - `developer` message → 合并到 top-level `instructions`；
+  - message content 中 `type=text` → `type=input_text`；
+  - 保留 user/assistant/tool 等其它 input item；不改 `reasoning`、`stream`、`tool_choice`、`metadata` 等字段；
+  - 幂等、保守、只在 Bedrock GPT-5.x 上启用，Azure prefix passthrough 不受影响。
+
+### 测试
+
+- 新增 `test_responses_normalizer.py`，normalizer 行覆盖 **100%**，覆盖真实 Codex-like
+  input、additional_tools 提升、developer 指令提升、text→input_text、幂等、边界分支。
+- 扩展 `test_gpt56_bedrock.py`，覆盖 `/openai/v1/responses` 端点中 Bedrock GPT-5.x
+  会启用 normalizer，且 Azure prefix 模型不会被误 normalise。全量测试通过。
+
 ## [0.4.4] — 2026-07-23
 
 ### 新增

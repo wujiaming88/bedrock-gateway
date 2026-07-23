@@ -75,7 +75,7 @@ class TestGPT56Config:
         assert e["bedrock_id"] == bedrock_id
         assert e["endpoint"] == "mantle"
         assert e["protocol"] == "openai-responses"
-        assert e["context_length"] == 1_050_000
+        assert e["context_length"] == 272_000
         assert e["max_output"] == 128_000
 
     @pytest.mark.parametrize("alias,bedrock_id", GPT56.items())
@@ -114,6 +114,63 @@ class TestGPT56ResponsesEndpoint:
         url = mock_cls.return_value.post.call_args[0][0]
         assert url == "https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses"
         assert _sent(mock_cls)["model"] == bedrock_id
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_codex_like_input_is_normalized_for_bedrock_gpt5x(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_responses_body("openai.gpt-5.6-sol"))
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": [
+                    {"type": "function", "name": "shell"},
+                ]},
+                {"type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": "developer instruction"},
+                ]},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "hi"},
+                ]},
+            ],
+            "reasoning": {"effort": "medium", "context": {"summary": "x"}},
+        })
+        assert resp.status_code == 200
+        sent = _sent(mock_cls)
+        assert sent["model"] == "openai.gpt-5.6-sol"
+        assert sent["tools"] == [{"type": "function", "name": "shell"}]
+        assert sent["instructions"] == "developer instruction"
+        assert sent["input"] == [
+            {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "hi"},
+            ]}
+        ]
+        assert sent["reasoning"] == {"effort": "medium", "context": "auto"}
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_azure_prefix_is_not_normalized(self, mock_cls):
+        from bedrock_gateway.config import AzureResource
+
+        resources = {"r1": AzureResource(
+            base_url="https://az.example/openai/v1", api_key="az", prefix="azure"
+        )}
+        cfg = GatewayConfig(
+            auth=AuthConfig(mode="bearer_token", bearer_token="test-token"),
+            region="us-east-1",
+            server=ServerConfig(host="127.0.0.1", port=4000, log_level="warning"),
+            retry=RetryConfig(max_retries=1, base_delay=0.01),
+            models=_parse_models(_DEFAULT_MODELS, resources),
+            azure_resources=resources,
+        )
+        c = TestClient(create_app(cfg))
+        mock_cls.return_value = _mock_sync_client(_responses_body("gpt-5.6-sol"))
+        resp = c.post("/openai/v1/responses", json={
+            "model": "azure/gpt-5.6-sol",
+            "input": [{"type": "additional_tools", "tools": [{"type": "function", "name": "f"}]}],
+        })
+        assert resp.status_code == 200
+        sent = _sent(mock_cls)
+        assert sent["model"] == "gpt-5.6-sol"
+        assert sent["input"][0]["type"] == "additional_tools"
+        assert "tools" not in sent
 
     @pytest.mark.parametrize("alias", GPT56.keys())
     def test_rejected_on_chat_completions(self, client, alias):

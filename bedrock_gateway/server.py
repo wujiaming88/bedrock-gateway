@@ -54,6 +54,10 @@ from .messages_to_responses import (
     to_responses_request,
 )
 from .models import ModelRegistry, UnknownModelError
+from .responses_normalizer import (
+    is_bedrock_gpt5x_responses_model,
+    normalize_bedrock_gpt5x_responses_request,
+)
 from .providers import (
     Dialect,
     Transport,
@@ -685,6 +689,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         upstream_id = entry.deployment if entry.transport == "azure" else model
         upstream_body = dict(body)
         upstream_body["model"] = upstream_id
+        if is_bedrock_gpt5x_responses_model(entry.transport, entry.dialect, upstream_id):
+            upstream_body = normalize_bedrock_gpt5x_responses_request(upstream_body)
 
         logger.info(
             "REQ [responses] model=%s -> %s (%s) stream=%s",
