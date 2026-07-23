@@ -133,7 +133,13 @@ class TestModelEntryDefaults:
         Only the explicitly-known mantle/Responses models may differ; every
         other default must stay on the bedrock/anthropic path.
         """
-        responses_models = {GPT55_ALIAS, GROK_ALIAS}
+        responses_models = {
+            GPT55_ALIAS,
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            GROK_ALIAS,
+        }
         models = _parse_models(_DEFAULT_MODELS)
         for alias, e in models.items():
             if alias in responses_models:

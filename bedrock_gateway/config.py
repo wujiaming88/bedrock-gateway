@@ -258,6 +258,31 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
+    # ── OpenAI GPT-5.6 family (mantle endpoint, Responses API) ─────────
+    # Live-probed on Bedrock mantle: Sol / Terra / Luna all return HTTP 200.
+    # Context/output fields are advisory; use the current GPT-5.x 1.05M/128K
+    # convention until a more specific official model card is available.
+    "gpt-5.6-sol": {
+        "bedrock_id": "openai.gpt-5.6-sol",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+    },
+    "gpt-5.6-terra": {
+        "bedrock_id": "openai.gpt-5.6-terra",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+    },
+    "gpt-5.6-luna": {
+        "bedrock_id": "openai.gpt-5.6-luna",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+    },
     # ── xAI Grok 4.3 (mantle endpoint, Responses API) ─────────────────
     "grok-4.3": {
         "bedrock_id": "xai.grok-4.3",
@@ -315,6 +340,25 @@ _MODEL_ALIASES: dict[str, str] = {
     "gpt-5-5": "gpt-5.5",
     "openai.gpt-5.5": "gpt-5.5",
     "openai-gpt-5.5": "gpt-5.5",
+    # GPT-5.6 family variations
+    "gpt-5.6-sol": "gpt-5.6-sol",
+    "gpt-56-sol": "gpt-5.6-sol",
+    "gpt5.6-sol": "gpt-5.6-sol",
+    "gpt-5-6-sol": "gpt-5.6-sol",
+    "openai.gpt-5.6-sol": "gpt-5.6-sol",
+    "openai-gpt-5.6-sol": "gpt-5.6-sol",
+    "gpt-5.6-terra": "gpt-5.6-terra",
+    "gpt-56-terra": "gpt-5.6-terra",
+    "gpt5.6-terra": "gpt-5.6-terra",
+    "gpt-5-6-terra": "gpt-5.6-terra",
+    "openai.gpt-5.6-terra": "gpt-5.6-terra",
+    "openai-gpt-5.6-terra": "gpt-5.6-terra",
+    "gpt-5.6-luna": "gpt-5.6-luna",
+    "gpt-56-luna": "gpt-5.6-luna",
+    "gpt5.6-luna": "gpt-5.6-luna",
+    "gpt-5-6-luna": "gpt-5.6-luna",
+    "openai.gpt-5.6-luna": "gpt-5.6-luna",
+    "openai-gpt-5.6-luna": "gpt-5.6-luna",
     # Grok 4.3 variations
     "grok": "grok-4.3",
     "grok-4": "grok-4.3",

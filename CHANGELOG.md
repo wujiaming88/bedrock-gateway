@@ -3,6 +3,26 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.3] — 2026-07-23
+
+### 新增
+
+- **接入 Bedrock mantle 上的 OpenAI GPT-5.6 family**：新增默认模型
+  `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`，分别映射到
+  `openai.gpt-5.6-sol` / `openai.gpt-5.6-terra` / `openai.gpt-5.6-luna`。
+  三个模型均经 Bedrock mantle `/openai/v1/responses` 真机实探返回 HTTP 200。
+- 补齐常见别名：`gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol` /
+  `openai.gpt-5.6-sol` / `openai-gpt-5.6-sol`（Terra/Luna 同理）。
+  这些模型走 `endpoint: mantle` + `protocol: openai-responses`，与 `gpt-5.5`
+  同一条 Responses 透传链路。
+
+### 测试
+
+- 新增 `test_gpt56_bedrock.py`：覆盖默认模型注册、别名解析、Responses 路由到
+  `bedrock-mantle.../openai/v1/responses`、以及错误端点 guard。全量测试通过。
+- 注：`context_length` / `max_output` 暂按 GPT-5.x 现有 1.05M / 128K advisory
+  值登记；若后续官方 model card 给出不同规格,应同步修正。
+
 ## [0.4.2] — 2026-07-20
 
 ### 新增
