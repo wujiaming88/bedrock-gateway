@@ -172,6 +172,28 @@ class TestGPT56ResponsesEndpoint:
         assert sent["input"][0]["type"] == "additional_tools"
         assert "tools" not in sent
 
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_invalid_encrypted_content_is_stripped_for_bedrock_gpt5x(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_responses_body("openai.gpt-5.6-sol"))
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "foreign_blob"},
+                {"type": "reasoning", "encrypted_content": "rsn_valid"},
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "visible", "encrypted_content": "bad"},
+                ]},
+            ],
+        })
+        assert resp.status_code == 200
+        sent = _sent(mock_cls)
+        assert sent["input"] == [
+            {"type": "reasoning", "encrypted_content": "rsn_valid"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "visible"},
+            ]},
+        ]
+
     @pytest.mark.parametrize("alias", GPT56.keys())
     def test_rejected_on_chat_completions(self, client, alias):
         resp = client.post("/v1/chat/completions", json={

@@ -187,3 +187,42 @@ def test_boundary_tool_dedup_keys_for_non_dict_function_and_key_only_tools():
         {"type": "function", "function": {"name": "fn"}},
         {"type": "custom", "description": "no name"},
     ]
+
+
+def test_invalid_encrypted_reasoning_item_is_dropped():
+    body = {
+        "input": [
+            {"type": "reasoning", "encrypted_content": "enc_bad_foreign_blob"},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        ]
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["input"] == [body["input"][1]]
+
+
+def test_valid_bedrock_encrypted_prefixes_are_preserved():
+    for prefix in ["rsn_", "smry_"]:
+        item = {"type": "reasoning", "encrypted_content": prefix + "abc"}
+        out = normalize_bedrock_gpt5x_responses_request({"input": [item]})
+        assert out["input"] == [item]
+
+
+def test_invalid_nested_encrypted_content_is_removed_but_semantic_text_stays():
+    body = {
+        "input": [
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "visible", "encrypted_content": "foreign_blob"}
+            ]}
+        ],
+        "reasoning": {"effort": "medium", "encrypted_content": "bad_blob"},
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert "encrypted_content" not in out["reasoning"]
+    block = out["input"][0]["content"][0]
+    assert block == {"type": "output_text", "text": "visible"}
+
+
+def test_empty_reasoning_item_with_extra_metadata_survives_without_bad_blob():
+    body = {"input": [{"type": "reasoning", "encrypted_content": "bad", "summary": []}]}
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["input"] == [{"type": "reasoning", "summary": []}]

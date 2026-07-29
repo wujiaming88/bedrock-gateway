@@ -10,6 +10,8 @@ normalizations at the gateway boundary, before forwarding to Bedrock:
 * ``developer`` messages are folded into top-level ``instructions``.
 * Codex ``reasoning.context`` objects are reduced to Bedrock's supported
   ``"auto"`` selector.
+* Unknown encrypted reasoning/content blobs are dropped unless they carry a
+  Bedrock-recognized ``rsn_`` or ``smry_`` prefix.
 
 The normalizer is deliberately conservative: it only touches known incompatible
 Codex extension shapes (``input`` plus the corresponding top-level ``tools`` /
@@ -20,6 +22,9 @@ user/assistant/tool items, never rewrites text values, and is idempotent.
 from __future__ import annotations
 
 from typing import Any
+
+_DROP = object()
+_BEDROCK_ENCRYPTED_PREFIXES = ("rsn_", "smry_")
 
 
 def is_bedrock_gpt5x_responses_model(transport: str, dialect: str, model: str) -> bool:
@@ -78,11 +83,52 @@ def normalize_bedrock_gpt5x_responses_request(body: dict[str, Any]) -> dict[str,
         out["instructions"] = _merge_instructions(out.get("instructions"), developer_texts)
     if "reasoning" in out:
         out["reasoning"] = _normalize_reasoning(out.get("reasoning"))
-    out["input"] = kept_input
+    out = _filter_opaque_state(out)
+    out["input"] = _filter_opaque_state(kept_input)
     return out
 
 
 _BEDROCK_REASONING_CONTEXT_VALUES = {"auto", "current_turn", "all_turns"}
+
+
+def _valid_bedrock_encrypted_content(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(_BEDROCK_ENCRYPTED_PREFIXES)
+
+
+def _filter_opaque_state(value: Any) -> Any:
+    """Drop encrypted state blobs not minted by Bedrock.
+
+    ``encrypted_content`` is opaque provider-private state. Bedrock GPT-5.x only
+    recognizes blobs with ``rsn_`` or ``smry_`` prefixes; forwarding any other
+    issuer's blob makes the whole request fail with a 400. This filter removes
+    unrecognized blobs and drops now-empty reasoning items.
+    """
+    if isinstance(value, list):
+        filtered = []
+        for item in value:
+            child = _filter_opaque_state(item)
+            if child is not _DROP:
+                filtered.append(child)
+        return filtered
+    if not isinstance(value, dict):
+        return value
+
+    had_encrypted = "encrypted_content" in value
+    out: dict[str, Any] = {}
+    for key, child in value.items():
+        if key == "encrypted_content":
+            if _valid_bedrock_encrypted_content(child):
+                out[key] = child
+            continue
+        filtered_child = _filter_opaque_state(child)
+        if filtered_child is not _DROP:
+            out[key] = filtered_child
+
+    if had_encrypted and "encrypted_content" not in out and out.get("type") == "reasoning":
+        non_type_keys = [k for k in out if k != "type"]
+        if not non_type_keys:
+            return _DROP
+    return out
 
 
 def _normalize_reasoning(reasoning: Any) -> Any:

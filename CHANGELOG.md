@@ -3,6 +3,32 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.6] — 2026-07-29
+
+### 修复
+
+- **修复 Bedrock GPT-5.x 对 Codex/Responses encrypted reasoning 的 400**。
+  Codex 会在历史 input 中回放 `reasoning.encrypted_content` 这类 opaque 状态；
+  Bedrock GPT-5.x 只接受自己签发、前缀为 `rsn_` / `smry_` 的 blob，遇到其它
+  issuer 的 encrypted content 会返回：
+  `encrypted content missing recognized prefix (expected rsn_ or smry_)`。
+- `responses_normalizer.py` 现会在 Bedrock GPT-5.x Responses 路径中过滤 opaque state：
+  - 保留 `encrypted_content` 以 `rsn_` / `smry_` 开头的项；
+  - 删除其它非法 encrypted content；
+  - 若 reasoning item 删除非法 blob 后只剩空壳，则删除该 item；
+  - 嵌套非法 encrypted_content 会被移除，但可见文本/语义内容保留。
+- 作用范围仍限制在 `transport=bedrock` + `dialect=openai-responses` + `openai.gpt-5*`，
+  Azure prefix、Grok、Claude、图片端点不受影响。
+
+### 测试
+
+- 扩展 `test_responses_normalizer.py` 和 `test_gpt56_bedrock.py`：覆盖非法 encrypted
+  content 删除、`rsn_` / `smry_` 前缀保留、嵌套 encrypted content 过滤、空 reasoning
+  item 删除、Azure prefix 不被 normalise。`responses_normalizer.py` 行覆盖保持 100%。
+- 真机验证：包含非法 encrypted content 的 Codex-like 请求由 400 变为 HTTP 200；
+  GPT-5.5、GPT-5.6 Sol、Azure prefix、`/v1/messages` 入向翻译和 images/generations
+  回归均正常。全量测试通过。
+
 ## [0.4.5] — 2026-07-23
 
 ### 修复
