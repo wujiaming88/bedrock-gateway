@@ -30,6 +30,15 @@ server:
   log_level: info   # debug | info | warning | error
   # api_key: ${BEDROCK_API_KEY}  # uncomment to require authentication
 
+# ─── Logging ───────────────────────────────────────────────
+# Console output remains enabled for journald/container logs. When file logging
+# is enabled, all gateway, Uvicorn access/error, and httpx logs also go to a
+# local-date file named bedrock-gateway-YYYY-MM-DD.log.
+logging:
+  file_enabled: false
+  directory: /var/log/bedrock-gateway
+  retention_days: 30
+
 # ─── Retry / upstream-call tuning ─────────────────────────
 retry:
   max_retries: 3

@@ -98,6 +98,17 @@ server:
 
 When `api_key` is set, clients must send either `Authorization: Bearer <key>` or `x-api-key: <key>`. `/health` and `/` stay public. Key comparison uses `hmac.compare_digest`.
 
+### `logging`
+
+```yaml
+logging:
+  file_enabled: false
+  directory: /var/log/bedrock-gateway
+  retention_days: 30
+```
+
+When enabled, gateway, Uvicorn access/error, and httpx records are written to `bedrock-gateway-YYYY-MM-DD.log`, rotated at local midnight and retained for 30 days. Console output remains enabled for journald or container logging.
+
 ### `region`
 
 ```yaml
@@ -200,6 +211,11 @@ server:
   log_level: info
   api_key: ${BEDROCK_API_KEY}
 
+logging:
+  file_enabled: true
+  directory: /var/log/bedrock-gateway
+  retention_days: 30
+
 retry:
   max_retries: 3
   base_delay: 1.0
@@ -236,10 +252,14 @@ WantedBy=multi-user.target
 
 ```bash
 useradd --system --no-create-home bedrock
+install -d -o bedrock -g bedrock -m 0750 /var/log/bedrock-gateway
 systemctl daemon-reload
 systemctl enable --now bedrock-gateway
 journalctl -u bedrock-gateway -f
+tail -f /var/log/bedrock-gateway/bedrock-gateway-$(date +%F).log
 ```
+
+Daily files contain gateway, Uvicorn access/error, and httpx upstream request logs. They rotate at local midnight and retain 30 days while console output remains available in journald. Do not apply an external rename-based `logrotate` rule to the same files.
 
 ### Docker
 
@@ -383,7 +403,7 @@ Production checklist:
 - [ ] TLS in front of the gateway when binding to `0.0.0.0` (Nginx / ALB / Cloudflare)
 - [ ] `dashboard.api_key` set (or `dashboard.enabled: false`), and `dashboard.require_auth: true`
 - [ ] Process runs as a non-root user (systemd `User=`, Docker `appuser`)
-- [ ] Logs centralised (`journalctl`, container log driver)
+- [ ] File-log directory owned by `bedrock:bedrock` with mode `0750`; logs also centralised (`journalctl`, container log driver)
 - [ ] Bedrock IAM principal limited to the minimum `bedrock:InvokeModel*` actions
 
 ## Development

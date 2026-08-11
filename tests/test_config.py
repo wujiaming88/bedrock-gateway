@@ -67,6 +67,40 @@ class TestDefaultConfig:
         assert "claude-opus-4" in cfg.models
 
 
+class TestLoggingConfig:
+    def test_defaults(self, tmp_path: Path):
+        cfg = load_config(tmp_path / "missing.yaml")
+        assert cfg.logging.file_enabled is False
+        assert cfg.logging.directory == "/var/log/bedrock-gateway"
+        assert cfg.logging.retention_days == 30
+
+    def test_yaml_values(self, tmp_path: Path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "logging:\n"
+            "  file_enabled: true\n"
+            "  directory: /tmp/gateway-logs\n"
+            "  retention_days: 7\n"
+        )
+        cfg = load_config(config_file)
+        assert cfg.logging.file_enabled is True
+        assert cfg.logging.directory == "/tmp/gateway-logs"
+        assert cfg.logging.retention_days == 7
+
+    @pytest.mark.parametrize(
+        "yaml_value,message",
+        [
+            ("  directory: ''\n", "logging.directory"),
+            ("  retention_days: 0\n", "logging.retention_days"),
+        ],
+    )
+    def test_invalid_values(self, tmp_path: Path, yaml_value: str, message: str):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("logging:\n" + yaml_value)
+        with pytest.raises(ValueError, match=message):
+            load_config(config_file)
+
+
 class TestModelAliases:
     """Model alias table for common name variations."""
 

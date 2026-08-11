@@ -217,6 +217,11 @@ server:
   log_level: info                         # debug | info | warning | error
   api_key: ${BEDROCK_API_KEY}             # 设置后 /v1/*、/openai/* 强制鉴权
 
+logging:
+  file_enabled: false                     # systemd 生产部署建议启用
+  directory: /var/log/bedrock-gateway     # 每天一个 bedrock-gateway-YYYY-MM-DD.log
+  retention_days: 30                      # 自动删除超过 30 天的日志
+
 retry:
   max_retries: 3                          # 总尝试次数
   base_delay: 1.0                         # 秒；实际延迟 = base_delay * 2^attempt
@@ -572,6 +577,10 @@ server:
   port: 4000
   log_level: info
   api_key: ${BEDROCK_API_KEY}
+logging:
+  file_enabled: true
+  directory: /var/log/bedrock-gateway
+  retention_days: 30
 retry:
   max_retries: 3
   base_delay: 1.0
@@ -607,6 +616,7 @@ WantedBy=multi-user.target
 
 ```bash
 useradd --system --no-create-home bedrock
+install -d -o bedrock -g bedrock -m 0750 /var/log/bedrock-gateway
 systemctl daemon-reload
 systemctl enable --now bedrock-gateway
 journalctl -u bedrock-gateway -f
@@ -692,9 +702,17 @@ server {
 | 上游 4xx（非 401/403） | WARNING | 客户端原因（图片过大、错误模型名等），无需告警 |
 | 上游 401 / 403 | **ERROR + `[auth-failure]`** | 网关凭据失效，运维须立即处理 |
 | 上游 5xx 或重试耗尽 | ERROR | 真正的故障 |
-| 网关代码意外异常 | ERROR + traceback | 完整栈帧写入 journald |
+| 网关代码意外异常 | ERROR + traceback | 完整栈帧写入文件与 journald |
 
-> systemd 部署下，`journalctl -u bedrock-gateway -p err` 只看真正的错误。
+启用 `logging.file_enabled` 后，网关业务日志、Uvicorn 启动/错误/访问日志和 httpx 上游请求日志会同时写入 `/var/log/bedrock-gateway/bedrock-gateway-YYYY-MM-DD.log`。文件按主机本地午夜切分并自动保留最近 30 天；console 输出仍保留，因此 journald 不受影响：
+
+```bash
+tail -f /var/log/bedrock-gateway/bedrock-gateway-$(date +%F).log
+journalctl -u bedrock-gateway -f
+journalctl -u bedrock-gateway -p err
+```
+
+不要再对这些文件配置外部 `logrotate` rename 轮转，以免和进程内按日切分冲突。当前服务为单进程；若未来启用多 worker，应改用集中日志收集方案。
 
 ---
 
@@ -708,7 +726,7 @@ server {
 - [ ] 绑定 `0.0.0.0` 时前面**必须**有 TLS 终止（Nginx / ALB / Cloudflare）
 - [ ] 设 `dashboard.api_key`（或 `dashboard.enabled: false`），并保持 `require_auth: true`
 - [ ] 非 root 运行（systemd `User=` 或 Docker 非 root 用户）
-- [ ] 日志接入集中收集（journalctl、容器日志驱动）
+- [ ] 文件日志目录属于 `bedrock:bedrock` 且权限为 `0750`；日志同时接入集中收集（journalctl、容器日志驱动）
 - [ ] Bedrock IAM 账号最小权限，仅保留必要的 `bedrock:InvokeModel*`；Azure api-key 定期轮换（资源有 key1/key2 可无缝切换）
 
 ---

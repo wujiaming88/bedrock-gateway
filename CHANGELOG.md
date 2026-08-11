@@ -3,6 +3,18 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.8] — 2026-08-11
+
+### 新增
+
+- 增加可选每日文件日志：网关业务、Uvicorn access/error 与 httpx 上游请求日志统一写入 `bedrock-gateway-YYYY-MM-DD.log`，按主机本地午夜切分，默认保留 30 天。
+- 新增 `logging.file_enabled`、`logging.directory`、`logging.retention_days` 配置；console 输出继续保留，systemd journald 不受影响。
+- systemd 推荐日志目录为 `/var/log/bedrock-gateway`，由 `bedrock:bedrock` 持有并使用 `0750` 权限。
+
+### 测试
+
+- 覆盖跨午夜文件切换、30 天清理边界、多 logger 统一采集、重复初始化去重和 Uvicorn 启动配置。
+
 ## [0.4.7] — 2026-08-11
 
 ### 修复

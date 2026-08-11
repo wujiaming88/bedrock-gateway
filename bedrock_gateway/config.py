@@ -100,6 +100,20 @@ class RetryConfig:
 
 
 @dataclass
+class LoggingConfig:
+    """Daily file logging configuration."""
+    file_enabled: bool = False
+    directory: str = "/var/log/bedrock-gateway"
+    retention_days: int = 30
+
+    def __post_init__(self) -> None:
+        if not self.directory.strip():
+            raise ValueError("logging.directory must not be empty")
+        if self.retention_days <= 0:
+            raise ValueError("logging.retention_days must be greater than zero")
+
+
+@dataclass
 class StorageConfig:
     """Dashboard metrics persistence (SQLite) configuration."""
     enabled: bool = True
@@ -204,6 +218,7 @@ class GatewayConfig:
     region: str = "us-east-1"
     server: ServerConfig = field(default_factory=ServerConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     models: dict[str, ModelEntry] = field(default_factory=dict)
     azure_resources: dict[str, AzureResource] = field(default_factory=dict)
@@ -519,6 +534,14 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         timeout=float(retry_raw.get("timeout", os.environ.get("BEDROCK_TIMEOUT", "300"))),
     )
 
+    # Logging
+    log_raw = raw.get("logging", {})
+    logging_config = LoggingConfig(
+        file_enabled=bool(log_raw.get("file_enabled", False)),
+        directory=str(log_raw.get("directory", "/var/log/bedrock-gateway")),
+        retention_days=int(log_raw.get("retention_days", 30)),
+    )
+
     # Dashboard
     dash_raw = raw.get("dashboard", {})
     lh_raw = dash_raw.get("localhost_only", None)
@@ -576,6 +599,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         region=raw.get("region", os.environ.get("AWS_REGION", "us-east-1")),
         server=server,
         retry=retry,
+        logging=logging_config,
         dashboard=dashboard,
         models=models,
         azure_resources=azure_resources,

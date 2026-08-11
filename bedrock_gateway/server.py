@@ -53,6 +53,7 @@ from .messages_to_responses import (
     to_anthropic_response,
     to_responses_request,
 )
+from .logging_config import configure_logging
 from .models import ModelRegistry, UnknownModelError
 from .responses_normalizer import (
     is_bedrock_gpt5x_responses_model,
@@ -1692,11 +1693,7 @@ def run(config: GatewayConfig | None = None) -> None:
     if config is None:
         config = load_config()
 
-    logging.basicConfig(
-        level=getattr(logging, config.server.log_level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_logging(config)
 
     app = create_app(config)
     logger.info(
@@ -1713,4 +1710,5 @@ def run(config: GatewayConfig | None = None) -> None:
         host=config.server.host,
         port=config.server.port,
         log_level=config.server.log_level,
+        log_config=None,
     )

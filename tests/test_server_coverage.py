@@ -830,23 +830,27 @@ class TestRunAndCreateAppDefaults:
         monkeypatch.chdir(tmp_path)
         called = {}
 
-        def fake_uvicorn_run(app, host, port, log_level):
+        def fake_uvicorn_run(app, host, port, log_level, log_config):
             called["host"] = host
             called["port"] = port
+            called["log_config"] = log_config
 
         monkeypatch.setattr("bedrock_gateway.server.uvicorn.run", fake_uvicorn_run)
         run()
         assert called["port"] == 4000
+        assert called["log_config"] is None
 
     def test_run_with_explicit_config(self, monkeypatch, config):
         calls = {}
 
-        def fake_uvicorn_run(app, host, port, log_level):
+        def fake_uvicorn_run(app, host, port, log_level, log_config):
             calls["port"] = port
+            calls["log_config"] = log_config
 
         monkeypatch.setattr("bedrock_gateway.server.uvicorn.run", fake_uvicorn_run)
         run(config)
         assert calls["port"] == 4000
+        assert calls["log_config"] is None
 
 
 # ---------------------------------------------------------------------------
