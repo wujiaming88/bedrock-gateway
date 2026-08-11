@@ -80,6 +80,7 @@ def test_configure_logging_collects_all_loggers_without_duplicates(tmp_path):
         text = next(tmp_path.glob("bedrock-gateway-*.log")).read_text()
         for index in range(len(names)):
             assert text.count(f"unique-marker-{index}") == 1
+        assert "[test_logging_config.py:" in text
     finally:
         for handler in list(root.handlers):
             if handler not in original_handlers:

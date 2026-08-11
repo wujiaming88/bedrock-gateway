@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.9] — 2026-08-11
+
+### 改进
+
+- 每条 console/journald 与每日文件日志增加代码来源位置，格式为 `[文件名.py:行号]`；网关日志可直接定位到业务代码，Uvicorn/httpx 日志可定位到对应依赖内部调用点。
+
+### 测试
+
+- 增加 formatter 回归断言，确保文件名和行号持续出现在日志中。
+
 ## [0.4.8] — 2026-08-11
 
 ### 新增
