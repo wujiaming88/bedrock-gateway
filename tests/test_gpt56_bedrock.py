@@ -75,7 +75,7 @@ class TestGPT56Config:
         assert e["bedrock_id"] == bedrock_id
         assert e["endpoint"] == "mantle"
         assert e["protocol"] == "openai-responses"
-        assert e["context_length"] == 272_000
+        assert e["context_length"] == 1_000_000
         assert e["max_output"] == 128_000
 
     @pytest.mark.parametrize("alias,bedrock_id", GPT56.items())

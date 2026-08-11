@@ -3,6 +3,19 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.7] — 2026-08-11
+
+### 修复
+
+- 将 Bedrock mantle 上 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`
+  的上下文元数据由 272K 修正为 1M，并同步模型清单、配置示例和文档。
+- 此变更只修正 `/v1/models` 展示的 advisory metadata；网关不在本地限制或截断
+  上下文，实际请求限制仍由 Bedrock mantle 执行。
+
+### 测试
+
+- 更新 GPT-5.6 默认模型注册断言，覆盖三个变体的 1M 上下文元数据。
+
 ## [0.4.6] — 2026-07-29
 
 ### 修复

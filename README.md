@@ -48,15 +48,15 @@
 | `claude-sonnet-4.6` | `us.anthropic.claude-sonnet-4-6` | 1M | 64K | 同上 |
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K | 同上 |
 | `gpt-5.5` | `openai.gpt-5.5` | 1.05M | 128K | **`/openai/v1/responses`** |
-| `gpt-5.6-sol` | `openai.gpt-5.6-sol` | 1.05M* | 128K* | **`/openai/v1/responses`** |
-| `gpt-5.6-terra` | `openai.gpt-5.6-terra` | 1.05M* | 128K* | **`/openai/v1/responses`** |
-| `gpt-5.6-luna` | `openai.gpt-5.6-luna` | 1.05M* | 128K* | **`/openai/v1/responses`** |
+| `gpt-5.6-sol` | `openai.gpt-5.6-sol` | 1M | 128K* | **`/openai/v1/responses`** |
+| `gpt-5.6-terra` | `openai.gpt-5.6-terra` | 1M | 128K* | **`/openai/v1/responses`** |
+| `gpt-5.6-luna` | `openai.gpt-5.6-luna` | 1M | 128K* | **`/openai/v1/responses`** |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
 | Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
 - Claude 系别名有大量常见变体自动解析：Opus 的点号与连字符写法均可（`claude-opus-4.7` ＝ `claude-opus-4-7`，4.8 / 4.6 同理），以及 Anthropic SDK 默认模型名、带日期的官方名（如 `claude-opus-4-7-20250428`）。裸 `claude-sonnet` 解析到当前最新的 Sonnet（4.6）。
 - GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；GPT-5.6 家族别名：`gpt-5.6-sol` / `gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol`（Terra/Luna 同理）；Grok 4.3 别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` / `grok-4-3`。
-- `gpt-5.6-*` 的上下文/输出字段为 advisory，已真机确认 Bedrock mantle 可调通；若官方 model card 后续给出不同规格，应同步修正。
+- `gpt-5.6-*` 在 Bedrock mantle 上均为 1M 上下文；128K 最大输出字段仍为 advisory，若官方 model card 后续给出不同规格，应同步修正。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 

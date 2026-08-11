@@ -103,22 +103,23 @@ models:
 
   # ── OpenAI GPT-5.6 family ───────────────────────────────
   # Live-probed on Bedrock mantle: Sol / Terra / Luna all return HTTP 200.
-  # Context/output values are advisory until a model card publishes specifics.
+  # Bedrock mantle exposes a 1M context window for all three variants.
+  # Max output remains advisory until a model card publishes a specific limit.
   gpt-5.6-sol:
     bedrock_id: openai.gpt-5.6-sol
-    context_length: 272000
+    context_length: 1000000
     max_output: 128000
     endpoint: mantle
     protocol: openai-responses
   gpt-5.6-terra:
     bedrock_id: openai.gpt-5.6-terra
-    context_length: 272000
+    context_length: 1000000
     max_output: 128000
     endpoint: mantle
     protocol: openai-responses
   gpt-5.6-luna:
     bedrock_id: openai.gpt-5.6-luna
-    context_length: 272000
+    context_length: 1000000
     max_output: 128000
     endpoint: mantle
     protocol: openai-responses
