@@ -70,7 +70,7 @@ class TestDefaultConfig:
 class TestLoggingConfig:
     def test_defaults(self, tmp_path: Path):
         cfg = load_config(tmp_path / "missing.yaml")
-        assert cfg.logging.file_enabled is False
+        assert cfg.logging.file_enabled is True
         assert cfg.logging.directory == "/var/log/bedrock-gateway"
         assert cfg.logging.retention_days == 30
 

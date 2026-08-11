@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.10] — 2026-08-11
+
+### 改进
+
+- 每日文件日志改为默认开启；未配置 `logging` 段时直接写入 `/var/log/bedrock-gateway` 并保留 30 天。仅在显式设置 `logging.file_enabled: false` 时关闭。
+
+### 测试
+
+- 更新默认配置断言，确保文件日志默认启用。
+
 ## [0.4.9] — 2026-08-11
 
 ### 改进

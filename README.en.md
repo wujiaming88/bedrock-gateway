@@ -102,12 +102,12 @@ When `api_key` is set, clients must send either `Authorization: Bearer <key>` or
 
 ```yaml
 logging:
-  file_enabled: false
+  file_enabled: true
   directory: /var/log/bedrock-gateway
   retention_days: 30
 ```
 
-When enabled, gateway, Uvicorn access/error, and httpx records are written to `bedrock-gateway-YYYY-MM-DD.log`, rotated at local midnight and retained for 30 days. Console output remains enabled for journald or container logging.
+File logging is enabled by default; set `file_enabled: false` explicitly to disable it. Gateway, Uvicorn access/error, and httpx records are written to `bedrock-gateway-YYYY-MM-DD.log`, rotated at local midnight and retained for 30 days. Console output remains enabled for journald or container logging.
 
 ### `region`
 

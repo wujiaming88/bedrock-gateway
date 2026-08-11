@@ -218,7 +218,7 @@ server:
   api_key: ${BEDROCK_API_KEY}             # 设置后 /v1/*、/openai/* 强制鉴权
 
 logging:
-  file_enabled: false                     # systemd 生产部署建议启用
+  file_enabled: true                      # 默认开启；显式设 false 可关闭
   directory: /var/log/bedrock-gateway     # 每天一个 bedrock-gateway-YYYY-MM-DD.log
   retention_days: 30                      # 自动删除超过 30 天的日志
 
@@ -704,7 +704,7 @@ server {
 | 上游 5xx 或重试耗尽 | ERROR | 真正的故障 |
 | 网关代码意外异常 | ERROR + traceback | 完整栈帧写入文件与 journald |
 
-启用 `logging.file_enabled` 后，网关业务日志、Uvicorn 启动/错误/访问日志和 httpx 上游请求日志会同时写入 `/var/log/bedrock-gateway/bedrock-gateway-YYYY-MM-DD.log`。文件按主机本地午夜切分并自动保留最近 30 天；console 输出仍保留，因此 journald 不受影响：
+文件日志默认开启；仅显式设置 `logging.file_enabled: false` 时关闭。网关业务日志、Uvicorn 启动/错误/访问日志和 httpx 上游请求日志会同时写入 `/var/log/bedrock-gateway/bedrock-gateway-YYYY-MM-DD.log`。文件按主机本地午夜切分并自动保留最近 30 天；console 输出仍保留，因此 journald 不受影响：
 
 ```bash
 tail -f /var/log/bedrock-gateway/bedrock-gateway-$(date +%F).log

@@ -35,7 +35,7 @@ server:
 # is enabled, all gateway, Uvicorn access/error, and httpx logs also go to a
 # local-date file named bedrock-gateway-YYYY-MM-DD.log.
 logging:
-  file_enabled: false
+  file_enabled: true
   directory: /var/log/bedrock-gateway
   retention_days: 30
 

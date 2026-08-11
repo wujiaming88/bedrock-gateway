@@ -102,7 +102,7 @@ class RetryConfig:
 @dataclass
 class LoggingConfig:
     """Daily file logging configuration."""
-    file_enabled: bool = False
+    file_enabled: bool = True
     directory: str = "/var/log/bedrock-gateway"
     retention_days: int = 30
 
@@ -537,7 +537,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
     # Logging
     log_raw = raw.get("logging", {})
     logging_config = LoggingConfig(
-        file_enabled=bool(log_raw.get("file_enabled", False)),
+        file_enabled=bool(log_raw.get("file_enabled", True)),
         directory=str(log_raw.get("directory", "/var/log/bedrock-gateway")),
         retention_days=int(log_raw.get("retention_days", 30)),
     )
