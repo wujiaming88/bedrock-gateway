@@ -12,6 +12,8 @@ normalizations at the gateway boundary, before forwarding to Bedrock:
   ``"auto"`` selector.
 * Unknown encrypted reasoning/content blobs are dropped unless they carry a
   Bedrock-recognized ``rsn_`` or ``smry_`` prefix.
+* Unsupported ``search_content_types`` filters are removed from ``web_search``
+  tools while preserving the tool and its other options.
 
 The normalizer is deliberately conservative: it only touches known incompatible
 Codex extension shapes (``input`` plus the corresponding top-level ``tools`` /
@@ -47,6 +49,8 @@ def normalize_bedrock_gpt5x_responses_request(body: dict[str, Any]) -> dict[str,
     equivalent content. The input object is never mutated.
     """
     out = dict(body)
+    if "tools" in out:
+        out["tools"] = _normalize_tools(out.get("tools"))
     input_value = body.get("input")
     if not isinstance(input_value, list):
         return out
@@ -79,6 +83,8 @@ def normalize_bedrock_gpt5x_responses_request(body: dict[str, Any]) -> dict[str,
 
     if lifted_tools:
         out["tools"] = _merge_tools(out.get("tools"), lifted_tools)
+    if "tools" in out:
+        out["tools"] = _normalize_tools(out.get("tools"))
     if developer_texts:
         out["instructions"] = _merge_instructions(out.get("instructions"), developer_texts)
     if "reasoning" in out:
@@ -203,6 +209,21 @@ def _tool_key(tool: Any) -> tuple[str, str]:
     if isinstance(fn, dict) and isinstance(fn.get("name"), str):
         return (str(tool.get("type") or "function"), fn["name"])
     return (str(tool.get("type") or ""), repr(sorted(tool.keys())))
+
+
+def _normalize_tools(tools: Any) -> Any:
+    """Remove Bedrock-unsupported options from Responses web search tools."""
+    if not isinstance(tools, list):
+        return tools
+    normalized: list[Any] = []
+    for tool in tools:
+        if isinstance(tool, dict) and tool.get("type") == "web_search":
+            copy = dict(tool)
+            copy.pop("search_content_types", None)
+            normalized.append(copy)
+        else:
+            normalized.append(tool)
+    return normalized
 
 
 def _merge_tools(existing: Any, lifted: list[Any]) -> list[Any]:

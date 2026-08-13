@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.11] — 2026-08-13
+
+### 修复
+
+- 修复 Bedrock mantle GPT-5.x 对 Responses `web_search` 工具返回 400：仅在 Bedrock GPT-5.x normalizer 中移除 mantle 不支持的 `search_content_types` 字段，保留 `web_search`、`external_web_access` 及其他选项。
+- Azure Responses、Grok、Claude 与非 `web_search` 工具继续原样透传，不受兼容降级影响。
+
+### 测试
+
+- 覆盖普通与 `additional_tools` 提升后的 web search、幂等/不修改原请求、嵌套同名字段保留、Bedrock 集成及 Azure 不归一化回归。
+
 ## [0.4.10] — 2026-08-11
 
 ### 改进

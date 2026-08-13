@@ -132,11 +132,19 @@ class TestGPT56ResponsesEndpoint:
                 ]},
             ],
             "reasoning": {"effort": "medium", "context": {"summary": "x"}},
+            "tools": [{
+                "type": "web_search",
+                "external_web_access": True,
+                "search_content_types": ["text"],
+            }],
         })
         assert resp.status_code == 200
         sent = _sent(mock_cls)
         assert sent["model"] == "openai.gpt-5.6-sol"
-        assert sent["tools"] == [{"type": "function", "name": "shell"}]
+        assert sent["tools"] == [
+            {"type": "web_search", "external_web_access": True},
+            {"type": "function", "name": "shell"},
+        ]
         assert sent["instructions"] == "developer instruction"
         assert sent["input"] == [
             {"type": "message", "role": "user", "content": [
@@ -165,12 +173,15 @@ class TestGPT56ResponsesEndpoint:
         resp = c.post("/openai/v1/responses", json={
             "model": "azure/gpt-5.6-sol",
             "input": [{"type": "additional_tools", "tools": [{"type": "function", "name": "f"}]}],
+            "tools": [{"type": "web_search", "search_content_types": ["text"]}],
         })
         assert resp.status_code == 200
         sent = _sent(mock_cls)
         assert sent["model"] == "gpt-5.6-sol"
         assert sent["input"][0]["type"] == "additional_tools"
-        assert "tools" not in sent
+        assert sent["tools"] == [{
+            "type": "web_search", "search_content_types": ["text"]
+        }]
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_invalid_encrypted_content_is_stripped_for_bedrock_gpt5x(self, mock_cls, client):

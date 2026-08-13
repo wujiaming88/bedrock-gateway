@@ -132,6 +132,53 @@ def test_no_secret_or_text_lost_except_expected_relocation():
     assert out["stream"] is True
 
 
+def test_web_search_unsupported_content_types_removed():
+    body = {
+        "input": "find news",
+        "tools": [
+            {
+                "type": "web_search",
+                "external_web_access": True,
+                "search_content_types": ["text", "images"],
+            },
+            {"type": "function", "name": "lookup", "search_content_types": ["keep"]},
+        ],
+    }
+    original = copy.deepcopy(body)
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["tools"][0] == {"type": "web_search", "external_web_access": True}
+    assert out["tools"][1] == body["tools"][1]
+    assert body == original
+    assert normalize_bedrock_gpt5x_responses_request(out) == out
+
+
+def test_lifted_web_search_tool_is_normalized():
+    body = {
+        "input": [{
+            "type": "additional_tools",
+            "tools": [{
+                "type": "web_search",
+                "external_web_access": False,
+                "search_content_types": ["text"],
+            }],
+        }]
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["tools"] == [{"type": "web_search", "external_web_access": False}]
+
+
+def test_nested_search_content_types_is_not_removed():
+    body = {
+        "input": [],
+        "tools": [{
+            "type": "web_search",
+            "metadata": {"search_content_types": ["keep"]},
+        }],
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["tools"][0]["metadata"] == {"search_content_types": ["keep"]}
+
+
 def test_reasoning_context_supported_values_preserved_and_non_dict_untouched():
     for value in ["auto", "current_turn", "all_turns"]:
         body = {"input": [], "reasoning": {"context": value, "effort": "medium"}}
