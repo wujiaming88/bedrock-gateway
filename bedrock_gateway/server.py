@@ -18,12 +18,14 @@ import logging
 import time
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.datastructures import UploadFile
 
 from . import __version__
 from .auth import AuthProvider
@@ -85,6 +87,67 @@ def _oai_error(status: int, message: str, etype: str = "api_error") -> JSONRespo
         status_code=status,
         content={"error": {"message": message, "type": etype, "code": status}},
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRequestBody:
+    """Fully encoded, replayable upstream request payload."""
+
+    content: bytes
+    content_type: str
+    log_body: dict[str, Any] | None = None
+
+
+def _prepare_request_body(
+    body: dict[str, Any] | PreparedRequestBody,
+) -> PreparedRequestBody:
+    if isinstance(body, PreparedRequestBody):
+        return body
+    return PreparedRequestBody(
+        content=json.dumps(body).encode(),
+        content_type="application/json",
+        log_body=body,
+    )
+
+
+def _operation_path(
+    dialect: Dialect,
+    entry: ModelEntry,
+    stream: bool,
+    operation: str | None,
+) -> str:
+    if operation is None:
+        return dialect.operation_path(entry, stream)
+    return dialect.operation_path(entry, stream, operation=operation)
+
+
+def _payload_headers(
+    transport: Transport,
+    entry: ModelEntry,
+    auth: AuthProvider,
+    url: str,
+    payload: PreparedRequestBody,
+) -> dict[str, str]:
+    headers = transport.auth_headers(entry) or auth.get_headers(
+        method="POST", url=url, body=payload.content
+    )
+    headers = dict(headers)
+    headers["Content-Type"] = payload.content_type
+    return headers
+
+
+def _transport_payload_headers(
+    transport: Transport,
+    entry: ModelEntry,
+    payload: PreparedRequestBody,
+) -> dict[str, str] | None:
+    """Return static transport headers; global auth must be signed per attempt."""
+    headers = transport.auth_headers(entry)
+    if headers is None:
+        return None
+    headers = dict(headers)
+    headers["Content-Type"] = payload.content_type
+    return headers
 
 
 def _note_retry(request: Request | None) -> None:
@@ -762,6 +825,133 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         return await _handle_sync(
             transport, dialect, entry, upstream_id, config.region,
             upstream_body, auth, max_retries, retry_base_delay,
+            operation="generations", timeout=request_timeout,
+            request=request, health=health,
+        )
+
+    # ------------------------------------------------------------------
+    # POST /openai/v1/images/edits  (OpenAI Images API — Azure)
+    # ------------------------------------------------------------------
+
+    @app.post("/openai/v1/images/edits")
+    async def image_edits(request: Request) -> Any:
+        content_type = request.headers.get("content-type", "")
+        if not content_type.lower().startswith("multipart/form-data;") or "boundary=" not in content_type.lower():
+            return _oai_error(
+                415,
+                "/openai/v1/images/edits requires multipart/form-data with a boundary.",
+                "invalid_request_error",
+            )
+
+        try:
+            form = await request.form()
+        except Exception:
+            return _oai_error(400, "Invalid multipart form data", "invalid_request_error")
+
+        raw_model: str | None = None
+        prompt_present = False
+        stream = False
+        image_count = 0
+        text_parts: list[tuple[str, str]] = []
+        file_parts: list[tuple[str, tuple[str, bytes, str]]] = []
+        safe_files: list[dict[str, Any]] = []
+
+        try:
+            for field, value in form.multi_items():
+                if isinstance(value, UploadFile):
+                    raw = await value.read()
+                    filename = value.filename or "upload"
+                    part_type = value.content_type or "application/octet-stream"
+                    file_parts.append((field, (filename, raw, part_type)))
+                    safe_files.append({
+                        "field": field,
+                        "filename": filename,
+                        "content_type": part_type,
+                        "size": len(raw),
+                    })
+                    if field in {"image", "image[]"}:
+                        image_count += 1
+                    continue
+
+                text = str(value)
+                if field == "model":
+                    raw_model = text.strip()
+                    continue
+                if field == "prompt":
+                    prompt_present = bool(text.strip())
+                if field == "stream":
+                    normalized = text.strip().lower()
+                    if normalized not in {"true", "false"}:
+                        stream = None
+                    else:
+                        stream = normalized == "true"
+                text_parts.append((field, text))
+        finally:
+            await form.close()
+
+        if raw_model:
+            request.state.metrics_info["model"] = raw_model
+        if not raw_model:
+            return _oai_error(400, "model is required", "invalid_request_error")
+        if stream is None:
+            return _oai_error(400, "stream must be true or false", "invalid_request_error")
+        if image_count == 0:
+            return _oai_error(400, "At least one image file is required", "invalid_request_error")
+        if not prompt_present:
+            return _oai_error(400, "prompt is required", "invalid_request_error")
+
+        entry = registry.resolve_prefixed(raw_model, "openai-images")
+        if entry is None:
+            try:
+                registry.resolve(raw_model)
+            except UnknownModelError as exc:
+                return _oai_error(400, str(exc), "invalid_request_error")
+            entry = registry.get_entry(raw_model)
+
+        if entry is None or (
+            entry.transport != "azure" or entry.dialect != "openai-images"
+        ):
+            return _oai_error(
+                400,
+                f"Model '{raw_model}' is not an Azure OpenAI Images deployment available "
+                "on /openai/v1/images/edits.",
+                "invalid_request_error",
+            )
+
+        upstream_id = entry.deployment
+        text_parts = [(name, value) for name, value in text_parts if name != "model"]
+        text_parts.append(("model", upstream_id))
+        multipart_parts: list[tuple[str, tuple[Any, ...]]] = [
+            (name, (None, value)) for name, value in text_parts
+        ]
+        multipart_parts.extend(file_parts)
+        encoded = httpx.Request(
+            "POST", "https://multipart.invalid", files=multipart_parts
+        )
+        body_bytes = encoded.read()
+        upstream_content_type = encoded.headers["Content-Type"]
+        payload = PreparedRequestBody(
+            content=body_bytes,
+            content_type=upstream_content_type,
+            log_body={
+                "model": upstream_id,
+                "operation": "edits",
+                "fields": [name for name, _ in text_parts],
+                "files": safe_files,
+            },
+        )
+
+        transport = get_transport(entry)
+        dialect = get_dialect(entry)
+        logger.info(
+            "REQ [images.edits] model=%s -> %s (%s) files=%d",
+            raw_model, upstream_id, entry.transport, image_count,
+        )
+        handler = _handle_stream if stream else _handle_sync
+        return await handler(
+            transport, dialect, entry, upstream_id, config.region,
+            payload, auth, max_retries, retry_base_delay,
+            operation="edits", log_tag="images.edits",
             timeout=request_timeout, request=request, health=health,
         )
 
@@ -973,17 +1163,22 @@ async def _handle_sync(
     entry: ModelEntry,
     model: str,
     region: str,
-    bedrock_body: dict,
+    bedrock_body: dict[str, Any] | PreparedRequestBody,
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
     *,
+    operation: str | None = None,
+    log_tag: str = "chat.completions",
     timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> dict | JSONResponse:
-    url = transport.build_url(dialect.operation_path(entry, False), region, entry)
-    body_bytes = json.dumps(bedrock_body).encode()
+    url = transport.build_url(
+        _operation_path(dialect, entry, False, operation), region, entry
+    )
+    payload = _prepare_request_body(bedrock_body)
+    body_bytes = payload.content
     last_error: str | None = None
     deadline = _retry_deadline(timeout, max_retries)
 
@@ -999,9 +1194,7 @@ async def _handle_sync(
         try:
             # Transport-specific headers (e.g. Azure api-key) override the
             # gateway's global auth; None → use the global SigV4/Bearer path.
-            headers = transport.auth_headers(entry) or auth.get_headers(
-                method="POST", url=url, body=body_bytes
-            )
+            headers = _payload_headers(transport, entry, auth, url, payload)
             async with _track_upstream(health), httpx.AsyncClient(timeout=_httpx_timeout(timeout)) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
 
@@ -1053,12 +1246,13 @@ async def _handle_sync(
                 model,
                 error["message"][:300],
             )
-            _log_request_shape_for_upstream_error(
-                status=resp.status_code,
-                model=model,
-                body=bedrock_body,
-                err_text=error["message"],
-            )
+            if payload.log_body is not None:
+                _log_request_shape_for_upstream_error(
+                    status=resp.status_code,
+                    model=model,
+                    body=payload.log_body,
+                    err_text=error["message"],
+                )
             return _oai_error(
                 resp.status_code, error["message"], error["type"]
             )
@@ -1076,7 +1270,7 @@ async def _handle_sync(
             await asyncio.sleep(retry_base_delay * (2**attempt))
 
         except Exception as exc:
-            logger.exception("UNEXPECTED model=%s during chat.completions", model)
+            logger.exception("UNEXPECTED model=%s during %s", model, log_tag)
             return _oai_error(500, str(exc))
 
     logger.error(
@@ -1094,7 +1288,7 @@ async def _handle_sync(
 
 async def _open_upstream_stream(
     url: str,
-    body_bytes: bytes,
+    payload: PreparedRequestBody,
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
@@ -1134,15 +1328,18 @@ async def _open_upstream_stream(
         stack = AsyncExitStack()
         # Transport-specific headers (Azure api-key) override the global auth.
         headers = extra_headers or auth.get_headers(
-            method="POST", url=url, body=body_bytes
+            method="POST", url=url, body=payload.content
         )
+        if extra_headers is None:
+            headers = dict(headers)
+            headers["Content-Type"] = payload.content_type
         try:
             await stack.enter_async_context(_track_upstream(health))
             client = await stack.enter_async_context(
                 httpx.AsyncClient(timeout=_httpx_timeout(timeout))
             )
             resp = await stack.enter_async_context(
-                client.stream("POST", url, headers=headers, content=body_bytes)
+                client.stream("POST", url, headers=headers, content=payload.content)
             )
         except httpx.TimeoutException:
             await stack.aclose()
@@ -1201,15 +1398,11 @@ async def _open_upstream_stream(
             "STREAM-OPEN error %d [%s] msg=%s",
             status, log_tag, error["message"][:300],
         )
-        try:
-            body_json = json.loads(body_bytes)
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
-            body_json = None
-        if isinstance(body_json, dict):
+        if payload.log_body is not None:
             _log_request_shape_for_upstream_error(
                 status=status,
-                model=str(body_json.get("model") or log_tag),
-                body=body_json,
+                model=str(payload.log_body.get("model") or log_tag),
+                body=payload.log_body,
                 err_text=error["message"],
             )
         return None, None, {
@@ -1239,25 +1432,29 @@ async def _handle_stream(
     entry: ModelEntry,
     model: str,
     region: str,
-    bedrock_body: dict,
+    bedrock_body: dict[str, Any] | PreparedRequestBody,
     auth: AuthProvider,
     max_retries: int,
     retry_base_delay: float,
     *,
+    operation: str | None = None,
+    log_tag: str = "chat",
     timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
 ) -> JSONResponse | StreamingResponse:
-    url = transport.build_url(dialect.operation_path(entry, True), region, entry)
-    body_bytes = json.dumps(bedrock_body).encode()
+    url = transport.build_url(
+        _operation_path(dialect, entry, True, operation), region, entry
+    )
+    payload = _prepare_request_body(bedrock_body)
     msg_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     # Preflight: open the upstream stream and check the status BEFORE we commit
     # to a 200 SSE response. A pre-stream failure becomes a real HTTP error.
     resp, stack, err = await _open_upstream_stream(
-        url, body_bytes, auth, max_retries, retry_base_delay,
-        request=request, health=health, log_tag=f"chat model={model}",
-        extra_headers=transport.auth_headers(entry),
+        url, payload, auth, max_retries, retry_base_delay,
+        request=request, health=health, log_tag=f"{log_tag} model={model}",
+        extra_headers=_transport_payload_headers(transport, entry, payload),
         timeout=timeout,
     )
     if err is not None:
@@ -1432,8 +1629,9 @@ async def _handle_messages_stream(
     # the proper status code and a complete Anthropic error envelope — matching
     # the upstream Anthropic API — instead of a 200 SSE body with an orphan
     # error event that leaves clients hanging.
+    payload = _prepare_request_body(bedrock_body)
     resp, stack, err = await _open_upstream_stream(
-        url, body_bytes, auth, max_retries, retry_base_delay,
+        url, payload, auth, max_retries, retry_base_delay,
         request=request, health=health, log_tag=f"messages model={model}",
         timeout=timeout,
     )
@@ -1645,11 +1843,12 @@ async def _handle_messages_via_responses_stream(
 
     # Same pre-stream preflight as every streaming path: a failure before any
     # bytes flow is returned as a real HTTP error (Anthropic-shaped here).
+    payload = _prepare_request_body(responses_body)
     resp, stack, err = await _open_upstream_stream(
-        url, body_bytes, auth, max_retries, retry_base_delay,
+        url, payload, auth, max_retries, retry_base_delay,
         request=request, health=health,
         log_tag=f"messages->responses model={model}",
-        extra_headers=transport.auth_headers(entry),
+        extra_headers=_transport_payload_headers(transport, entry, payload),
         timeout=timeout,
     )
     if err is not None:

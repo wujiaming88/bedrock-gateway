@@ -343,10 +343,17 @@ All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI chat completions, sync and streaming |
 | `POST` | `/v1/messages` | Anthropic messages, sync and streaming |
+| `POST` | `/openai/v1/responses` | OpenAI Responses passthrough, sync and streaming |
+| `POST` | `/openai/v1/images/generations` | Azure `gpt-image-2` generation, sync JSON |
+| `POST` | `/openai/v1/images/edits` | Azure `gpt-image-2` editing, multipart, sync and SSE |
 | `GET`  | `/v1/models` | Model list (OpenAI format) |
 | `GET`  | `/health` | Liveness, no auth |
 | `GET`  | `/dashboard/` | UI |
 | `GET`  | `/api/metrics/*` | Dashboard JSON |
+
+### Azure Images
+
+`/openai/v1/images/generations` remains a synchronous JSON passthrough. `/openai/v1/images/edits` accepts the OpenAI multipart contract (repeated `image` parts and optional `mask`) and passes through synchronous JSON or `stream=true` SSE responses. Routing follows the Azure Images API capability rather than a model-name allowlist; `gpt-image-2` is the strict live-validation baseline. Variations, Nova Canvas, and Titan Image Generator are not supported yet.
 
 ### OpenAI parameters (`/v1/chat/completions`)
 

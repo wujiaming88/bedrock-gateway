@@ -68,6 +68,7 @@
 | `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
 | `POST` | `/openai/v1/responses` | OpenAI Responses（Bedrock GPT-5.x / Grok 4.3 / Azure，同步 + 流式；Bedrock GPT-5.x 会做最小兼容 normalizer 以适配 Codex input） |
 | `POST` | `/openai/v1/images/generations` | OpenAI Images Generations（Azure `gpt-image-2`，透传，同步） |
+| `POST` | `/openai/v1/images/edits` | OpenAI Images Edits（Azure `gpt-image-2`，multipart，同步 + SSE） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
 | `GET` | `/health` | 健康检查（公开，无需鉴权） |
 | `GET` | `/dashboard/` | 监控界面 |
@@ -435,7 +436,22 @@ img = client.images.generate(
 print(img.data[0].b64_json[:40])
 ```
 
-网关对 Images 请求做**透传**（仅把 `azure/gpt-image-2` 剥离成上游 deployment `gpt-image-2`），响应的 `b64_json` / URL 字段原样返回。该端点当前为同步 JSON，不支持 `stream=true`。
+网关对 Images 请求做**透传**（仅把 `azure/gpt-image-2` 剥离成上游 deployment `gpt-image-2`），响应的 `b64_json` / URL 字段原样返回。generations 为同步 JSON，不支持 `stream=true`。
+
+编辑使用 multipart 文件上传，并支持 Azure SSE 原样透传：
+
+```python
+with open("input.png", "rb") as image:
+    edited = client.images.edit(
+        model="azure/gpt-image-2",
+        image=image,
+        prompt="change the red square to blue",
+        n=1,
+    )
+print(edited.data[0].b64_json[:40])
+```
+
+`/openai/v1/images/edits` 面向 Azure OpenAI Images deployment，不按模型名称建立 allowlist；具体 deployment 是否支持 edits 由 Azure 上游判定并返回规范错误。当前以 `gpt-image-2` 做严格真机验证。暂不支持 Images Variations、Nova Canvas 或 Titan Image Generator。
 
 ### 扩展思考（Extended Thinking，Claude）
 
@@ -472,7 +488,9 @@ print(img.data[0].b64_json[:40])
 
 **`/openai/v1/responses`（Responses）**：请求体除模型别名替换外基本透传；Bedrock GPT-5.x 会做最小兼容 normalizer（`additional_tools`→`tools`、developer message→`instructions`、`text` block→`input_text`）以适配 Codex/Bedrock 方言差异。
 
-**`/openai/v1/images/generations`（Images 透传）**：请求体除模型别名/前缀剥离外不做改写，字段原样转发上游；响应的 `data[].b64_json` / URL 原样返回；不支持 `stream=true`。
+**`/openai/v1/images/generations`（Images 透传）**：JSON 请求除模型别名/前缀剥离外不做改写，字段原样转发上游；响应的 `data[].b64_json` / URL 原样返回；不支持 `stream=true`。
+
+**`/openai/v1/images/edits`（Images 透传）**：multipart 的重复 `image`、可选 `mask`、未知文本字段和文件 metadata 均保留，仅替换 model deployment；同步 JSON 与 `stream=true` SSE 均原样返回。网关按 Azure Images API 能力路由，不按具体模型名称限制。
 
 ---
 

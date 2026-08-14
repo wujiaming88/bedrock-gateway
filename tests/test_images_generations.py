@@ -100,9 +100,10 @@ class TestImagesDialect:
         d = ImagesPassthroughDialect()
         entry = ModelEntry(bedrock_id="gpt-image-2", dialect="openai-images")
         assert d.name == "openai-images"
-        assert d.supports_stream is False
+        assert d.supports_stream is True
         assert d.operation_path(entry, stream=False) == "/images/generations"
         assert d.operation_path(entry, stream=True) == "/images/generations"
+        assert d.operation_path(entry, stream=True, operation="edits") == "/images/edits"
 
     def test_build_request_passthrough(self):
         d = ImagesPassthroughDialect()
@@ -127,17 +128,17 @@ class TestImagesDialect:
         assert log["finish"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_stream_methods_not_implemented(self):
+    async def test_stream_passthrough_and_error(self):
         d = ImagesPassthroughDialect()
 
         async def byte_iter():
-            yield b"x"
+            raw = "event: image_edit.partial_image\ndata: 中文\n\n".encode()
+            yield raw[:-2]
+            yield raw[-2:]
 
-        with pytest.raises(NotImplementedError):
-            async for _ in d.transform_stream(byte_iter(), "m", "id"):
-                pass
-        with pytest.raises(NotImplementedError):
-            d.stream_error("x", 500)
+        chunks = [chunk async for chunk in d.transform_stream(byte_iter(), "m", "id")]
+        assert "".join(chunks) == "event: image_edit.partial_image\ndata: 中文\n\n"
+        assert d.stream_error("x", 500).startswith("event: error\n")
 
     def test_registered_in_provider_registry(self):
         entry = ModelEntry(bedrock_id="gpt-image-2", dialect="openai-images")

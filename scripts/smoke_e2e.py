@@ -12,6 +12,7 @@ Required env:
   AZURE_OPENAI_KEY           Azure OpenAI resource api-key (optional)
   AZURE_OPENAI_ENDPOINT      Azure resource base incl. /openai (optional;
                              e.g. https://<res>.cognitiveservices.azure.com/openai)
+  GATEWAY_API_KEY            Gateway ingress key (defaults to the Bedrock token)
 
 Usage:
   python scripts/smoke_e2e.py            # run all reachable checks
@@ -24,13 +25,18 @@ Checks whose credentials are absent are SKIPPED (not failed).
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
+import struct
 import subprocess
 import sys
 import time
 import urllib.request
 import urllib.error
+import uuid
+import zlib
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 results: list[tuple[str, str, str]] = []
@@ -42,15 +48,67 @@ def record(name: str, status: str, detail: str = "") -> None:
     print(f"  {mark} [{status}] {name}" + (f" — {detail}" if detail else ""))
 
 
+def _gateway_headers(content_type: str) -> dict[str, str]:
+    headers = {"Content-Type": content_type}
+    token = os.environ.get("GATEWAY_API_KEY") or os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _post(url: str, body: dict, stream: bool = False, timeout: int = 60):
     data = json.dumps(body).encode()
     req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        url, data=data, headers=_gateway_headers("application/json"), method="POST"
     )
     resp = urllib.request.urlopen(req, timeout=timeout)
     if stream:
         return resp.read().decode("utf-8", "replace")
     return json.loads(resp.read())
+
+
+def _multipart_post(url: str, fields: dict[str, str], files: list[tuple[str, str, str, bytes]], timeout: int = 300):
+    boundary = f"----bedrock-gateway-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks += [
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            value.encode(), b"\r\n",
+        ]
+    for name, filename, content_type, content in files:
+        chunks += [
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode(),
+            f"Content-Type: {content_type}\r\n\r\n".encode(),
+            content, b"\r\n",
+        ]
+    chunks.append(f"--{boundary}--\r\n".encode())
+    req = urllib.request.Request(
+        url, data=b"".join(chunks),
+        headers=_gateway_headers(f"multipart/form-data; boundary={boundary}"),
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    return resp.headers.get_content_type(), resp.read()
+
+
+def _png(width: int = 256, height: int = 256) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", binascii.crc32(kind + data) & 0xFFFFFFFF)
+    rows = b"".join(b"\x00" + bytes([230, 40, 40]) * width for _ in range(height))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def _assert_image_response(raw: bytes) -> None:
+    d = json.loads(raw)
+    assert isinstance(d.get("created"), int), d
+    assert isinstance(d.get("data"), list) and d["data"], d
+    for item in d["data"]:
+        encoded = item.get("b64_json")
+        assert isinstance(encoded, str) and encoded, item
+        image = base64.b64decode(encoded, validate=True)
+        assert image.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF")), image[:12]
 
 
 def _responses_text(d: dict) -> str:
@@ -134,6 +192,52 @@ def check_azure_chat_stream(base: str) -> None:
     record("azure gpt-5 — chat/completions stream", PASS)
 
 
+def check_azure_image_edit(base: str) -> None:
+    content_type, raw = _multipart_post(
+        base + "/openai/v1/images/edits",
+        {"model": "azure/gpt-image-2", "prompt": "change the square to blue", "n": "1"},
+        [("image", "input.png", "image/png", _png())],
+    )
+    assert content_type == "application/json", content_type
+    _assert_image_response(raw)
+    record("azure gpt-image-2 — images/edits sync", PASS)
+
+
+def check_azure_image_edit_stream(base: str) -> None:
+    content_type, raw = _multipart_post(
+        base + "/openai/v1/images/edits",
+        {
+            "model": "azure/gpt-image-2",
+            "prompt": "change the square to green",
+            "stream": "true",
+            "partial_images": "1",
+        },
+        [("image", "input.png", "image/png", _png())],
+    )
+    assert content_type == "text/event-stream", content_type
+    text = raw.decode("utf-8")
+    frames = [frame for frame in text.replace("\r\n", "\n").split("\n\n") if frame]
+    completed = 0
+    partial_indices: list[int] = []
+    for frame in frames:
+        event_lines = [line[7:] for line in frame.splitlines() if line.startswith("event: ")]
+        data_lines = [line[6:] for line in frame.splitlines() if line.startswith("data: ")]
+        assert len(event_lines) == 1 and len(data_lines) == 1, frame[:200]
+        payload = json.loads(data_lines[0])
+        assert payload.get("type") == event_lines[0], payload
+        encoded = payload.get("b64_json")
+        if encoded:
+            image = base64.b64decode(encoded, validate=True)
+            assert image.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF"))
+        if event_lines[0] == "image_edit.partial_image":
+            partial_indices.append(payload["partial_image_index"])
+        if event_lines[0] == "image_edit.completed":
+            completed += 1
+    assert partial_indices == sorted(set(partial_indices)), partial_indices
+    assert completed == 1, text[-500:]
+    record("azure gpt-image-2 — images/edits stream", PASS)
+
+
 def check_guard_gpt55_on_chat(base: str) -> None:
     try:
         _post(base + "/v1/chat/completions",
@@ -175,6 +279,7 @@ def build_config(port: int, tmp_path: str) -> tuple[str, dict]:
             "  az:",
             f"    base_url: {az_ep}/v1",
             "    api_key: ${AZURE_OPENAI_KEY}",
+            "    prefix: azure",
             "models:",
             "  azure-gpt-5:",
             "    transport: azure",
@@ -230,7 +335,8 @@ def main() -> int:
 
         print("\n=== Azure ===")
         az_checks = (check_azure_responses, check_azure_responses_stream,
-                     check_azure_chat, check_azure_chat_stream)
+                     check_azure_chat, check_azure_chat_stream,
+                     check_azure_image_edit, check_azure_image_edit_stream)
         if have_azure:
             for fn in az_checks:
                 _run(fn, base)

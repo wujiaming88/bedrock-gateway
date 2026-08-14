@@ -45,7 +45,12 @@ _LLM_PATHS = frozenset({
     "/v1/messages",
     "/openai/v1/responses",
     "/openai/v1/images/generations",
+    "/openai/v1/images/edits",
 })
+
+# Multipart image uploads are intentionally excluded: the endpoint enriches
+# metrics after parsing, avoiding an extra full-body buffer in middleware.
+_JSON_MODEL_PATHS = _LLM_PATHS - {"/openai/v1/images/edits"}
 
 # Headers that describe the upstream body we buffer/replace; re-computed
 # from the response we return.
@@ -189,7 +194,7 @@ def metrics_middleware_factory(collector: MetricsCollector, health: Any = None):
         # reading the body here does not prevent the downstream handler
         # from reading it again.
         model_from_body: str | None = None
-        if request.method == "POST" and path in _LLM_PATHS:
+        if request.method == "POST" and path in _JSON_MODEL_PATHS:
             try:
                 body_bytes = await request.body()
             except Exception:

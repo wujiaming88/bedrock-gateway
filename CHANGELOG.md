@@ -3,6 +3,22 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.12] — 2026-08-14
+
+### 新增
+
+- 新增 Azure OpenAI `POST /openai/v1/images/edits`：支持 OpenAI multipart 多图/mask、同步 JSON 与 SSE 原样透传。
+- Edits 按 Azure transport + `openai-images` API 能力路由，不绑定具体模型名称；以 `gpt-image-2` 作为严格真机验证基线。
+
+### 改进
+
+- 通用上游 dispatch 支持预编码、可重放 payload；multipart 在重试时复用同一 body 与 boundary，现有 JSON API 保持原行为。
+- Images edits metrics 不再由 middleware 预读大文件，模型信息由 handler 安全注入。
+
+### 测试
+
+- 覆盖 multipart 字段/文件保真、严格模型 guard、重试重放、同步响应和既有 Images/Azure 回归；真实 Azure smoke 增加有效 PNG 与 Base64 图片校验。
+
 ## [0.4.11] — 2026-08-13
 
 ### 修复

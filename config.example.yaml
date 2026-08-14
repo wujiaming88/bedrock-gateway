@@ -174,7 +174,7 @@ models:
 # any client model `azure/<deployment>` is routed to this resource with
 # <deployment> as the Azure deployment name — NO per-model entry needed. The
 # dialect is picked by the endpoint hit (/openai/v1/responses → responses,
-# /v1/chat/completions → chat, /openai/v1/images/generations → images). This is
+# /v1/chat/completions → chat, /openai/v1/images/generations|edits → images). This is
 # the lightest way to expose a whole Azure resource: configure it once, then call
 # azure/<anything> as your deployments
 # come and go. (You can still register explicit models in `models:` too.)
