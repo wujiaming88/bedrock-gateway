@@ -25,6 +25,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from multipart.multipart import parse_options_header  # type: ignore[import-untyped]
 from starlette.datastructures import UploadFile
 
 from . import __version__
@@ -82,11 +83,78 @@ def _fallback_entry(bedrock_id: str) -> ModelEntry:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _oai_error(status: int, message: str, etype: str = "api_error") -> JSONResponse:
+def _oai_error(
+    status: int,
+    message: str,
+    etype: str = "api_error",
+    *,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     """Return an OpenAI-style error response."""
     return JSONResponse(
         status_code=status,
         content={"error": {"message": message, "type": etype, "code": status}},
+        headers=headers,
+    )
+
+
+def _multipart_content_type(request: Request) -> tuple[bytes, dict[bytes, bytes], Request]:
+    """Parse multipart parameters and normalize only the media type for Starlette."""
+    content_type = request.headers.get("content-type", "")
+    media_type, options = parse_options_header(content_type)
+    if media_type == b"multipart/form-data" or media_type.lower() != b"multipart/form-data":
+        return media_type, options, request
+
+    # Starlette compares the parsed media type case-sensitively. Preserve all
+    # parameters while canonicalizing that token, without reading the body.
+    _, separator, parameters = content_type.partition(";")
+    normalized = "multipart/form-data"
+    if separator:
+        normalized += separator + parameters
+    scope = dict(request.scope)
+    headers = [
+        (name, normalized.encode("latin-1") if name.lower() == b"content-type" else value)
+        for name, value in scope.get("headers", [])
+    ]
+    scope["headers"] = headers
+    normalized_request = Request(scope, receive=request.receive)
+    return media_type, options, normalized_request
+
+
+def _multipart_parse_error(
+    request: Request,
+    exc: Exception,
+    options: dict[bytes, bytes],
+) -> JSONResponse:
+    """Return a correlated multipart error without logging request values."""
+    request_id = str(uuid.uuid4())
+    raw_length = request.headers.get("content-length")
+    if raw_length is None:
+        content_length: int | str = "absent"
+    else:
+        try:
+            content_length = int(raw_length)
+            if content_length < 0:
+                content_length = "invalid"
+        except ValueError:
+            content_length = "invalid"
+    boundary = options.get(b"boundary")
+    logger.warning(
+        "MULTIPART_PARSE_FAILED request_id=%s exception=%s content_length=%s "
+        "transfer_encoding=%s content_encoding=%s boundary_present=%s boundary_length=%d",
+        request_id,
+        type(exc).__name__,
+        content_length,
+        "present" if request.headers.get("transfer-encoding") else "absent",
+        "present" if request.headers.get("content-encoding") else "absent",
+        boundary is not None,
+        len(boundary) if boundary is not None else 0,
+    )
+    return _oai_error(
+        400,
+        f"Invalid multipart form data. Request ID: {request_id}",
+        "invalid_request_error",
+        headers={"X-Request-ID": request_id},
     )
 
 
@@ -836,18 +904,18 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
     @app.post("/openai/v1/images/edits")
     async def image_edits(request: Request) -> Any:
-        content_type = request.headers.get("content-type", "")
-        if not content_type.lower().startswith("multipart/form-data;") or "boundary=" not in content_type.lower():
+        media_type, multipart_options, form_request = _multipart_content_type(request)
+        if media_type.lower() != b"multipart/form-data":
             return _oai_error(
                 415,
-                "/openai/v1/images/edits requires multipart/form-data with a boundary.",
+                "/openai/v1/images/edits requires multipart/form-data.",
                 "invalid_request_error",
             )
 
         try:
-            form = await request.form()
-        except Exception:
-            return _oai_error(400, "Invalid multipart form data", "invalid_request_error")
+            form = await form_request.form()
+        except Exception as exc:
+            return _multipart_parse_error(request, exc, multipart_options)
 
         raw_model: str | None = None
         prompt_present = False

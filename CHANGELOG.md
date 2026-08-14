@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.14] — 2026-08-14
+
+### 修复
+
+- Images Edits 使用标准参数解析处理 multipart `Content-Type`，兼容 quoted boundary、合法空白和大小写变体；缺失、损坏或 header/body 不一致的 boundary 继续严格返回 400，不猜测或修补请求体。
+- multipart 解析失败现在返回可关联的 `X-Request-ID`，并记录不包含 boundary、prompt、文件名、图片内容或凭据的安全诊断元数据。
+
+### 测试
+
+- 新增 `image`/`image[]`、约 621 KiB、超过 1 MiB、chunked ingress、boundary 异常和日志隐私回归；真实 Azure smoke 覆盖 1024×1024 PNG 以及同步/流式两种字段形式。
+
 ## [0.4.13] — 2026-08-14
 
 ### 修复

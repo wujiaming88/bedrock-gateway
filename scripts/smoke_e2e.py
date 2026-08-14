@@ -236,7 +236,7 @@ def check_azure_image_edit(base: str) -> None:
     content_type, raw = _multipart_post(
         base + "/openai/v1/images/edits",
         {"model": "azure/gpt-image-2", "prompt": "change the square to blue", "n": "1"},
-        [("image", "input.png", "image/png", _png())],
+        [("image", "input.png", "image/png", _png(width=1024, height=1024))],
     )
     assert content_type == "application/json", content_type
     _assert_image_response(raw)
@@ -252,7 +252,7 @@ def check_azure_image_edit_stream(base: str) -> None:
             "stream": "true",
             "partial_images": "1",
         },
-        [("image", "input.png", "image/png", _png())],
+        [("image[]", "input.png", "image/png", _png())],
     )
     assert content_type == "text/event-stream", content_type
     text = raw.decode("utf-8")

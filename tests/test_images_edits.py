@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
+from starlette.requests import Request
 
 from bedrock_gateway.auth import AuthConfig
 from bedrock_gateway.config import AzureResource, GatewayConfig, RetryConfig, ServerConfig
-from bedrock_gateway.server import create_app
+from bedrock_gateway.server import _multipart_parse_error, create_app
 
 AZ_BASE = "https://my-res.cognitiveservices.azure.com/openai/v1"
 PNG = b"\x89PNG\r\n\x1a\n" + b"test-image"
+REAL_HTTPX_ASYNC_CLIENT = httpx.AsyncClient
+
 IMAGE_RESPONSE = {
     "created": 123,
     "data": [{"b64_json": "iVBORw0KGgp0ZXN0LWltYWdl"}],
@@ -67,6 +75,35 @@ def _request(model: str = "azure/gpt-image-2", **fields):
     return data, [("image", ("input.png", PNG, "image/png"))]
 
 
+def _raw_multipart(
+    boundary: str,
+    *,
+    image: bytes = PNG,
+    field: str = "image",
+    prompt: str = "make it blue",
+    filename: str = "input.png",
+    close: bool = True,
+) -> bytes:
+    body = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n'
+        "azure/gpt-image-2\r\n"
+        f'--{boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n'
+        f"{prompt}\r\n"
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; '
+        f'filename="{filename}"\r\nContent-Type: image/png\r\n\r\n'
+    ).encode() + image + b"\r\n"
+    if close:
+        body += f"--{boundary}--\r\n".encode()
+    return body
+
+
+def _assert_correlated_error(resp) -> str:
+    request_id = resp.headers["x-request-id"]
+    uuid.UUID(request_id)
+    assert request_id in resp.json()["error"]["message"]
+    return request_id
+
+
 class TestImageEditsSync:
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_canonical_model_routes_multipart(self, mock_cls, client):
@@ -99,7 +136,7 @@ class TestImageEditsSync:
         data, files = _request(model)
         assert client.post("/openai/v1/images/edits", data=data, files=files).status_code == 400
 
-    def test_requires_multipart_boundary(self, client):
+    def test_requires_multipart_media_type(self, client):
         resp = client.post("/openai/v1/images/edits", json={"model": "azure/gpt-image-2"})
         assert resp.status_code == 415
 
@@ -169,3 +206,127 @@ class TestImageEditsMultipartFidelity:
         assert b'filename="two.webp"' in body
         assert b'name="mask"; filename="mask.png"' in body
         assert b'name="future_field"' in body and b"kept" in body
+
+    @pytest.mark.parametrize("size", [621 * 1024, 1024 * 1024 + 17])
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_large_image_bytes_are_preserved(self, mock_cls, client, size):
+        mock_cls.return_value = _sync_client(_response())
+        image = b"\x89PNG\r\n\x1a\n" + b"z" * (size - 8)
+        resp = client.post(
+            "/openai/v1/images/edits",
+            data={"model": "azure/gpt-image-2", "prompt": "x"},
+            files=[("image", ("large.png", image, "image/png"))],
+        )
+        assert resp.status_code == 200
+        assert image in _multipart_call(mock_cls)[2]
+
+
+class TestImageEditsRawMultipart:
+    @pytest.mark.parametrize(
+        "content_type",
+        [
+            'multipart/form-data; boundary="wire-boundary"',
+            "multipart/form-data ; boundary=wire-boundary",
+            "Multipart/Form-Data; boundary=wire-boundary",
+        ],
+    )
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_legal_content_type_variants(self, mock_cls, client, content_type):
+        mock_cls.return_value = _sync_client(_response())
+        resp = client.post(
+            "/openai/v1/images/edits",
+            content=_raw_multipart("wire-boundary"),
+            headers={"Content-Type": content_type},
+        )
+        assert resp.status_code == 200
+        assert PNG in _multipart_call(mock_cls)[2]
+
+    @pytest.mark.parametrize(
+        "content_type,body",
+        [
+            ("multipart/form-data", _raw_multipart("actual")),
+            ("multipart/form-data; xboundary=actual", _raw_multipart("actual")),
+            ("multipart/form-data; boundary=declared", _raw_multipart("actual")),
+            (
+                "multipart/form-data; boundary=actual",
+                b"--actual\nContent-Disposition: form-data; name=\"model\"\r\n\r\nx",
+            ),
+        ],
+    )
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_malformed_multipart_is_correlated_and_never_forwarded(
+        self, mock_cls, client, caplog, content_type, body
+    ):
+        caplog.set_level(logging.WARNING, logger="bedrock_gateway")
+        resp = client.post(
+            "/openai/v1/images/edits",
+            content=body,
+            headers={
+                "Content-Type": content_type,
+                "Authorization": "Bearer auth-secret-sentinel",
+            },
+        )
+        assert resp.status_code == 400
+        request_id = _assert_correlated_error(resp)
+        assert not mock_cls.called
+        log = "\n".join(record.getMessage() for record in caplog.records)
+        assert "MULTIPART_PARSE_FAILED" in log
+        assert request_id in log
+        for secret in ("auth-secret-sentinel", "make it blue", "input.png", "actual", "declared"):
+            assert secret not in log
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_unexpected_parser_error_does_not_leak_exception_text(
+        self, mock_cls, client, caplog
+    ):
+        caplog.set_level(logging.WARNING, logger="bedrock_gateway")
+        with patch.object(Request, "form", new_callable=AsyncMock) as form:
+            form.side_effect = ValueError("parser-secret-sentinel")
+            resp = client.post(
+                "/openai/v1/images/edits",
+                content=_raw_multipart("safe-boundary"),
+                headers={"Content-Type": "multipart/form-data; boundary=safe-boundary"},
+            )
+        assert resp.status_code == 400
+        request_id = _assert_correlated_error(resp)
+        assert not mock_cls.called
+        text = resp.text + "\n" + "\n".join(r.getMessage() for r in caplog.records)
+        assert "parser-secret-sentinel" not in text
+        assert "ValueError" in text
+        assert request_id in text
+
+    @pytest.mark.parametrize("content_length", [None, "invalid", "-1"])
+    def test_parse_error_normalizes_unsafe_content_length(self, content_length, caplog):
+        headers = [] if content_length is None else [(b"content-length", content_length.encode())]
+        request = MagicMock()
+        request.headers = Headers(raw=headers)
+        caplog.set_level(logging.WARNING, logger="bedrock_gateway")
+        response = _multipart_parse_error(request, ValueError(), {})
+        assert response.status_code == 400
+        log = caplog.records[-1].getMessage()
+        expected = "absent" if content_length is None else "invalid"
+        assert f"content_length={expected}" in log
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_chunked_asgi_receive_preserves_multipart(self, mock_cls, client):
+        mock_cls.return_value = _sync_client(_response())
+        body = _raw_multipart("chunk-boundary")
+
+        async def chunks():
+            for offset in range(0, len(body), 7):
+                yield body[offset:offset + 7]
+
+        async def call():
+            transport = httpx.ASGITransport(app=client.app)
+            async with REAL_HTTPX_ASYNC_CLIENT(
+                transport=transport, base_url="http://test"
+            ) as session:
+                return await session.post(
+                    "/openai/v1/images/edits",
+                    content=chunks(),
+                    headers={"Content-Type": "multipart/form-data; boundary=chunk-boundary"},
+                )
+
+        resp = asyncio.run(call())
+        assert resp.status_code == 200
+        assert PNG in _multipart_call(mock_cls)[2]
