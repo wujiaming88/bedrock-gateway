@@ -558,8 +558,10 @@ curl -s http://127.0.0.1:4000/v1/messages \
 **限制（当前版本）**：
 
 - 仅翻译到 **Responses** 目标（GPT-5.5 / Grok / Azure Responses 部署）。Anthropic 端点上的 openai-chat 模型仍返回 400。
-- `thinking` / reasoning 块**不回传**（无签名往返）；`cache_control` 被剥离（prompt caching 不生效）。功能不受影响，均为无损降级。
-- `count_tokens` 用字符估算兜底（Bedrock/上游不暴露精确计数）。
+- `thinking` / reasoning 块**不回传**（无签名往返）；请求中的 `cache_control` 被剥离，但 Responses 返回的 `cached_tokens` 会拆分成 Anthropic `input_tokens + cache_read_input_tokens`，保证上下文总量不丢失。
+- 翻译流只有收到 Responses completed/incomplete 才正常 `message_stop`；failed/error/异常 EOF 以 Anthropic error 终止，context overflow 保留原始 message 并规范化为 `invalid_request_error`。
+- 未显式传 `max_tokens` 时使用模型 registry 的 `max_output`；响应的 `model` 保留客户端请求 alias，不暴露上游 ID/deployment。
+- `count_tokens` 当前使用字符估算做兼容兜底，属于 approximate：本机探测到 Mantle Responses 不提供该操作、Azure 取决于 deployment、Claude Mantle 需要额外 `bedrock-mantle:CountTokens` 权限。估算结果不用于本地 context 硬限制。
 - SigV4 鉴权模式（`credentials`/`iam_role`/`profile`）签不了 mantle/Azure；用 `bearer_token`（mantle）或资源 `api_key`（Azure）。
 
 Claude 模型本身（`ANTHROPIC_MODEL=claude-opus-4.8` 等）在此端点走原生透传路径，行为与直连 Anthropic 一致。

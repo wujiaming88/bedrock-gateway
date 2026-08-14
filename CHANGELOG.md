@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.13] — 2026-08-14
+
+### 修复
+
+- 修正 Anthropic Messages → OpenAI Responses 的 cached usage、终态累计 usage、model alias、缺省 `max_tokens`、context overflow 和异常流终止语义。
+- `response.failed`、错误事件和异常 EOF 不再伪装成正常 `end_turn`；诊断日志不记录 prompt、tool 参数或完整上游错误 message。
+
+### 测试
+
+- GPT-5.6 Messages sync/stream 真机通过；全量测试 893 项通过，本次生产代码变更可执行行覆盖率 100%。
+
 ## [0.4.12] — 2026-08-14
 
 ### 新增
@@ -12,6 +23,11 @@
 
 ### 改进
 
+- Anthropic Messages → OpenAI Responses 转换现在正确拆分 cached input usage，并在流终态返回累计的 input/cache/output usage，供 Claude Code context 预算与 dashboard 使用。
+- 转换流的 `response.failed`、error 和异常 EOF 以唯一 Anthropic error 终止，不再伪装成正常 `end_turn`；context overflow 规范化为 `invalid_request_error`。
+- 转换路径保留客户端 model alias，同时将缺省 `max_tokens` 按模型 registry 默认值映射为 `max_output_tokens`。
+- 增加不记录 prompt/tool 内容的诊断日志，记录 client/upstream model、输出预算、usage/cache 和 stream terminal 状态。
+- `/v1/messages/count_tokens` 当前环境的精确上游候选经探测不可用（Mantle Responses 405、Azure deployment unsupported、Claude CountTokens 权限不足），因此保留兼容性近似估算；该估算不用于本地 context 强制校验。
 - 通用上游 dispatch 支持预编码、可重放 payload；multipart 在重试时复用同一 body 与 boundary，现有 JSON API 保持原行为。
 - Images edits metrics 不再由 middleware 预读大文件，模型信息由 handler 安全注入。
 

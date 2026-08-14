@@ -26,10 +26,13 @@ from __future__ import annotations
 
 import codecs
 import json
+import logging
 import uuid
 from typing import Any, AsyncIterator
 
 from .converter import make_anthropic_sse
+
+logger = logging.getLogger("bedrock_gateway")
 
 # ---------------------------------------------------------------------------
 # stop_reason mapping
@@ -270,6 +273,54 @@ def _stop_reason_from_response(resp: dict, saw_tool_use: bool) -> str:
     return "end_turn"
 
 
+def _nonnegative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def responses_error_to_anthropic(error: Any) -> tuple[int, str, str]:
+    """Return ``(status, Anthropic type, message)`` for a Responses error."""
+    error = error if isinstance(error, dict) else {"message": str(error or "upstream error")}
+    message = str(error.get("message") or "upstream error")
+    code = str(error.get("code") or error.get("type") or "").lower()
+    lowered = message.lower()
+    overflow = (
+        code in {"context_length_exceeded", "context_window_exceeded"}
+        or ("context" in lowered and ("too long" in lowered or "exceed" in lowered))
+        or ("input" in lowered and "too long" in lowered)
+    )
+    if overflow:
+        return 400, "invalid_request_error", message
+    if "rate_limit" in code:
+        return 429, "rate_limit_error", message
+    if "authentication" in code:
+        return 401, "authentication_error", message
+    if "permission" in code:
+        return 403, "permission_error", message
+    return 502, "api_error", message
+
+
+def responses_usage_to_anthropic(usage: Any) -> dict[str, int]:
+    """Convert Responses usage into Anthropic's mutually-exclusive buckets."""
+    usage = usage if isinstance(usage, dict) else {}
+    total_input = _nonnegative_int(usage.get("input_tokens"))
+    details = usage.get("input_tokens_details")
+    cached = _nonnegative_int(
+        details.get("cached_tokens") if isinstance(details, dict) else 0
+    )
+    cached = min(cached, total_input)
+    return {
+        "input_tokens": total_input - cached,
+        "output_tokens": _nonnegative_int(usage.get("output_tokens")),
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cached,
+    }
+
+
 def to_anthropic_response(responses_json: dict, model: str) -> dict:
     """Translate a Responses 200 body into an Anthropic Messages response."""
     content: list[dict] = []
@@ -300,7 +351,7 @@ def to_anthropic_response(responses_json: dict, model: str) -> dict:
             )
         # reasoning items dropped.
 
-    usage = responses_json.get("usage") or {}
+    usage = responses_usage_to_anthropic(responses_json.get("usage"))
     return {
         "id": f"msg_{uuid.uuid4().hex[:24]}",
         "type": "message",
@@ -309,12 +360,7 @@ def to_anthropic_response(responses_json: dict, model: str) -> dict:
         "model": model,
         "stop_reason": _stop_reason_from_response(responses_json, saw_tool_use),
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-        },
+        "usage": usage,
     }
 
 
@@ -349,7 +395,7 @@ class AnthropicStreamAdapter:
         self.model = model
         self.msg_id = msg_id
         self._message_started = False
-        self._message_closed = False
+        self._terminal: str | None = None
         self._next_index = 0
         # anthropic block indices currently open, in open order.
         self._open_indices: list[int] = []
@@ -360,8 +406,7 @@ class AnthropicStreamAdapter:
         # anthropic indices grouped by responses output_index (for item.done).
         self._by_output: dict[int, list[int]] = {}
         self._saw_tool_use = False
-        self._input_tokens = 0
-        self._output_tokens = 0
+        self._usage = responses_usage_to_anthropic(None)
 
     # -- helpers --------------------------------------------------------
 
@@ -377,10 +422,7 @@ class AnthropicStreamAdapter:
             "model": self.model,
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {
-                "input_tokens": self._input_tokens,
-                "output_tokens": 0,
-            },
+            "usage": dict(self._usage),
         }
         return [
             make_anthropic_sse(
@@ -460,11 +502,23 @@ class AnthropicStreamAdapter:
     def on_event(self, event_type: str, data: dict) -> list[str]:
         """Translate one Responses SSE event into zero or more Anthropic SSE
         strings. Pure and deterministic — the unit-test surface."""
+        if self._terminal is not None:
+            logger.debug(
+                "RESPONSES-STREAM ignored event=%s after terminal=%s model=%s",
+                event_type, self._terminal, self.model,
+            )
+            return []
         if event_type == "response.created":
             resp = data.get("response") or {}
-            usage = resp.get("usage") or {}
-            if usage.get("input_tokens"):
-                self._input_tokens = usage["input_tokens"]
+            if resp.get("usage") is not None:
+                self._usage = responses_usage_to_anthropic(resp.get("usage"))
+            logger.debug(
+                "RESPONSES-STREAM created model=%s usage_present=%s input=%d "
+                "cache_read=%d output=%d",
+                self.model, resp.get("usage") is not None,
+                self._usage["input_tokens"], self._usage["cache_read_input_tokens"],
+                self._usage["output_tokens"],
+            )
             return self._start_message()
 
         if event_type == "response.output_item.added":
@@ -567,13 +621,9 @@ class AnthropicStreamAdapter:
 
         if event_type in ("response.failed", "error"):
             resp = data.get("response") or {}
-            err = resp.get("error") or data.get("error") or {}
-            message = (
-                err.get("message")
-                if isinstance(err, dict)
-                else str(err)
-            ) or "upstream stream error"
-            return [self.error_event(message)]
+            err = resp.get("error") or data.get("error") or data
+            _, error_type, message = responses_error_to_anthropic(err)
+            return self.terminate_error(message, error_type)
 
         # response.in_progress, *.output_text.done, ping, reasoning, unknown →
         # nothing to emit.
@@ -581,15 +631,12 @@ class AnthropicStreamAdapter:
 
     def _finalize(self, resp: dict) -> list[str]:
         """Close any open blocks, then emit message_delta + message_stop."""
-        if self._message_closed:
+        if self._terminal is not None:
             return []
         out = self._start_message()  # guard: empty response still needs a start
         out.extend(self._close_all_open())
-        usage = resp.get("usage") or {}
-        if usage.get("output_tokens") is not None:
-            self._output_tokens = usage.get("output_tokens", 0)
-        if usage.get("input_tokens"):
-            self._input_tokens = usage["input_tokens"]
+        if resp.get("usage") is not None:
+            self._usage = responses_usage_to_anthropic(resp.get("usage"))
         stop_reason = _stop_reason_from_response(resp, self._saw_tool_use)
         out.append(
             make_anthropic_sse(
@@ -597,16 +644,24 @@ class AnthropicStreamAdapter:
                 {
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                    "usage": {
-                        "input_tokens": self._input_tokens,
-                        "output_tokens": self._output_tokens,
-                    },
+                    "usage": dict(self._usage),
                 },
             )
         )
         out.append(make_anthropic_sse("message_stop", {"type": "message_stop"}))
-        self._message_closed = True
+        self._terminal = "success"
+        logger.info(
+            "RESPONSES-STREAM terminal=success model=%s status=%s input=%d "
+            "cache_read=%d cache_creation=%d output=%d",
+            self.model, resp.get("status"), self._usage["input_tokens"],
+            self._usage["cache_read_input_tokens"],
+            self._usage["cache_creation_input_tokens"], self._usage["output_tokens"],
+        )
         return out
+
+    @property
+    def terminal(self) -> bool:
+        return self._terminal is not None
 
     def error_event(self, message: str, error_type: str = "api_error") -> str:
         """A single Anthropic ``error`` SSE frame — a legal stream terminator."""
@@ -615,13 +670,28 @@ class AnthropicStreamAdapter:
             {"type": "error", "error": {"type": error_type, "message": message}},
         )
 
-    def finalize_on_disconnect(self) -> list[str]:
-        """Best-effort clean close if the upstream ends without a terminal
-        event (connection cut). Closes open blocks and emits a stop so the
-        client's state machine doesn't hang."""
-        if self._message_closed or not self._message_started:
+    def terminate_error(
+        self, message: str, error_type: str = "api_error"
+    ) -> list[str]:
+        """Terminate once with an Anthropic error; never synthesize success."""
+        if self._terminal is not None:
+            logger.debug(
+                "RESPONSES-STREAM ignored error after terminal=%s model=%s",
+                self._terminal, self.model,
+            )
             return []
-        return self._finalize({"status": "incomplete"})
+        self._terminal = "error"
+        logger.warning(
+            "RESPONSES-STREAM terminal=error model=%s error_type=%s",
+            self.model, error_type,
+        )
+        return [self.error_event(message, error_type)]
+
+    def finalize_on_disconnect(self) -> list[str]:
+        """Treat EOF without a Responses terminal event as an upstream error."""
+        return self.terminate_error(
+            "Upstream stream ended without a terminal event"
+        )
 
     # -- byte-stream driver --------------------------------------------
 

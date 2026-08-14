@@ -26,6 +26,8 @@ from bedrock_gateway.messages_to_responses import (
     _image_block_to_url,
     _parse_sse_block,
     _system_to_instructions,
+    responses_error_to_anthropic,
+    responses_usage_to_anthropic,
     _text_image_part,
     _tool_choice_to_responses,
     _tool_result_to_text,
@@ -439,6 +441,36 @@ class TestRequestTranslation:
 # ===========================================================================
 
 
+class TestUsageAndErrorMapping:
+    @pytest.mark.parametrize(
+        "usage,expected",
+        [
+            (None, {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+            ({"input_tokens": 100, "output_tokens": 7}, {"input_tokens": 100, "output_tokens": 7, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+            ({"input_tokens": 100, "input_tokens_details": {"cached_tokens": 30}, "output_tokens": 7}, {"input_tokens": 70, "output_tokens": 7, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 30}),
+            ({"input_tokens": 10, "input_tokens_details": {"cached_tokens": 30}}, {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 10}),
+            ({"input_tokens": "bad", "input_tokens_details": {"cached_tokens": -3}, "output_tokens": True}, {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}),
+        ],
+    )
+    def test_usage_mapping(self, usage, expected):
+        assert responses_usage_to_anthropic(usage) == expected
+
+    @pytest.mark.parametrize(
+        "error,status,etype",
+        [
+            ({"code": "context_length_exceeded", "message": "maximum context"}, 400, "invalid_request_error"),
+            ({"message": "Input is too long for requested model"}, 400, "invalid_request_error"),
+            ({"type": "rate_limit_error", "message": "busy"}, 429, "rate_limit_error"),
+            ({"type": "authentication_error", "message": "bad key"}, 401, "authentication_error"),
+            ({"type": "permission_error", "message": "denied"}, 403, "permission_error"),
+            ("broken", 502, "api_error"),
+        ],
+    )
+    def test_error_mapping(self, error, status, etype):
+        actual_status, actual_type, _ = responses_error_to_anthropic(error)
+        assert (actual_status, actual_type) == (status, etype)
+
+
 class TestSyncResponseTranslation:
     def test_text_response(self):
         result = to_anthropic_response(
@@ -643,6 +675,38 @@ class TestStreamProtocol:
         assert md["usage"]["output_tokens"] == 2
         assert md["delta"]["stop_reason"] == "end_turn"
 
+    def test_terminal_usage_overrides_zero_start_and_maps_cache(self):
+        adapter = AnthropicStreamAdapter("m", "msg_1")
+        frames = run_events(adapter, [
+            ("response.created", {"type": "response.created", "response": {}}),
+            ("response.completed", {
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 30},
+                        "output_tokens": 9,
+                    },
+                },
+            }),
+        ])
+        events = assert_valid_anthropic_stream(frames)
+        start = next(data for event, data in events if event == "message_start")
+        assert start["message"]["usage"] == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+        delta = next(data for event, data in events if event == "message_delta")
+        assert delta["usage"] == {
+            "input_tokens": 70,
+            "output_tokens": 9,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 30,
+        }
+
     def test_tool_call_stream_conformance(self):
         adapter = AnthropicStreamAdapter("gpt-5.5", "msg_1")
         seq = [
@@ -809,6 +873,23 @@ class TestStreamProtocol:
         assert events[-1][0] == "error"
         assert events[-1][1]["error"]["message"] == "boom"
 
+    def test_failed_is_idempotent_and_ignores_late_completed(self):
+        adapter = AnthropicStreamAdapter("m", "msg_1")
+        first = adapter.on_event("response.failed", {
+            "response": {"error": {"code": "context_length_exceeded", "message": "context exceeded"}}
+        })
+        assert parse_frames(first)[0][1]["error"]["type"] == "invalid_request_error"
+        assert adapter.terminal is True
+        assert adapter.on_event("response.failed", {"error": "again"}) == []
+        assert adapter.on_event("response.completed", {"response": {"status": "completed"}}) == []
+        assert adapter.finalize_on_disconnect() == []
+        assert adapter.terminate_error("late") == []
+
+    def test_top_level_error_message(self):
+        adapter = AnthropicStreamAdapter("m", "msg_1")
+        frames = adapter.on_event("error", {"message": "top-level failure"})
+        assert parse_frames(frames)[0][1]["error"]["message"] == "top-level failure"
+
     def test_ping_and_unknown_events_ignored(self):
         adapter = AnthropicStreamAdapter("m", "msg_1")
         seq = [
@@ -849,15 +930,17 @@ class TestStreamProtocol:
              {"type": "response.output_text.delta", "output_index": 0,
               "content_index": 0, "delta": "partial"}),
         ])
-        # Upstream cut off — no terminal event. The full sequence (earlier
-        # frames + the disconnect closer) must still be a conformant stream.
+        # Upstream cut off — no terminal event. It must end as an error, not a
+        # fabricated successful end_turn/message_stop.
         frames += adapter.finalize_on_disconnect()
         events = assert_valid_anthropic_stream(frames)
-        assert events[-1][0] == "message_stop"
+        assert events[-1][0] == "error"
+        assert not any(event == "message_stop" for event, _ in events)
 
-    def test_disconnect_before_start_noop(self):
+    def test_disconnect_before_start_is_error(self):
         adapter = AnthropicStreamAdapter("m", "msg_1")
-        assert adapter.finalize_on_disconnect() == []
+        frames = adapter.finalize_on_disconnect()
+        assert parse_frames(frames)[0][0] == "error"
 
 
 # ===========================================================================
@@ -988,7 +1071,8 @@ class TestStreamDriver:
         adapter = AnthropicStreamAdapter("m", "msg_1")
         frames = [f async for f in adapter.translate(byte_iter())]
         events = assert_valid_anthropic_stream(frames)
-        assert events[-1][0] == "message_stop"
+        assert events[-1][0] == "error"
+        assert not any(event == "message_stop" for event, _ in events)
 
     @pytest.mark.asyncio
     async def test_translate_untyped_midstream_block_skipped(self):
@@ -1161,4 +1245,4 @@ class TestEdgeCases:
     def test_error_event_no_message_default(self):
         adapter = AnthropicStreamAdapter("m", "msg_1")
         out = adapter.on_event("response.failed", {"response": {}})
-        assert "upstream stream error" in out[0]
+        assert "upstream error" in out[0]

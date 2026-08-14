@@ -374,6 +374,8 @@ All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`
 
 Passthrough: `messages`, `system` (string or block array), `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`, `metadata`, `tools`, `tool_choice`, `thinking`, `stream`. Extended-thinking stream events (`thinking_delta`, `signature_delta`, `redacted_thinking`) are forwarded. Cache-token usage is surfaced when the underlying model reports it.
 
+For OpenAI Responses models, the gateway translates Messages in both directions. Responses cached input is split into Anthropic `input_tokens` and `cache_read_input_tokens` without changing the total; terminal stream usage carries the final cumulative snapshot. Failed/error/premature-EOF streams end with one Anthropic error rather than a fabricated `end_turn`. The client model alias is preserved, and omitted `max_tokens` uses the registry `max_output`. `/v1/messages/count_tokens` remains an approximate compatibility fallback where no verified upstream count operation exists and is never used as a local hard context limit.
+
 ### Extended thinking
 
 ```json

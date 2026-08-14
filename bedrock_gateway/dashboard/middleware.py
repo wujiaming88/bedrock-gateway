@@ -57,6 +57,28 @@ _JSON_MODEL_PATHS = _LLM_PATHS - {"/openai/v1/images/edits"}
 _STRIP_HEADERS = {"content-length", "content-encoding"}
 
 
+def _safe_token(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _anthropic_input_total(
+    usage: dict[str, Any], *, include_prompt_tokens: bool = False
+) -> int:
+    if include_prompt_tokens and usage.get("prompt_tokens") is not None:
+        return _safe_token(usage.get("prompt_tokens"))
+    return sum(
+        _safe_token(usage.get(key))
+        for key in (
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    )
+
+
 def _parse_sse_line(line: str) -> tuple[int, int]:
     """Extract ``(input_tokens, output_tokens)`` from a single SSE ``data:`` line."""
     if not line.startswith("data: "):
@@ -74,10 +96,10 @@ def _parse_sse_line(line: str) -> tuple[int, int]:
     in_t = 0
     out_t = 0
 
-    # OpenAI chunk (stream_options={include_usage: true}) — top-level usage
+    # OpenAI chunk (stream_options={include_usage: true}) — top-level usage.
     usage = data.get("usage")
     if isinstance(usage, dict):
-        in_t = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        in_t = _anthropic_input_total(usage, include_prompt_tokens=True)
         out_t = usage.get("completion_tokens") or usage.get("output_tokens") or 0
 
     etype = data.get("type")
@@ -88,12 +110,13 @@ def _parse_sse_line(line: str) -> tuple[int, int]:
         if isinstance(msg, dict):
             m_usage = msg.get("usage") or {}
             if isinstance(m_usage, dict):
-                in_t = m_usage.get("input_tokens", in_t) or in_t
+                in_t = _anthropic_input_total(m_usage) or in_t
 
-    # Anthropic ``message_delta`` — ``usage.output_tokens``
+    # Anthropic ``message_delta`` — cumulative usage may include final input.
     if etype == "message_delta":
         m_usage = data.get("usage") or {}
         if isinstance(m_usage, dict):
+            in_t = _anthropic_input_total(m_usage) or in_t
             out_t = m_usage.get("output_tokens", out_t) or out_t
 
     return int(in_t or 0), int(out_t or 0)
@@ -135,12 +158,9 @@ def _parse_json_usage(body: bytes) -> tuple[int, int]:
     usage = data.get("usage")
     if not isinstance(usage, dict):
         return 0, 0
-    in_t = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-    out_t = usage.get("output_tokens") or usage.get("completion_tokens") or 0
-    try:
-        return int(in_t or 0), int(out_t or 0)
-    except (TypeError, ValueError):
-        return 0, 0
+    in_t = _anthropic_input_total(usage, include_prompt_tokens=True)
+    out_t = _safe_token(usage.get("output_tokens") or usage.get("completion_tokens"))
+    return in_t, out_t
 
 
 def _extract_client_ip(request: Request) -> str | None:

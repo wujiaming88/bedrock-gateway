@@ -52,6 +52,7 @@ from .dashboard import (
 from .dashboard.storage import MetricsStorage
 from .messages_to_responses import (
     AnthropicStreamAdapter,
+    responses_error_to_anthropic,
     to_anthropic_response,
     to_responses_request,
 )
@@ -1003,22 +1004,28 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         #     Anthropic-only client can drive GPT-5.5 / Grok / azure/<dep>.
         #   * anything else (openai-chat) → still a client mistake → 400.
         if entry.dialect == "openai-responses":
+            client_model = raw_model
             upstream_id = entry.deployment if entry.transport == "azure" else model
             transport = get_transport(entry)
             dialect = get_dialect(entry)
-            responses_body = to_responses_request(body, upstream_id)
+            translated_body = dict(body)
+            if "max_tokens" not in translated_body:
+                translated_body["max_tokens"] = entry.max_output
+            responses_body = to_responses_request(translated_body, upstream_id)
             logger.info(
-                "REQ [messages->responses] model=%s -> %s (%s) stream=%s",
-                raw_model, upstream_id, entry.transport, stream,
+                "REQ [messages->responses] client_model=%s upstream_model=%s "
+                "transport=%s stream=%s max_output_tokens=%s defaulted=%s",
+                client_model, upstream_id, entry.transport, stream,
+                responses_body.get("max_output_tokens"), "max_tokens" not in body,
             )
             if stream:
                 return await _handle_messages_via_responses_stream(
-                    transport, dialect, entry, upstream_id, config.region,
+                    transport, dialect, entry, upstream_id, client_model, config.region,
                     responses_body, auth, max_retries, retry_base_delay,
                     timeout=request_timeout, request=request, health=health,
                 )
             return await _handle_messages_via_responses_sync(
-                transport, dialect, entry, upstream_id, config.region,
+                transport, dialect, entry, upstream_id, client_model, config.region,
                 responses_body, auth, max_retries, retry_base_delay,
                 timeout=request_timeout, request=request, health=health,
             )
@@ -1797,7 +1804,8 @@ async def _handle_messages_via_responses_sync(
     transport: Transport,
     dialect: Dialect,
     entry: ModelEntry,
-    model: str,
+    upstream_model: str,
+    client_model: str,
     region: str,
     responses_body: dict,
     auth: AuthProvider,
@@ -1811,20 +1819,39 @@ async def _handle_messages_via_responses_sync(
     # Reuse the generic sync path: for the Responses dialect it returns the
     # upstream JSON verbatim (render_sync passthrough) or an error JSONResponse.
     result = await _handle_sync(
-        transport, dialect, entry, model, region, responses_body, auth,
+        transport, dialect, entry, upstream_model, region, responses_body, auth,
         max_retries, retry_base_delay,
         timeout=timeout, request=request, health=health,
     )
     if isinstance(result, JSONResponse):
         return _oai_error_to_anthropic(result)
-    return to_anthropic_response(result, model)
+    if result.get("status") == "failed" or (
+        result.get("error") and result.get("status") not in {"completed", "incomplete"}
+    ):
+        status, error_type, message = responses_error_to_anthropic(
+            result.get("error") or result
+        )
+        logger.warning(
+            "RESPONSES-FAILED client_model=%s upstream_model=%s status=%d "
+            "error_type=%s",
+            client_model, upstream_model, status, error_type,
+        )
+        return JSONResponse(
+            status_code=status,
+            content={
+                "type": "error",
+                "error": {"type": error_type, "message": message},
+            },
+        )
+    return to_anthropic_response(result, client_model)
 
 
 async def _handle_messages_via_responses_stream(
     transport: Transport,
     dialect: Dialect,
     entry: ModelEntry,
-    model: str,
+    upstream_model: str,
+    client_model: str,
     region: str,
     responses_body: dict,
     auth: AuthProvider,
@@ -1847,7 +1874,7 @@ async def _handle_messages_via_responses_stream(
     resp, stack, err = await _open_upstream_stream(
         url, payload, auth, max_retries, retry_base_delay,
         request=request, health=health,
-        log_tag=f"messages->responses model={model}",
+        log_tag=f"messages->responses model={upstream_model}",
         extra_headers=_transport_payload_headers(transport, entry, payload),
         timeout=timeout,
     )
@@ -1860,7 +1887,7 @@ async def _handle_messages_via_responses_stream(
             },
         )
 
-    adapter = AnthropicStreamAdapter(model, msg_id)
+    adapter = AnthropicStreamAdapter(client_model, msg_id)
 
     async def generate():
         try:
@@ -1869,14 +1896,20 @@ async def _handle_messages_via_responses_stream(
         except httpx.TimeoutException:
             _note_timeout(request)
             logger.warning(
-                "STREAM-MID timeout [messages->responses] model=%s", model
+                "STREAM-MID timeout [messages->responses] client_model=%s "
+                "upstream_model=%s terminal=%s",
+                client_model, upstream_model, adapter.terminal,
             )
-            yield adapter.error_event("Upstream timeout mid-stream")
+            for frame in adapter.terminate_error("Upstream timeout mid-stream"):
+                yield frame
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "UNEXPECTED [messages->responses stream] model=%s", model
+                "UNEXPECTED [messages->responses stream] client_model=%s "
+                "upstream_model=%s terminal=%s",
+                client_model, upstream_model, adapter.terminal,
             )
-            yield adapter.error_event(str(exc))
+            for frame in adapter.terminate_error(str(exc)):
+                yield frame
         finally:
             await stack.aclose()
 

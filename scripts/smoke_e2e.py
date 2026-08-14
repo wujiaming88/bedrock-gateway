@@ -147,6 +147,46 @@ def check_gpt55(base: str) -> None:
     record("bedrock gpt-5.5 — responses sync", PASS)
 
 
+def check_gpt56_messages(base: str) -> None:
+    d = _post(base + "/v1/messages", {
+        "model": "gpt-5.6-sol",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "reply one word: ok"}],
+    })
+    assert d.get("type") == "message" and d.get("model") == "gpt-5.6-sol", d
+    usage = d.get("usage") or {}
+    assert all(key in usage for key in (
+        "input_tokens", "output_tokens", "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )), usage
+    record("bedrock gpt-5.6 — messages sync", PASS)
+
+
+def check_gpt56_messages_stream(base: str) -> None:
+    raw = _post(base + "/v1/messages", {
+        "model": "gpt-5.6-sol",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "reply one word: ok"}],
+        "stream": True,
+    }, stream=True)
+    frames = [frame for frame in raw.replace("\r\n", "\n").split("\n\n") if frame]
+    events = []
+    for frame in frames:
+        event = next((line[7:] for line in frame.splitlines() if line.startswith("event: ")), None)
+        data = next((line[6:] for line in frame.splitlines() if line.startswith("data: ")), None)
+        assert event and data, frame
+        events.append((event, json.loads(data)))
+    assert events[0][0] == "message_start" and events[-1][0] == "message_stop", events
+    start = events[0][1]["message"]
+    assert start["model"] == "gpt-5.6-sol", start
+    delta = next(data for event, data in events if event == "message_delta")
+    assert all(key in delta["usage"] for key in (
+        "input_tokens", "output_tokens", "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )), delta
+    record("bedrock gpt-5.6 — messages stream", PASS)
+
+
 def check_grok(base: str) -> None:
     d = _post(base + "/openai/v1/responses",
               {"model": "grok-4.3", "input": "one word: ok"})
@@ -329,7 +369,8 @@ def main() -> int:
                 time.sleep(0.5)
 
         print("\n=== Bedrock ===")
-        for fn in (check_health, check_bedrock_claude, check_gpt55, check_grok,
+        for fn in (check_health, check_bedrock_claude, check_gpt55,
+                   check_gpt56_messages, check_gpt56_messages_stream, check_grok,
                    check_guard_gpt55_on_chat):
             _run(fn, base)
 

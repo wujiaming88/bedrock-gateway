@@ -153,6 +153,7 @@ class TestMantleSync:
         # Anthropic-shaped response
         assert data["type"] == "message"
         assert data["role"] == "assistant"
+        assert data["model"] == "gpt-5.5"
         assert data["content"] == [{"type": "text", "text": "hello"}]
         assert data["stop_reason"] == "end_turn"
         assert data["usage"] == {
@@ -206,6 +207,22 @@ class TestMantleSync:
             "messages": [{"role": "user", "content": "hi"}],
         })
         assert resp.status_code == 200
+        assert _sent(mock_cls)["max_output_tokens"] == 128_000
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_http_200_failed_becomes_anthropic_error(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client({
+            "status": "failed",
+            "error": {"code": "context_length_exceeded", "message": "context exceeded"},
+        })
+        resp = client.post("/v1/messages", json={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 400
+        assert resp.json()["error"] == {
+            "type": "invalid_request_error", "message": "context exceeded"
+        }
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_upstream_error_becomes_anthropic_error(self, mock_cls, client):
@@ -256,6 +273,7 @@ class TestMantleStream:
         body = self._collect(client, mock_cls, frames)
         # Anthropic event names present, Responses names absent
         assert "event: message_start" in body
+        assert '"model":"gpt-5.5"' in body or '"model": "gpt-5.5"' in body
         assert "event: content_block_start" in body
         assert "event: content_block_delta" in body
         assert "event: message_delta" in body
@@ -309,6 +327,7 @@ class TestAzureInbound:
         assert resp.status_code == 200
         data = resp.json()
         assert data["content"] == [{"type": "text", "text": "azured"}]
+        assert data["model"] == "azure/gpt-5.5"
         # Routed to the Azure resource URL with api-key auth (NOT bedrock)
         url, headers = _sent_url_headers(mock_cls)
         assert url == AZ_BASE + "/responses"
@@ -334,6 +353,7 @@ class TestAzureInbound:
             assert r.status_code == 200
             body = "".join(r.iter_text())
         assert "event: message_start" in body
+        assert '"model":"azure/gpt-5.5"' in body or '"model": "azure/gpt-5.5"' in body
         assert "event: message_stop" in body
 
 

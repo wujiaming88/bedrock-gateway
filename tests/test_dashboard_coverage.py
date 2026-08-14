@@ -732,7 +732,7 @@ class TestParseJsonUsage:
         # Truthy non-coercible value — ``int(truthy_non_int_no_0)`` raises.
         assert _parse_json_usage(
             b'{"usage": {"input_tokens": "abc", "output_tokens": 1}}'
-        ) == (0, 0)
+        ) == (0, 1)
 
 
 class TestExtractClientIp:
