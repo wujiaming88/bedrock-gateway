@@ -35,6 +35,17 @@ class TestVersionConsistency:
         )
 
 
+class TestDeploymentDocumentation:
+    @pytest.mark.parametrize("name", ["README.md", "README.en.md", "CLAUDE.md"])
+    def test_safe_upgrade_preflight_is_documented(self, name):
+        text = (Path(__file__).resolve().parent.parent / name).read_text()
+        assert "--no-deps" not in text
+        assert "pip check" in text
+        assert "import bedrock_gateway.server" in text
+        assert "systemctl restart bedrock-gateway" in text
+        assert "http://127.0.0.1:4000/health" in text
+
+
 class TestDeepResolveList:
     def test_resolves_list_of_strings(self):
         # Covers the ``isinstance(obj, list)`` branch of _deep_resolve.

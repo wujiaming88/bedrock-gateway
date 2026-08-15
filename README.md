@@ -128,50 +128,62 @@ python3 -m venv /opt/bedrock-gateway
 
 ### 更新到新版本
 
-网关以常规包形式装在 venv 的 `site-packages` 里，更新 = **重装包 + 重启进程**。运行中的进程加载的是启动时的代码，装完新版必须重启才生效。
-
-**方式 A — 从 GitHub 拉最新代码更新（生产常用）**
+网关以常规包形式装在 venv 的 `site-packages` 里，更新 = **安装包及依赖 + 重启进程**。生产更新请指定已发布 tag；不要跳过依赖安装，否则旧环境可能缺少新版本增加的运行时依赖。
 
 ```bash
+TARGET_VERSION=v0.4.14
+
 # 1) 记录当前版本（便于回滚核对）
-curl -s http://127.0.0.1:4000/health | grep -o '"version":"[^"]*"'
+curl -fsS http://127.0.0.1:4000/health
 
-# 2) 重装（--upgrade 强制拉最新；--no-deps 跳过依赖重装，加快速度）
-/opt/bedrock-gateway/bin/pip install --upgrade --force-reinstall --no-deps \
-  git+https://github.com/wujiaming88/bedrock-gateway.git
+# 2) 安装目标版本并同步依赖
+/opt/bedrock-gateway/bin/python -m pip install --upgrade --force-reinstall \
+  "git+https://github.com/wujiaming88/bedrock-gateway.git@${TARGET_VERSION}"
 
-# 3) 校验 site-packages 已是新版（在中立目录执行，避免被当前目录源码干扰）
-cd /tmp && /opt/bedrock-gateway/bin/python -c \
-  "import bedrock_gateway; print(bedrock_gateway.__version__, bedrock_gateway.__file__)"
+# 3) 在停止旧进程前检查依赖和启动导入
+/opt/bedrock-gateway/bin/python -m pip check
+cd /tmp
+/opt/bedrock-gateway/bin/python -c \
+  "import bedrock_gateway; import bedrock_gateway.server; print(bedrock_gateway.__version__, bedrock_gateway.__file__)"
 
-# 4) 重启服务
+# 4) 预检通过后才重启
 systemctl restart bedrock-gateway
 
-# 5) 验证新版本已生效
-curl -s http://127.0.0.1:4000/health
+# 5) 验证服务和目标版本；失败时立即查看完整日志
+curl -fsS http://127.0.0.1:4000/health | /opt/bedrock-gateway/bin/python -c \
+  'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ok" and "v"+d["version"]==sys.argv[1], d; print(d)' "$TARGET_VERSION"
+systemctl status bedrock-gateway --no-pager -l
+# journalctl -u bedrock-gateway -n 100 --no-pager -l
 ```
 
-**方式 B — 从本地源码目录更新（开发 / 已 clone 仓库）**
+从本地源码目录更新时同样必须安装依赖并执行预检：
 
 ```bash
 cd /path/to/bedrock-gateway
 git pull
-
-/opt/bedrock-gateway/bin/pip install --no-deps .   # 装当前目录源码到 venv
+/opt/bedrock-gateway/bin/python -m pip install --upgrade --force-reinstall .
+/opt/bedrock-gateway/bin/python -m pip check
+cd /tmp && /opt/bedrock-gateway/bin/python -c \
+  "import bedrock_gateway; import bedrock_gateway.server; print(bedrock_gateway.__version__, bedrock_gateway.__file__)"
 systemctl restart bedrock-gateway
+curl -fsS http://127.0.0.1:4000/health
 ```
 
-> ⚠️ **校验版本时务必切到中立目录（如 `/tmp`）再执行 `python -c "import bedrock_gateway"`**。
-> 若在源码目录（含 `bedrock_gateway/` 子目录）下执行，Python 会优先加载当前目录的源码，
-> 显示的版本可能并非 venv 里真正安装的版本，造成"看着已更新、实际没装进去"的假象。
+> ⚠️ **校验版本时务必切到中立目录（如 `/tmp`）**。在源码目录中导入可能加载当前目录的源码，而不是 venv 中实际安装的包。只有依赖由外部配置管理系统完整维护并另有等效校验时，才可自行跳过 pip 的依赖解析；这不是通用升级方式。
 
 ### 回滚
 
+回滚也必须同步目标版本的依赖，并在重启前完成相同预检：
+
 ```bash
-# 回滚到某个已发布 tag / commit
-/opt/bedrock-gateway/bin/pip install --upgrade --force-reinstall --no-deps \
-  "git+https://github.com/wujiaming88/bedrock-gateway.git@v0.1.4"
+TARGET_VERSION=v0.4.13
+/opt/bedrock-gateway/bin/python -m pip install --upgrade --force-reinstall \
+  "git+https://github.com/wujiaming88/bedrock-gateway.git@${TARGET_VERSION}"
+/opt/bedrock-gateway/bin/python -m pip check
+cd /tmp && /opt/bedrock-gateway/bin/python -c \
+  "import bedrock_gateway; import bedrock_gateway.server; print(bedrock_gateway.__version__, bedrock_gateway.__file__)"
 systemctl restart bedrock-gateway
+curl -fsS http://127.0.0.1:4000/health
 ```
 
 配置文件（`config.yaml` / `.env`）与代码解耦，升级 / 回滚都不会动它们。

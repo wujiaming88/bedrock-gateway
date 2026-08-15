@@ -261,6 +261,31 @@ tail -f /var/log/bedrock-gateway/bedrock-gateway-$(date +%F).log
 
 Daily files contain gateway, Uvicorn access/error, and httpx upstream request logs. They rotate at local midnight and retain 30 days while console output remains available in journald. Do not apply an external rename-based `logrotate` rule to the same files.
 
+### Updating or rolling back systemd installs
+
+Install an explicit release tag and allow pip to synchronize runtime dependencies. Do not skip dependency installation during normal upgrades: an older environment may not contain dependencies introduced by a newer release.
+
+```bash
+TARGET_VERSION=v0.4.14
+
+/opt/bedrock-gateway/bin/python -m pip install --upgrade --force-reinstall \
+  "git+https://github.com/wujiaming88/bedrock-gateway.git@${TARGET_VERSION}"
+
+# Run these checks before stopping the currently working process.
+/opt/bedrock-gateway/bin/python -m pip check
+cd /tmp
+/opt/bedrock-gateway/bin/python -c \
+  "import bedrock_gateway; import bedrock_gateway.server; print(bedrock_gateway.__version__, bedrock_gateway.__file__)"
+
+systemctl restart bedrock-gateway
+curl -fsS http://127.0.0.1:4000/health | /opt/bedrock-gateway/bin/python -c \
+  'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ok" and "v"+d["version"]==sys.argv[1], d; print(d)' "$TARGET_VERSION"
+systemctl status bedrock-gateway --no-pager -l
+# On failure: journalctl -u bedrock-gateway -n 100 --no-pager -l
+```
+
+Use the same sequence with the previous tag to roll back. Only installations whose dependencies are fully managed and validated by an external configuration system should bypass pip dependency resolution; that is not the general update procedure.
+
 ### Docker
 
 ```bash

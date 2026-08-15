@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.15] — 2026-08-15
+
+### 修复
+
+- 生产升级、源码安装和回滚文档不再跳过依赖解析；重启前强制执行 `pip check` 和中立目录 startup import，重启后验证 health/version，避免旧 venv 缺少新运行时依赖。
+
+### 测试
+
+- 新增部署文档门禁和 clean-venv wheel 安装 smoke，验证依赖完整性、distribution/runtime 版本一致及 server 启动导入。
+
 ## [0.4.14] — 2026-08-14
 
 ### 修复

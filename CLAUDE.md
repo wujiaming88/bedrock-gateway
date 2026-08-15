@@ -95,6 +95,9 @@ python -m pytest tests/test_azure.py -q      # one file
 ruff check bedrock_gateway/ tests/
 python -m bedrock_gateway                    # run locally (reads ./config.yaml)
 
+# Clean-install packaging smoke (creates a temporary venv; needs package-index access):
+python scripts/smoke_install.py
+
 # Real end-to-end smoke (needs live creds; NOT part of pytest):
 AWS_BEARER_TOKEN_BEDROCK=... AZURE_OPENAI_ENDPOINT=... AZURE_OPENAI_KEY=... \
   python scripts/smoke_e2e.py --port 4199
@@ -140,18 +143,27 @@ systemd `bedrock-gateway.service`, port 4000, `User=bedrock`, runtime venv at
 `/opt/bedrock-gateway` (**regular pip install, not `-e`**).
 
 ```bash
-# Update:
-/opt/bedrock-gateway/bin/pip install --upgrade --force-reinstall --no-deps \
-  git+<repo-url>
-systemctl restart bedrock-gateway          # restart alone is NOT enough — reinstall first
+# Install an explicit release and its dependencies; never skip dependency
+# resolution for a normal upgrade or rollback.
+TARGET_VERSION=v0.4.14
+/opt/bedrock-gateway/bin/python -m pip install --upgrade --force-reinstall \
+  "git+<repo-url>@${TARGET_VERSION}"
+
+# Preflight before stopping the currently working process.
+/opt/bedrock-gateway/bin/python -m pip check
+cd /tmp && /opt/bedrock-gateway/bin/python -c \
+  "import bedrock_gateway; import bedrock_gateway.server; print(bedrock_gateway.__version__, bedrock_gateway.__file__)"
+
+systemctl restart bedrock-gateway
+curl -fsS http://127.0.0.1:4000/health | /opt/bedrock-gateway/bin/python -c \
+  'import json,sys; d=json.load(sys.stdin); assert d["status"]=="ok" and "v"+d["version"]==sys.argv[1], d; print(d)' "$TARGET_VERSION"
+systemctl status bedrock-gateway --no-pager -l
+# On failure: journalctl -u bedrock-gateway -n 100 --no-pager -l
 ```
 
-Verify the installed version from a **neutral directory** (`cd /tmp`), else
-Python loads the source-tree copy and shows a misleading version:
-```bash
-cd /tmp && /opt/bedrock-gateway/bin/python -c "import bedrock_gateway; print(bedrock_gateway.__version__)"
-```
-`systemctl status` uses a pager — add `--no-pager` (it looks "stuck" otherwise).
+Always verify from a **neutral directory** (`cd /tmp`), else Python may load the
+source-tree copy. Dependency-bypassing installs are reserved for environments
+whose dependencies are fully managed and validated by an external system.
 
 ## Conventions
 
