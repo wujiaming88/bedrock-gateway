@@ -11,7 +11,8 @@ normalizations at the gateway boundary, before forwarding to Bedrock:
 * Codex ``reasoning.context`` objects are reduced to Bedrock's supported
   ``"auto"`` selector.
 * Unknown encrypted reasoning/content blobs are dropped unless they carry a
-  Bedrock-recognized ``rsn_`` or ``smry_`` prefix.
+  Bedrock-recognized ``rsn_`` or ``smry_`` prefix; reasoning replay summaries
+  are normalized to Mantle's required array shape.
 * Unsupported ``search_content_types`` filters are removed from ``web_search``
   tools while preserving the tool and its other options.
 
@@ -90,7 +91,12 @@ def normalize_bedrock_gpt5x_responses_request(body: dict[str, Any]) -> dict[str,
     if "reasoning" in out:
         out["reasoning"] = _normalize_reasoning(out.get("reasoning"))
     out = _filter_opaque_state(out)
-    out["input"] = _filter_opaque_state(kept_input)
+    filtered_input = _filter_opaque_state(kept_input)
+    out["input"] = [
+        normalized
+        for item in filtered_input
+        if (normalized := _normalize_reasoning_replay_item(item)) is not _DROP
+    ]
     return out
 
 
@@ -99,6 +105,16 @@ _BEDROCK_REASONING_CONTEXT_VALUES = {"auto", "current_turn", "all_turns"}
 
 def _valid_bedrock_encrypted_content(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(_BEDROCK_ENCRYPTED_PREFIXES)
+
+
+def _valid_reasoning_summary(value: Any) -> bool:
+    """Return whether a reasoning summary matches Mantle's replay schema."""
+    return isinstance(value, list) and all(
+        isinstance(block, dict)
+        and block.get("type") == "summary_text"
+        and isinstance(block.get("text"), str)
+        for block in value
+    )
 
 
 def _filter_opaque_state(value: Any) -> Any:
@@ -119,7 +135,6 @@ def _filter_opaque_state(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
 
-    had_encrypted = "encrypted_content" in value
     out: dict[str, Any] = {}
     for key, child in value.items():
         if key == "encrypted_content":
@@ -130,11 +145,22 @@ def _filter_opaque_state(value: Any) -> Any:
         if filtered_child is not _DROP:
             out[key] = filtered_child
 
-    if had_encrypted and "encrypted_content" not in out and out.get("type") == "reasoning":
-        non_type_keys = [k for k in out if k != "type"]
-        if not non_type_keys:
-            return _DROP
     return out
+
+
+def _normalize_reasoning_replay_item(item: Any) -> Any:
+    """Validate only top-level Responses input reasoning items for replay."""
+    if not isinstance(item, dict) or item.get("type") != "reasoning":
+        return item
+    if _valid_bedrock_encrypted_content(item.get("encrypted_content")):
+        if _valid_reasoning_summary(item.get("summary")):
+            return item
+        out = dict(item)
+        out["summary"] = []
+        return out
+    if _valid_reasoning_summary(item.get("summary")):
+        return item
+    return _DROP
 
 
 def _normalize_reasoning(reasoning: Any) -> Any:

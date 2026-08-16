@@ -190,7 +190,7 @@ class TestGPT56ResponsesEndpoint:
             "model": "gpt-5.6-sol",
             "input": [
                 {"type": "reasoning", "encrypted_content": "foreign_blob"},
-                {"type": "reasoning", "encrypted_content": "rsn_valid"},
+                {"type": "reasoning", "encrypted_content": "rsn_valid", "summary": []},
                 {"type": "message", "role": "assistant", "content": [
                     {"type": "output_text", "text": "visible", "encrypted_content": "bad"},
                 ]},
@@ -199,11 +199,54 @@ class TestGPT56ResponsesEndpoint:
         assert resp.status_code == 200
         sent = _sent(mock_cls)
         assert sent["input"] == [
-            {"type": "reasoning", "encrypted_content": "rsn_valid"},
+            {"type": "reasoning", "encrypted_content": "rsn_valid", "summary": []},
             {"type": "message", "role": "assistant", "content": [
                 {"type": "output_text", "text": "visible"},
             ]},
         ]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_reasoning_replay_and_custom_tool_history_are_normalized(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_responses_body("openai.gpt-5.6-sol"))
+        history = [
+            {"type": "reasoning", "id": "valid", "encrypted_content": "rsn_valid", "summary": None},
+            {"type": "reasoning", "id": "poison", "encrypted_content": "foreign"},
+            {"type": "reasoning", "id": "summary", "summary": []},
+            {
+                "type": "custom_tool_call", "id": "call-item", "call_id": "call-1",
+                "name": "tool", "namespace": "functions", "status": "completed", "input": "{}",
+            },
+            {"type": "custom_tool_call_output", "id": "output-item", "call_id": "call-1", "output": "ok"},
+            {"type": "message", "role": "assistant", "phase": "final_answer", "content": []},
+        ]
+        resp = client.post("/openai/v1/responses", json={"model": "gpt-5.6-sol", "input": history})
+        assert resp.status_code == 200
+        sent = _sent(mock_cls)["input"]
+        assert sent == [
+            {**history[0], "summary": []}, history[2], history[3], history[4], history[5]
+        ]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_azure_reasoning_replay_is_forwarded_verbatim(self, mock_cls):
+        from bedrock_gateway.config import AzureResource
+
+        resources = {"r1": AzureResource(
+            base_url="https://az.example/openai/v1", api_key="az", prefix="azure"
+        )}
+        cfg = GatewayConfig(
+            auth=AuthConfig(mode="bearer_token", bearer_token="test-token"),
+            region="us-east-1",
+            server=ServerConfig(host="127.0.0.1", port=4000, log_level="warning"),
+            retry=RetryConfig(max_retries=1, base_delay=0.01),
+            models=_parse_models(_DEFAULT_MODELS, resources),
+            azure_resources=resources,
+        )
+        c = TestClient(create_app(cfg))
+        mock_cls.return_value = _mock_sync_client(_responses_body("gpt-5.6-sol"))
+        item = {"type": "reasoning", "id": "id", "encrypted_content": "foreign", "summary": None}
+        resp = c.post("/openai/v1/responses", json={"model": "azure/gpt-5.6-sol", "input": [item]})
+        assert resp.status_code == 200
+        assert _sent(mock_cls)["input"] == [item]
 
     @pytest.mark.parametrize("alias", GPT56.keys())
     def test_rejected_on_chat_completions(self, client, alias):

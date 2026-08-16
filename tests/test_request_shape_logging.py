@@ -54,6 +54,55 @@ def test_request_shape_summary_redacts_text_and_tool_args():
     assert shape["input"]["items"][1]["type"] == "function_call_output"
     assert shape["tools"]["tools"][0]["name"] == "danger"
     assert shape["reasoning"]["keys"] == ["effort"]
+    assert shape["input"]["reasoning"] == {
+        "total": 0, "valid_summary": 0, "invalid_or_missing_summary": 0,
+        "encrypted_present": 0,
+    }
+
+
+def test_reasoning_shape_reports_structure_and_full_array_aggregate():
+    input_items = [
+        {"type": "message", "role": "user", "content": "safe"}
+        for _ in range(20)
+    ] + [
+        {
+            "type": "reasoning", "id": "SECRET-ID", "encrypted_content": "rsn_SECRET",
+            "summary": [{"type": "summary_text", "text": "SECRET SUMMARY"}],
+        },
+        {"type": "reasoning", "summary": None},
+        {"type": "reasoning", "summary": [{"type": "text", "text": "SECRET BAD"}, "SECRET"]},
+    ]
+    shape = _request_shape_summary({"model": "gpt-5.6-sol", "input": input_items})
+    rendered = json.dumps(shape)
+    assert shape["input"]["reasoning"] == {
+        "total": 3, "valid_summary": 1, "invalid_or_missing_summary": 2,
+        "encrypted_present": 1,
+    }
+    assert len(shape["input"]["items"]) == 20
+    assert "SECRET" not in rendered
+
+
+def test_reasoning_summary_shapes_do_not_include_text():
+    body = {"input": [
+        {"type": "reasoning"},
+        {"type": "reasoning", "summary": "SECRET"},
+        {"type": "reasoning", "summary": []},
+        {"type": "reasoning", "summary": [
+            {"type": "summary_text", "text": "SECRET TEXT"},
+            {"type": "text", "text": "SECRET BAD"},
+            "SECRET SCALAR",
+        ]},
+    ]}
+    shape = _request_shape_summary(body)["input"]
+    summaries = [item["summary"] for item in shape["items"]]
+    assert summaries[0] == {"type": "null"}
+    assert summaries[1] == {"type": "string", "len": 6}
+    assert summaries[2] == {"type": "array", "len": 0, "block_types": [], "valid": True}
+    assert summaries[3] == {
+        "type": "array", "len": 3,
+        "block_types": ["summary_text", "text", "string"], "valid": False,
+    }
+    assert "SECRET" not in json.dumps(shape)
 
 
 def _mock_sync_error_client(status: int = 400):

@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.4.16] — 2026-08-16
+
+### 修复
+
+- Bedrock GPT-5.x Responses 现在校验 reasoning replay 的 `summary` 结构：有效 `rsn_`/`smry_` opaque state 缺少合法 summary 时补为空数组，foreign opaque 过滤后残留的 id-only reasoning 被删除，避免 Mantle `Invalid 'input'` 400。
+- Custom tool、message metadata 与 Azure Responses 继续原样保留；安全结构日志增加 reasoning summary 类型和完整 input 聚合，不记录 summary text 或 encrypted content。
+
+### 测试
+
+- 增加 malformed summary、mixed custom-tool history、幂等、Azure 隔离、长历史诊断与真实 Mantle replay 覆盖。
+
 ## [0.4.15] — 2026-08-15
 
 ### 修复

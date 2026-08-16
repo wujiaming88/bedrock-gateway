@@ -247,11 +247,11 @@ def test_invalid_encrypted_reasoning_item_is_dropped():
     assert out["input"] == [body["input"][1]]
 
 
-def test_valid_bedrock_encrypted_prefixes_are_preserved():
+def test_valid_bedrock_encrypted_prefixes_get_required_summary():
     for prefix in ["rsn_", "smry_"]:
         item = {"type": "reasoning", "encrypted_content": prefix + "abc"}
         out = normalize_bedrock_gpt5x_responses_request({"input": [item]})
-        assert out["input"] == [item]
+        assert out["input"] == [{**item, "summary": []}]
 
 
 def test_invalid_nested_encrypted_content_is_removed_but_semantic_text_stays():
@@ -269,7 +269,111 @@ def test_invalid_nested_encrypted_content_is_removed_but_semantic_text_stays():
     assert block == {"type": "output_text", "text": "visible"}
 
 
-def test_empty_reasoning_item_with_extra_metadata_survives_without_bad_blob():
+def test_reasoning_with_foreign_blob_and_valid_summary_survives_without_blob():
     body = {"input": [{"type": "reasoning", "encrypted_content": "bad", "summary": []}]}
     out = normalize_bedrock_gpt5x_responses_request(body)
     assert out["input"] == [{"type": "reasoning", "summary": []}]
+
+
+def test_bedrock_reasoning_malformed_summaries_become_empty_list():
+    malformed = [None, "text", {}, ["text"], [{}], [{"type": "text", "text": "x"}],
+                 [{"type": "summary_text"}], [{"type": "summary_text", "text": 1}]]
+    for summary in malformed:
+        item = {
+            "type": "reasoning",
+            "id": "reasoning-id",
+            "encrypted_content": "rsn_valid",
+            "summary": summary,
+            "future": "kept",
+        }
+        original = copy.deepcopy(item)
+        out = normalize_bedrock_gpt5x_responses_request({"input": [item]})
+        assert out["input"] == [{**item, "summary": []}]
+        assert item == original
+        assert normalize_bedrock_gpt5x_responses_request(out) == out
+
+
+def test_valid_reasoning_summaries_are_preserved_with_extra_keys():
+    summaries = [
+        [],
+        [{"type": "summary_text", "text": "brief", "future": True}],
+        [
+            {"type": "summary_text", "text": "one"},
+            {"type": "summary_text", "text": "two"},
+        ],
+    ]
+    for summary in summaries:
+        item = {"type": "reasoning", "encrypted_content": "smry_valid", "summary": summary}
+        out = normalize_bedrock_gpt5x_responses_request({"input": [item]})
+        assert out["input"] == [item]
+
+
+def test_reasoning_without_bedrock_state_requires_valid_summary():
+    invalid_items = [
+        {"type": "reasoning"},
+        {"type": "reasoning", "id": "id"},
+        {"type": "reasoning", "content": None},
+        {
+            "type": "reasoning",
+            "id": "id",
+            "namespace": "ns",
+            "status": "completed",
+            "phase": "analysis",
+            "encrypted_content": "foreign_blob",
+        },
+        {"type": "reasoning", "summary": None},
+        {"type": "reasoning", "summary": [{"type": "text", "text": "bad"}]},
+    ]
+    body = {
+        "input": [
+            *invalid_items,
+            {"type": "reasoning", "id": "kept", "summary": []},
+            {"type": "message", "role": "user", "content": "hello"},
+        ]
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["input"] == [
+        {"type": "reasoning", "id": "kept", "summary": []},
+        {"type": "message", "role": "user", "content": "hello"},
+    ]
+
+
+def test_nested_non_input_reasoning_metadata_is_not_dropped():
+    body = {
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": "hello",
+                "metadata": {"type": "reasoning", "ticket": "kept"},
+            }],
+        }],
+        "metadata": {"type": "reasoning", "ticket": "also-kept"},
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["input"][0]["content"][0]["metadata"] == {
+        "type": "reasoning", "ticket": "kept"
+    }
+    assert out["metadata"] == {"type": "reasoning", "ticket": "also-kept"}
+
+
+def test_mixed_history_keeps_custom_tools_and_drops_only_invalid_reasoning():
+    body = {
+        "input": [
+            {"type": "reasoning", "id": "poison", "encrypted_content": "foreign"},
+            {
+                "type": "custom_tool_call",
+                "id": "call-item",
+                "call_id": "call-1",
+                "name": "tool",
+                "namespace": "functions",
+                "status": "completed",
+                "input": "{}",
+            },
+            {"type": "custom_tool_call_output", "id": "out", "call_id": "call-1", "output": "ok"},
+            {"type": "reasoning", "encrypted_content": "rsn_good", "summary": None},
+        ]
+    }
+    out = normalize_bedrock_gpt5x_responses_request(body)
+    assert out["input"] == [body["input"][1], body["input"][2], {**body["input"][3], "summary": []}]

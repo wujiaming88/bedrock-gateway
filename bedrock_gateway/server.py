@@ -313,6 +313,24 @@ def _content_shape(content: Any) -> dict[str, Any]:
     return {"type": "array", "len": len(content), "blocks": blocks}
 
 
+def _reasoning_summary_shape(value: Any) -> dict[str, Any]:
+    """Summarize reasoning summary blocks without exposing their text."""
+    if not isinstance(value, list):
+        return _value_shape(value)
+    block_types = [
+        block.get("type", "object") if isinstance(block, dict)
+        else _value_shape(block)["type"]
+        for block in value
+    ]
+    valid = all(
+        isinstance(block, dict)
+        and block.get("type") == "summary_text"
+        and isinstance(block.get("text"), str)
+        for block in value
+    )
+    return {"type": "array", "len": len(value), "block_types": block_types, "valid": valid}
+
+
 def _input_shape(input_value: Any) -> dict[str, Any]:
     """Summarize Responses ``input`` variants for upstream-schema debugging."""
     if isinstance(input_value, str):
@@ -320,19 +338,42 @@ def _input_shape(input_value: Any) -> dict[str, Any]:
     if not isinstance(input_value, list):
         return _value_shape(input_value)
     items: list[dict[str, Any]] = []
+    reasoning_total = 0
+    reasoning_valid = 0
+    reasoning_encrypted = 0
+    for item in input_value:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            reasoning_total += 1
+            if _reasoning_summary_shape(item.get("summary")).get("valid") is True:
+                reasoning_valid += 1
+            if "encrypted_content" in item:
+                reasoning_encrypted += 1
     for item in input_value[:20]:
         if isinstance(item, dict):
+            item_type = item.get("type", "message" if "role" in item else "object")
             summary: dict[str, Any] = {
-                "type": item.get("type", "message" if "role" in item else "object"),
+                "type": item_type,
                 "role": item.get("role"),
                 "keys": sorted(str(k) for k in item.keys()),
             }
             if "content" in item:
                 summary["content"] = _content_shape(item.get("content"))
+            if item_type == "reasoning":
+                summary["summary"] = _reasoning_summary_shape(item.get("summary"))
             items.append(summary)
         else:
             items.append(_value_shape(item))
-    return {"type": "array", "len": len(input_value), "items": items}
+    return {
+        "type": "array",
+        "len": len(input_value),
+        "items": items,
+        "reasoning": {
+            "total": reasoning_total,
+            "valid_summary": reasoning_valid,
+            "invalid_or_missing_summary": reasoning_total - reasoning_valid,
+            "encrypted_present": reasoning_encrypted,
+        },
+    }
 
 
 def _messages_shape(messages: Any) -> dict[str, Any]:
