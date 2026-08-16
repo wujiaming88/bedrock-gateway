@@ -149,6 +149,43 @@ class DashboardConfig:
 
 
 @dataclass
+class UpstreamRoute:
+    """One dialect-specific route on a generic HTTP upstream."""
+
+    base_url: str
+    path: str
+    auth: str = "bearer"
+    default_headers: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.base_url.startswith(("http://", "https://")):
+            raise ValueError("upstream route base_url must be an http(s) URL")
+        if not self.path.startswith("/"):
+            raise ValueError("upstream route path must start with '/'")
+        if self.auth not in {"bearer", "x-api-key"}:
+            raise ValueError(
+                "upstream route auth must be 'bearer' or 'x-api-key'"
+            )
+
+
+@dataclass
+class UpstreamResource:
+    """A generic upstream, selected by model prefix or explicit reference."""
+
+    prefix: str
+    secret_env: str
+    routes: dict[str, UpstreamRoute] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.prefix or "/" in self.prefix:
+            raise ValueError("upstream resource prefix must be non-empty without '/'")
+        if not self.secret_env:
+            raise ValueError("upstream resource secret_env must not be empty")
+        if not self.routes:
+            raise ValueError("upstream resource routes must not be empty")
+
+
+@dataclass
 class AzureResource:
     """A single Azure OpenAI resource: its endpoint + api-key.
 
@@ -209,6 +246,13 @@ class ModelEntry:
     deployment: str = ""          # Azure deployment name → request body "model"
     azure_endpoint: str = ""      # resolved from AzureResource.base_url
     azure_api_key: str = ""       # resolved from AzureResource.api_key
+    # ── Generic resolved upstream fields ──
+    upstream_resource: str = ""
+    upstream_base_url: str = ""
+    upstream_path: str = ""
+    upstream_auth: str = ""
+    upstream_secret_env: str = ""
+    upstream_default_headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -222,6 +266,7 @@ class GatewayConfig:
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     models: dict[str, ModelEntry] = field(default_factory=dict)
     azure_resources: dict[str, AzureResource] = field(default_factory=dict)
+    upstream_resources: dict[str, UpstreamResource] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Env-var override for region
@@ -384,6 +429,48 @@ _MODEL_ALIASES: dict[str, str] = {
 }
 
 
+def _parse_upstream_resources(
+    raw: dict[str, Any] | None,
+) -> dict[str, UpstreamResource]:
+    """Parse and validate generic ``upstream_resources`` configuration."""
+    resources: dict[str, UpstreamResource] = {}
+    prefixes: set[str] = set()
+    for name, info in (raw or {}).items():
+        if not isinstance(info, dict):
+            raise ValueError(f"upstream resource {name!r} must be a mapping")
+        routes_raw = info.get("routes")
+        if not isinstance(routes_raw, dict):
+            raise ValueError(f"upstream resource {name!r} routes must be a mapping")
+        routes: dict[str, UpstreamRoute] = {}
+        for dialect, route_info in routes_raw.items():
+            if not isinstance(route_info, dict):
+                raise ValueError(
+                    f"upstream resource {name!r} route {dialect!r} must be a mapping"
+                )
+            headers = route_info.get("default_headers", {})
+            if not isinstance(headers, dict):
+                raise ValueError(
+                    f"upstream resource {name!r} route {dialect!r} "
+                    "default_headers must be a mapping"
+                )
+            routes[str(dialect)] = UpstreamRoute(
+                base_url=str(route_info.get("base_url", "")).rstrip("/"),
+                path=str(route_info.get("path", "")),
+                auth=str(route_info.get("auth", "bearer")),
+                default_headers={str(k): str(v) for k, v in headers.items()},
+            )
+        prefix = str(info.get("prefix", name))
+        if prefix in prefixes:
+            raise ValueError(f"duplicate upstream resource prefix {prefix!r}")
+        prefixes.add(prefix)
+        resources[name] = UpstreamResource(
+            prefix=prefix,
+            secret_env=str(info.get("secret_env", "")),
+            routes=routes,
+        )
+    return resources
+
+
 def _parse_azure_resources(
     raw: dict[str, Any] | None,
 ) -> dict[str, AzureResource]:
@@ -400,7 +487,10 @@ def _parse_azure_resources(
 
 
 def _build_entry(
-    name: str, info: dict[str, Any], resources: dict[str, AzureResource]
+    name: str,
+    info: dict[str, Any],
+    resources: dict[str, AzureResource],
+    upstream_resources: dict[str, UpstreamResource] | None = None,
 ) -> ModelEntry:
     """Construct a single :class:`ModelEntry` from a raw config dict.
 
@@ -436,7 +526,39 @@ def _build_entry(
         entry.transport = "azure"
         # deployment defaults to the alias when omitted
         entry.deployment = str(info.get("deployment", name))
+
+    upstream_ref = info.get("upstream_resource")
+    if upstream_ref is not None:
+        generic_resources = upstream_resources or {}
+        if upstream_ref not in generic_resources:
+            raise ValueError(
+                f"model {name!r} references unknown upstream_resource "
+                f"{upstream_ref!r}; defined resources: {list(generic_resources)}"
+            )
+        resource = generic_resources[upstream_ref]
+        route = resource.routes.get(entry.dialect)
+        if route is None:
+            raise ValueError(
+                f"model {name!r} dialect {entry.dialect!r} has no route in "
+                f"upstream_resource {upstream_ref!r}"
+            )
+        entry.transport = "http"
+        entry.upstream_resource = str(upstream_ref)
+        entry.deployment = str(info.get("upstream_id", info.get("deployment", name)))
+        entry.bedrock_id = entry.deployment
+        _apply_upstream_route(entry, resource, route)
     return entry
+
+
+def _apply_upstream_route(
+    entry: ModelEntry, resource: UpstreamResource, route: UpstreamRoute
+) -> None:
+    """Copy a selected generic route onto a resolved model entry."""
+    entry.upstream_base_url = route.base_url
+    entry.upstream_path = route.path
+    entry.upstream_auth = route.auth
+    entry.upstream_secret_env = resource.secret_env
+    entry.upstream_default_headers = dict(route.default_headers)
 
 
 def _parse_models(
@@ -444,6 +566,7 @@ def _parse_models(
     azure_resources: dict[str, AzureResource] | None = None,
     *,
     use_defaults: bool = True,
+    upstream_resources: dict[str, UpstreamResource] | None = None,
 ) -> dict[str, ModelEntry]:
     """Parse model entries, **merging** built-in defaults with user config.
 
@@ -457,11 +580,13 @@ def _parse_models(
     models: dict[str, ModelEntry] = {}
     if use_defaults:
         for name, info in _DEFAULT_MODELS.items():
-            models[name] = _build_entry(name, info, resources)
+            models[name] = _build_entry(name, info, resources, upstream_resources)
     for name, info in (raw or {}).items():
         if not isinstance(info, dict):
             continue
-        models[name] = _build_entry(name, info, resources)  # override on clash
+        models[name] = _build_entry(
+            name, info, resources, upstream_resources
+        )  # override on clash
     return models
 
 
@@ -567,8 +692,9 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         storage=storage,
     )
 
-    # Azure resources (parsed before models so references can resolve)
+    # Resources are parsed before models so explicit references can resolve.
     azure_resources = _parse_azure_resources(raw.get("azure_resources"))
+    upstream_resources = _parse_upstream_resources(raw.get("upstream_resources"))
 
     # Models — built-in defaults merged with user config (user overrides on
     # alias clash). ``use_default_models: false`` starts from an empty base.
@@ -576,6 +702,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         raw.get("models"),
         azure_resources,
         use_defaults=bool(raw.get("use_default_models", True)),
+        upstream_resources=upstream_resources,
     )
 
     # Warn (don't fail — Bedrock/runtime models still work) when a SigV4-based
@@ -603,4 +730,5 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         dashboard=dashboard,
         models=models,
         azure_resources=azure_resources,
+        upstream_resources=upstream_resources,
     )

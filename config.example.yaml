@@ -183,3 +183,42 @@ models:
 #     base_url: https://<resource>.cognitiveservices.azure.com/openai/v1
 #     api_key: ${AZURE_OPENAI_KEY}
 #     prefix: azure        # → call model "azure/<your-deployment>"
+
+# ─── Generic HTTP upstream resources ───────────────────────
+# One resource may expose several native wire protocols. The gateway only
+# selects the route, injects that upstream's credential, and replaces `model`;
+# requests/responses/SSE otherwise pass through unchanged.
+#
+# DeepSeek official API example (formal APIs only; Beta/FIM are not included):
+# upstream_resources:
+#   deepseek:
+#     prefix: deepseek
+#     secret_env: DEEPSEEK_API_KEY
+#     routes:
+#       openai-chat:
+#         base_url: https://api.deepseek.com
+#         path: /chat/completions
+#         auth: bearer
+#       openai-responses:
+#         base_url: https://api.deepseek.com
+#         path: /responses
+#         auth: bearer
+#       anthropic-passthrough:
+#         base_url: https://api.deepseek.com/anthropic
+#         path: /v1/messages
+#         auth: x-api-key
+#         default_headers:
+#           anthropic-version: "2023-06-01"
+# models:
+#   deepseek-v4-flash:
+#     upstream_resource: deepseek
+#     upstream_id: deepseek-v4-flash
+#     dialect: openai-chat       # default route; endpoint selects other routes
+#     context_length: 1000000
+#     max_output: 393216
+#   deepseek-v4-pro:
+#     upstream_resource: deepseek
+#     upstream_id: deepseek-v4-pro
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 393216

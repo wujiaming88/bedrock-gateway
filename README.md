@@ -369,6 +369,63 @@ OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="<gateway-key>") \
 
 网关对 Azure 做**透传**（仅把别名换成 deployment 名），响应含 Azure 的 `content_filter_results` 字段原样保留；鉴权自动用 `api-key` header。URL 里保留资源 base 上的 `?api-version=...`（若有）。
 
+### 通用 HTTP 上游与 DeepSeek
+
+`upstream_resources` 可把一个官方上游的多种原生协议注册到统一网关。以下配置让同一模型别名同时服务 Chat、Responses 和 Anthropic Messages，网关只做路由、鉴权和 model 替换，不做重复协议转换：
+
+```yaml
+upstream_resources:
+  deepseek:
+    prefix: deepseek
+    secret_env: DEEPSEEK_API_KEY
+    routes:
+      openai-chat:
+        base_url: https://api.deepseek.com
+        path: /chat/completions
+        auth: bearer
+      openai-responses:
+        base_url: https://api.deepseek.com
+        path: /responses
+        auth: bearer
+      anthropic-passthrough:
+        base_url: https://api.deepseek.com/anthropic
+        path: /v1/messages
+        auth: x-api-key
+        default_headers:
+          anthropic-version: "2023-06-01"
+
+models:
+  deepseek-v4-flash:
+    upstream_resource: deepseek
+    upstream_id: deepseek-v4-flash
+    dialect: openai-chat
+    context_length: 1000000
+    max_output: 393216
+  deepseek-v4-pro:
+    upstream_resource: deepseek
+    upstream_id: deepseek-v4-pro
+    dialect: openai-chat
+    context_length: 1000000
+    max_output: 393216
+```
+
+把 Key 只放入受保护的环境文件：
+
+```bash
+DEEPSEEK_API_KEY=...
+chmod 600 /opt/bedrock-gateway/.env
+```
+
+调用端点：
+
+- `/v1/chat/completions`：DeepSeek 原生 Chat，保留 thinking、`reasoning_content`、tools、JSON、cache usage 和 `[DONE]`。
+- `/openai/v1/responses`：原生无状态 Responses，保留 typed SSE，且不会应用 Bedrock Mantle normalizer。
+- `/v1/messages`：原生 Anthropic passthrough，保留 Messages JSON/SSE 与上游错误状态。
+
+也可使用 `deepseek/<model>` 动态前缀，不逐项登记模型；显式登记才能出现在 `/v1/models`。当前官方模型是 `deepseek-v4-flash` 和 `deepseek-v4-pro`，旧 `deepseek-chat` / `deepseek-reasoner` 不作为默认 alias。DeepSeek Beta Strict Tools、Prefix Completion 和 FIM 暂未接入。
+
+> Thinking + Tools 时必须完整保存并回传 assistant 的 `reasoning_content`；官方不支持该模式下的强制 `tool_choice`。网关按官方 wire 原样透传，不会伪造或补齐这段历史。
+
 ---
 
 ## 使用

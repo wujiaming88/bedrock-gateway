@@ -142,7 +142,24 @@ models:
     deployment: gpt-5
 ```
 
-### 4.2 向后兼容（关键约束）
+### 4.2 通用 HTTP 资源与多协议 route
+
+第三方官方兼容 API 不再新增 provider-specific resource。`upstream_resources` 把认证 secret 引用与各 dialect 的 base/path 分开：
+
+```yaml
+upstream_resources:
+  vendor:
+    prefix: vendor
+    secret_env: VENDOR_API_KEY
+    routes:
+      openai-chat: {base_url: https://api.vendor.com, path: /chat/completions, auth: bearer}
+      openai-responses: {base_url: https://api.vendor.com, path: /responses, auth: bearer}
+      anthropic-passthrough: {base_url: https://api.vendor.com/anthropic, path: /v1/messages, auth: x-api-key}
+```
+
+`HttpTransport` 只处理 URL 与认证；Chat/Responses 复用透传 dialect，Anthropic 使用独立 raw passthrough dialect。endpoint 选择 route，因此一个公开模型可同时服务三种官方协议，而不会重复转换。Bedrock/Azure legacy resource保持不变。
+
+### 4.3 向后兼容（关键约束）
 现有 `ModelEntry` 有 `endpoint` / `protocol` 两个旧字段，7+2 个 Bedrock 模型和存量 YAML 都在用。**不能破坏**。方案：
 - 新增 `transport` / `dialect` 字段，默认 `bedrock` / `anthropic`。
 - **保留 `endpoint`/`protocol` 作为兼容映射**：加载时把旧值翻译成新轴：

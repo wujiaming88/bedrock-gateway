@@ -43,6 +43,11 @@ timeouts, metrics, the pre-stream error preflight (`_open_upstream_stream`),
 error-severity logging — and is transport-/dialect-agnostic. Handlers thread
 `(transport, dialect, entry)`.
 
+Generic official-compatible upstreams use `upstream_resources`: each resource maps
+one prefix and secret env name to dialect-specific base/path/auth routes. The generic
+`http` transport performs URL/auth only; it never branches on provider. DeepSeek is
+configured this way and uses native Chat, Responses, and Anthropic passthrough.
+
 ### Endpoints → dialects
 - `POST /v1/chat/completions` — branches by dialect: `anthropic` (Claude,
   converted) vs `openai-chat` (Azure/mantle, passthrough).
@@ -53,8 +58,8 @@ error-severity logging — and is transport-/dialect-agnostic. Handlers thread
   explicit `edits` operation (Azure `gpt-image-2`, replayable multipart,
   sync JSON or SSE). The endpoint is constrained by Azure transport + Images
   dialect, not a model-name allowlist; variations and Bedrock image models are absent.
-- `POST /v1/messages` — branches by dialect: `anthropic` (Claude, passthrough,
-  unchanged) vs `openai-responses` (GPT-5.5/Grok/`azure/<dep>`, **translated**
+- `POST /v1/messages` — branches by dialect: `anthropic` (Bedrock Claude),
+  `anthropic-passthrough` (native HTTP Messages) vs `openai-responses` (GPT-5.5/Grok/`azure/<dep>`, **translated**
   Anthropic Messages ⇄ Responses via `messages_to_responses.py`). This is what
   lets Claude Code (`ANTHROPIC_BASE_URL`) use non-Anthropic models. The inbound
   translation reuses the same generic `_handle_sync` / `_open_upstream_stream`

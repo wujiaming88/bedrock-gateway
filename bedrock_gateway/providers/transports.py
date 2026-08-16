@@ -12,6 +12,7 @@ Transports — the *where + how to authenticate* axis.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 from .base import Transport
@@ -48,6 +49,33 @@ class BedrockTransport(Transport):
             )
         # runtime: native Bedrock path, already complete from the dialect.
         return f"https://bedrock-runtime.{region}.amazonaws.com" + operation_path
+
+
+class HttpTransport(Transport):
+    """Generic HTTP upstream configured entirely by resolved model fields."""
+
+    name = "http"
+
+    def build_url(
+        self, operation_path: str, region: str, entry: "ModelEntry"
+    ) -> str:
+        # The configured route owns its path. ``operation_path`` only selects the
+        # route through the dialect and must not impose provider-specific URLs.
+        return f"{entry.upstream_base_url.rstrip('/')}{entry.upstream_path}"
+
+    def auth_headers(self, entry: "ModelEntry") -> dict[str, str]:
+        secret = os.environ.get(entry.upstream_secret_env, "")
+        if not secret:
+            raise RuntimeError(
+                f"upstream credential environment variable "
+                f"{entry.upstream_secret_env!r} is not set"
+            )
+        headers = dict(entry.upstream_default_headers)
+        if entry.upstream_auth == "bearer":
+            headers["Authorization"] = f"Bearer {secret}"
+        elif entry.upstream_auth == "x-api-key":
+            headers["x-api-key"] = secret
+        return headers
 
 
 class AzureTransport(Transport):

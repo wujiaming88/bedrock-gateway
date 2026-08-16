@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from multipart.multipart import parse_options_header  # type: ignore[import-untyped]
 from starlette.datastructures import UploadFile
 
@@ -690,6 +690,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         entry = registry.resolve_prefixed(raw_model, "openai-chat")
         if entry is not None:
             model = entry.deployment
+        elif resolved := registry.resolve_for_dialect(raw_model, "openai-chat"):
+            model, entry = resolved
         else:
             try:
                 model = registry.resolve(raw_model)
@@ -837,6 +839,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         entry = registry.resolve_prefixed(raw_model, "openai-responses")
         if entry is not None:
             model = entry.deployment
+        elif resolved := registry.resolve_for_dialect(raw_model, "openai-responses"):
+            model, entry = resolved
         else:
             try:
                 model = registry.resolve(raw_model)
@@ -1082,10 +1086,17 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         raw_model = body.get("model", "claude-haiku")
 
-        # Resolve the target model. Prefix passthrough (``azure/<deployment>``)
-        # is tried first so an Anthropic-only client (e.g. Claude Code via
-        # ANTHROPIC_BASE_URL) can name an Azure Responses model too.
-        _prefixed = registry.resolve_prefixed(raw_model, "openai-responses")
+        # Prefer a resource's native Anthropic route; fall back to Responses
+        # translation for resources such as Azure that expose no Messages API.
+        _prefixed = registry.resolve_prefixed(raw_model, "anthropic-passthrough")
+        if _prefixed is not None and _prefixed.transport != "http":
+            _prefixed = None
+        if _prefixed is None and (resolved := registry.resolve_for_dialect(
+            raw_model, "anthropic-passthrough"
+        )):
+            model, _prefixed = resolved
+        if _prefixed is None:
+            _prefixed = registry.resolve_prefixed(raw_model, "openai-responses")
         if _prefixed is not None:
             entry = _prefixed
             model = entry.deployment
@@ -1106,6 +1117,28 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             entry = registry.get_entry(raw_model) or _fallback_entry(model)
 
         stream = body.get("stream", False)
+
+        # Native HTTP Anthropic upstreams are forwarded without conversion.
+        if entry.dialect == "anthropic-passthrough":
+            upstream_body = dict(body)
+            upstream_body["model"] = model
+            transport = get_transport(entry)
+            dialect = get_dialect(entry)
+            protocol_headers = {
+                key: value
+                for key in ("anthropic-version", "anthropic-beta")
+                if (value := request.headers.get(key)) is not None
+            }
+            logger.info(
+                "REQ [messages-passthrough] model=%s -> %s (%s) stream=%s",
+                raw_model, model, entry.transport, stream,
+            )
+            return await _handle_raw_passthrough(
+                transport, dialect, entry, model, config.region, upstream_body,
+                auth, max_retries, retry_base_delay, stream=stream,
+                protocol_headers=protocol_headers, timeout=request_timeout,
+                request=request, health=health,
+            )
 
         # Dialect fork — the ONLY behaviour change on this endpoint:
         #   * anthropic       → existing Claude path (unchanged, below)
@@ -1267,6 +1300,159 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         return JSONResponse({"input_tokens": input_tokens})
 
     return app
+
+
+# ---------------------------------------------------------------------------
+# Native HTTP passthrough handler
+# ---------------------------------------------------------------------------
+
+_SAFE_UPSTREAM_HEADERS = {
+    "content-type", "request-id", "x-request-id", "retry-after", "cache-control",
+}
+
+
+def _passthrough_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    return {
+        key: value for key, value in headers.items()
+        if key.lower() in _SAFE_UPSTREAM_HEADERS
+        or key.lower().startswith(("anthropic-ratelimit-", "ratelimit-", "x-ratelimit-"))
+    }
+
+
+async def _handle_raw_passthrough(
+    transport: Transport,
+    dialect: Dialect,
+    entry: ModelEntry,
+    model: str,
+    region: str,
+    body: dict[str, Any],
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+    *,
+    stream: bool,
+    protocol_headers: dict[str, str],
+    timeout: float,
+    request: Request | None,
+    health: HealthMonitor | None,
+) -> Response:
+    url = transport.build_url(dialect.operation_path(entry, stream), region, entry)
+    payload = _prepare_request_body(body)
+    headers = _payload_headers(transport, entry, auth, url, payload)
+    for key, value in protocol_headers.items():
+        headers[key] = value
+    headers["Content-Type"] = payload.content_type
+
+    retryable = {429, 503, 529}
+    deadline = _retry_deadline(timeout, max_retries)
+
+    if not stream:
+        for attempt in range(max_retries):
+            try:
+                async with _track_upstream(health), httpx.AsyncClient(
+                    timeout=_httpx_timeout(timeout)
+                ) as client:
+                    response = await client.post(
+                        url, headers=headers, content=payload.content
+                    )
+            except httpx.TimeoutException:
+                _note_timeout(request)
+                if attempt < max_retries - 1 and time.monotonic() < deadline:
+                    _note_retry(request)
+                    await asyncio.sleep(retry_base_delay * (2**attempt))
+                    continue
+                return JSONResponse(
+                    status_code=504,
+                    content=format_anthropic_error(504, "Upstream request timeout"),
+                )
+            except httpx.HTTPError:
+                if attempt < max_retries - 1 and time.monotonic() < deadline:
+                    _note_retry(request)
+                    await asyncio.sleep(retry_base_delay * (2**attempt))
+                    continue
+                return JSONResponse(
+                    status_code=502,
+                    content=format_anthropic_error(502, "Upstream connection failed"),
+                )
+            if (
+                response.status_code in retryable
+                and attempt < max_retries - 1
+                and time.monotonic() < deadline
+            ):
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2**attempt))
+                continue
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=_passthrough_response_headers(response.headers),
+                media_type=None,
+            )
+
+    for attempt in range(max_retries):
+        stack = AsyncExitStack()
+        try:
+            await stack.enter_async_context(_track_upstream(health))
+            client = await stack.enter_async_context(
+                httpx.AsyncClient(timeout=_httpx_timeout(timeout))
+            )
+            response = await stack.enter_async_context(
+                client.stream("POST", url, headers=headers, content=payload.content)
+            )
+        except httpx.TimeoutException:
+            await stack.aclose()
+            _note_timeout(request)
+            if attempt < max_retries - 1 and time.monotonic() < deadline:
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2**attempt))
+                continue
+            return JSONResponse(
+                status_code=504,
+                content=format_anthropic_error(504, "Upstream connect timeout"),
+            )
+        except httpx.HTTPError:
+            await stack.aclose()
+            if attempt < max_retries - 1 and time.monotonic() < deadline:
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2**attempt))
+                continue
+            return JSONResponse(
+                status_code=502,
+                content=format_anthropic_error(502, "Upstream connection failed"),
+            )
+
+        if response.status_code in retryable and attempt < max_retries - 1:
+            await response.aread()
+            await stack.aclose()
+            _note_retry(request)
+            await asyncio.sleep(retry_base_delay * (2**attempt))
+            continue
+        if response.status_code != 200:
+            content = await response.aread()
+            response_headers = _passthrough_response_headers(response.headers)
+            status = response.status_code
+            await stack.aclose()
+            return Response(
+                content, status_code=status, headers=response_headers, media_type=None
+            )
+
+        async def generate():
+            try:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+            finally:
+                await stack.aclose()
+
+        response_headers = _passthrough_response_headers(response.headers)
+        return StreamingResponse(
+            generate(), status_code=200, headers=response_headers,
+            media_type=response.headers.get("content-type", "text/event-stream"),
+        )
+
+    return JSONResponse(
+        status_code=502,
+        content=format_anthropic_error(502, "Upstream unavailable"),
+    )
 
 
 # ---------------------------------------------------------------------------

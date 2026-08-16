@@ -3,6 +3,23 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.5.0] — 2026-08-16
+
+### 新增
+
+- 增加 provider-neutral `upstream_resources`、通用 HTTP transport 和 route-aware model resolution；同一上游模型可按入口选择原生 Chat、Responses 或 Anthropic Messages 协议。
+- 增加原生 Anthropic JSON/SSE/error passthrough，不经过 Responses 或 Chat 转换。
+- 增加 DeepSeek V4 Flash/Pro 三协议参考配置与动态 `deepseek/<model>` prefix 路由；Beta Strict/Prefix/FIM 暂不包含。
+
+### 修复
+
+- Anthropic raw passthrough 现在按网关策略重试 429/503/529、timeout 和连接失败，并保证 SSE preflight 异常时关闭 HTTP client 与 health tracking。
+- 通用上游缺少 secret env 时在网络请求前失败；上游凭据不保存到模型配置、日志或 metrics。
+
+### 测试
+
+- 新增 HTTP resource/auth、跨协议模型路由、Anthropic sync/SSE/error 和 DeepSeek 三协议测试；真实 DeepSeek验证覆盖 Chat Flash/Pro、thinking low/high/max、Responses、Anthropic、三种流、JSON、cache hit/miss 与错误边界。
+
 ## [0.4.16] — 2026-08-16
 
 ### 修复

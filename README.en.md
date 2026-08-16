@@ -137,6 +137,43 @@ models:
     max_output: 8192
 ```
 
+### Generic HTTP upstreams and DeepSeek
+
+A generic resource can expose several native protocols without another conversion layer:
+
+```yaml
+upstream_resources:
+  deepseek:
+    prefix: deepseek
+    secret_env: DEEPSEEK_API_KEY
+    routes:
+      openai-chat:
+        base_url: https://api.deepseek.com
+        path: /chat/completions
+        auth: bearer
+      openai-responses:
+        base_url: https://api.deepseek.com
+        path: /responses
+        auth: bearer
+      anthropic-passthrough:
+        base_url: https://api.deepseek.com/anthropic
+        path: /v1/messages
+        auth: x-api-key
+        default_headers:
+          anthropic-version: "2023-06-01"
+models:
+  deepseek-v4-pro:
+    upstream_resource: deepseek
+    upstream_id: deepseek-v4-pro
+    dialect: openai-chat
+    context_length: 1000000
+    max_output: 393216
+```
+
+The same public model works on `/v1/chat/completions`, `/openai/v1/responses`, and `/v1/messages`; each endpoint selects its native upstream route. The API key is read from `DEEPSEEK_API_KEY` at request time and is never stored in the model entry. Prefix calls such as `deepseek/deepseek-v4-pro` are also supported. Current official models are `deepseek-v4-flash` and `deepseek-v4-pro`; retired `deepseek-chat` / `deepseek-reasoner` names are not installed as defaults. DeepSeek Beta Strict Tools, Prefix Completion, and FIM are intentionally out of scope.
+
+Thinking tool loops must replay the complete assistant `reasoning_content`; the gateway preserves the official wire format and does not synthesize missing history.
+
 ### `dashboard`
 
 ```yaml

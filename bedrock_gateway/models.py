@@ -7,9 +7,16 @@ Provides model resolution (alias → Bedrock model ID) and metadata
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from .config import AzureResource, GatewayConfig, ModelEntry, _MODEL_ALIASES
+from .config import (
+    _MODEL_ALIASES,
+    AzureResource,
+    GatewayConfig,
+    ModelEntry,
+    UpstreamResource,
+    _apply_upstream_route,
+)
 
 # ---------------------------------------------------------------------------
 # Valid Bedrock model ID prefixes — anything starting with one of these is
@@ -77,13 +84,17 @@ class ModelRegistry:
 
     def __init__(self, config: GatewayConfig) -> None:
         self._models: dict[str, ModelEntry] = dict(config.models)
-        # Azure resources that opt into passthrough-by-model-prefix, indexed by
-        # their ``prefix`` (e.g. "azure" → resource). Enables ``azure/<dep>``
-        # model routing with no per-model config.
+        # Resources that opt into passthrough-by-model-prefix, indexed by their
+        # prefix. This enables ``prefix/<deployment>`` routing without per-model
+        # configuration while preserving the legacy Azure resource path.
         self._prefix_resources: dict[str, AzureResource] = {
             res.prefix: res
             for res in config.azure_resources.values()
             if res.prefix
+        }
+        self._upstream_resources: dict[str, UpstreamResource] = dict(config.upstream_resources)
+        self._upstream_prefix_resources: dict[str, UpstreamResource] = {
+            res.prefix: res for res in config.upstream_resources.values()
         }
 
     # ------------------------------------------------------------------
@@ -138,25 +149,54 @@ class ModelRegistry:
             return self._models.get(canonical)
         return None
 
+    def resolve_for_dialect(self, alias: str, dialect: str) -> tuple[str, ModelEntry] | None:
+        """Resolve an explicit model onto another route of its generic resource."""
+        entry = self.get_entry(alias)
+        if entry is None or entry.transport != "http" or not entry.upstream_resource:
+            return None
+        resource = self._upstream_resources.get(entry.upstream_resource)
+        if resource is None:
+            return None
+        route = resource.routes.get(dialect)
+        if route is None:
+            return None
+        resolved = replace(entry, dialect=dialect)
+        _apply_upstream_route(resolved, resource, route)
+        return resolved.deployment or resolved.bedrock_id, resolved
+
     def resolve_prefixed(self, alias: str, dialect: str) -> ModelEntry | None:
         """Resolve a ``<prefix>/<deployment>`` model into a passthrough entry.
 
-        If *alias* begins with a configured Azure resource ``prefix`` followed
-        by ``/``, build an Azure passthrough :class:`ModelEntry` on the fly:
-        the deployment is the remainder after the prefix, the endpoint + key
-        come from the matched resource, and *dialect* is supplied by the caller
-        (the server picks it from the endpoint the request hit). Returns
-        ``None`` when no prefix matches, so callers fall through to normal
-        resolution.
-
-        This is what lets ``azure/<any-deployment>`` route with **no per-model
-        config** — the resource (endpoint + key + prefix) is registered once.
+        If *alias* begins with a configured resource ``prefix`` followed by
+        ``/``, build a resolved passthrough :class:`ModelEntry` on the fly. The
+        deployment is the remainder after the prefix and *dialect* selects the
+        matching generic route. Legacy Azure prefixes retain their existing
+        endpoint/key resolution. Returns ``None`` when no prefix or route
+        matches, so callers fall through to normal resolution.
         """
-        if "/" not in alias or not self._prefix_resources:
+        if "/" not in alias:
             return None
         prefix, _, deployment = alias.partition("/")
+        if not deployment:
+            return None
+
+        upstream = self._upstream_prefix_resources.get(prefix)
+        if upstream is not None:
+            route = upstream.routes.get(dialect)
+            if route is None:
+                return None
+            entry = ModelEntry(
+                bedrock_id=deployment,
+                transport="http",
+                dialect=dialect,
+                deployment=deployment,
+                upstream_resource=prefix,
+            )
+            _apply_upstream_route(entry, upstream, route)
+            return entry
+
         res = self._prefix_resources.get(prefix)
-        if res is None or not deployment:
+        if res is None:
             return None
         return ModelEntry(
             bedrock_id=deployment,

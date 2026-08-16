@@ -14,10 +14,11 @@ from __future__ import annotations
 from ..config import ModelEntry
 from .base import Dialect, Transport
 from .dialect_anthropic import AnthropicMessagesDialect
+from .dialect_anthropic_passthrough import AnthropicPassthroughDialect
 from .dialect_chat import ChatPassthroughDialect
 from .dialect_images import ImagesPassthroughDialect
 from .dialect_responses import ResponsesPassthroughDialect
-from .transports import AzureTransport, BedrockTransport
+from .transports import AzureTransport, BedrockTransport, HttpTransport
 
 
 class UnsupportedProtocolError(Exception):
@@ -31,10 +32,12 @@ class UnsupportedProtocolError(Exception):
 _TRANSPORTS: dict[str, Transport] = {
     BedrockTransport.name: BedrockTransport(),
     AzureTransport.name: AzureTransport(),
+    HttpTransport.name: HttpTransport(),
 }
 
 _DIALECTS: dict[str, Dialect] = {
     AnthropicMessagesDialect.name: AnthropicMessagesDialect(),
+    AnthropicPassthroughDialect.name: AnthropicPassthroughDialect(),
     ResponsesPassthroughDialect.name: ResponsesPassthroughDialect(),
     ChatPassthroughDialect.name: ChatPassthroughDialect(),
     ImagesPassthroughDialect.name: ImagesPassthroughDialect(),
@@ -62,7 +65,9 @@ __all__ = [
     "Dialect",
     "BedrockTransport",
     "AzureTransport",
+    "HttpTransport",
     "AnthropicMessagesDialect",
+    "AnthropicPassthroughDialect",
     "ResponsesPassthroughDialect",
     "ChatPassthroughDialect",
     "ImagesPassthroughDialect",
