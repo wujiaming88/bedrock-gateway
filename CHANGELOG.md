@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.6.0] — 2026-08-16
+
+### 新增
+
+- 项目品牌升级为 **MuxLane — The unified lane for AI traffic**，新增 `muxlane` CLI。
+
+### 兼容
+
+- 整个 `0.x` 保留 distribution `bedrock-gateway`、CLI `bedrock-gateway`、Python import `bedrock_gateway`、旧 systemd unit、部署/日志/DB 路径和环境变量；本次不迁移或复制持久化数据。
+
 ## [0.5.0] — 2026-08-16
 
 ### 新增

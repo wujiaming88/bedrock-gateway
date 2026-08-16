@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for AI agents (and humans) working in this repository.
+Guidance for AI agents (and humans) working on **MuxLane** (formerly Bedrock Gateway).
 
 ## What this is
 

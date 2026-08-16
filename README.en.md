@@ -1,4 +1,8 @@
-# Bedrock Gateway
+# MuxLane
+
+**The unified lane for AI traffic.**
+
+> Formerly Bedrock Gateway. Throughout the `0.x` series, the legacy `bedrock-gateway` CLI, `bedrock_gateway` Python import, systemd unit, deployment paths, logs, and environment variables remain supported. New usage should prefer `muxlane`.
 
 Forward OpenAI / Anthropic API requests to AWS Bedrock.
 

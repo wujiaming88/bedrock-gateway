@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bedrock-gateway"
-version = "0.5.0"
-description = "Lightweight OpenAI-compatible proxy for AWS Bedrock"
+version = "0.6.0"
+description = "MuxLane — unified multi-cloud AI protocol gateway"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Bedrock Gateway Contributors" },
+    { name = "MuxLane Contributors" },
 ]
 keywords = ["aws", "bedrock", "openai", "proxy", "claude", "anthropic", "llm"]
 classifiers = [
@@ -45,6 +45,7 @@ all = ["bedrock-gateway[boto3,dev]"]
 
 [project.scripts]
 bedrock-gateway = "bedrock_gateway.server:run"
+muxlane = "bedrock_gateway.server:run"
 
 [project.urls]
 Homepage = "https://github.com/bedrock-gateway/bedrock-gateway"

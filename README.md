@@ -1,4 +1,8 @@
-# Bedrock Gateway
+# MuxLane
+
+**The unified lane for AI traffic.**
+
+> 原项目名 Bedrock Gateway。整个 `0.x` 保留 `bedrock-gateway` CLI、`bedrock_gateway` Python import、systemd unit、部署目录、日志与环境变量兼容；新命令推荐使用 `muxlane`。
 
 把发往 **OpenAI / Anthropic** 的 API 请求转发到 **AWS Bedrock** 与 **Azure OpenAI**。
 任何兼容 OpenAI 或 Anthropic SDK 的客户端，都可以**不改一行业务代码**接入多云模型 —— 只需把 `base_url` 指向本网关。

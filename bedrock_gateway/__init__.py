@@ -1,8 +1,8 @@
 """
-Bedrock Gateway — Lightweight OpenAI-compatible proxy for AWS Bedrock.
+MuxLane — The unified lane for multi-cloud AI traffic.
 
 Lets any OpenAI client access AWS Bedrock models via Bearer Token,
 AK/SK credentials, IAM Role, or AWS Profile authentication.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

@@ -493,9 +493,9 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         config = load_config()
 
     app = FastAPI(
-        title="Bedrock Gateway",
+        title="MuxLane",
         version=__version__,
-        description="OpenAI-compatible proxy for AWS Bedrock",
+        description="The unified lane for multi-cloud AI traffic",
     )
 
     registry = ModelRegistry(config)
@@ -2224,7 +2224,7 @@ def run(config: GatewayConfig | None = None) -> None:
 
     app = create_app(config)
     logger.info(
-        "Bedrock Gateway v%s starting on %s:%d (%d models, auth=%s, region=%s)",
+        "MuxLane v%s starting on %s:%d (%d models, auth=%s, region=%s)",
         __version__,
         config.server.host,
         config.server.port,

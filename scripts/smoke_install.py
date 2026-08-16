@@ -34,6 +34,10 @@ def main() -> int:
         wheel = next(wheels.glob("bedrock_gateway-*.whl"))
         run(str(python), "-m", "pip", "install", str(wheel))
         run(str(python), "-m", "pip", "check")
+        for command in ("bedrock-gateway", "muxlane"):
+            script = venv / "bin" / command
+            if not script.exists():
+                raise AssertionError(f"missing CLI entry point: {command}")
 
         code = """
 import importlib.metadata

@@ -187,7 +187,7 @@ def _login_page(error: str | None = None, next_url: str = "/dashboard/") -> HTML
     safe_next = html.escape(next_url)
     body = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"/>
-<title>Bedrock Gateway — Sign in</title>
+<title>MuxLane — Sign in</title>
 <style>
 body{{font-family:system-ui,sans-serif;background:#0b0f14;color:#d6dde6;
      display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}}
@@ -203,7 +203,7 @@ button{{margin-top:1rem;width:100%;padding:.7rem;border-radius:4px;border:0;
 </style></head>
 <body>
 <form method="POST" action="/dashboard/login">
-  <h1>BEDROCK GATEWAY — SIGN IN</h1>
+  <h1>MUXLANE — SIGN IN</h1>
   <label for="key">API Key</label>
   <input id="key" name="key" type="password" autocomplete="off" autofocus />
   <input type="hidden" name="next" value="{safe_next}" />
