@@ -272,6 +272,91 @@ class TestProjectionTriggerMatrix:
 # Projection details
 # ---------------------------------------------------------------------------
 
+class TestLegacyCompatibilityRulesInFallback:
+    def test_additional_tools_and_developer_messages_are_folded(self):
+        body = {
+            "instructions": "base",
+            "tools": [{"type": "function", "name": "existing"}],
+            "input": [
+                {"type": "additional_tools", "role": "developer", "tools": [
+                    {"type": "function", "name": "existing"},
+                    {"type": "function", "name": "shell"},
+                ]},
+                {"type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": "dev rule"},
+                ]},
+                {"type": "agent_message", "text": "visible"},
+            ],
+        }
+        result = project_mantle_input(body)
+        assert result.safe_to_retry
+        assert result.body["tools"] == [
+            {"type": "function", "name": "existing"},
+            {"type": "function", "name": "shell"},
+        ]
+        assert result.body["instructions"] == "base\n\ndev rule"
+        assert result.body["input"] == [{
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "visible"}],
+        }]
+        assert result.decisions["lift_additional_tools"] == 1
+        assert result.decisions["fold_developer_message"] == 1
+
+    def test_malformed_additional_tools_and_developer_are_unsafe(self):
+        for item, reason in [
+            ({"type": "additional_tools", "tools": {}}, "additional_tools_not_list"),
+            ({"type": "message", "role": "developer", "content": []},
+             "developer_message_unmappable"),
+        ]:
+            result = project_mantle_input({"input": [item]})
+            assert not result.safe_to_retry
+            assert reason in result.unsafe_reasons
+
+    def test_message_text_and_web_search_tool_legacy_rules(self):
+        body = {
+            "tools": [{
+                "type": "web_search", "search_content_types": ["text"],
+                "external_web_access": True,
+            }],
+            "input": [{
+                "type": "message", "role": "user",
+                "content": [{"type": "text", "text": "hello"}],
+            }],
+        }
+        result = project_mantle_input(body)
+        assert result.safe_to_retry
+        assert result.body["input"][0]["content"][0]["type"] == "input_text"
+        assert result.body["tools"] == [{
+            "type": "web_search", "external_web_access": True,
+        }]
+
+    def test_top_level_reasoning_and_nested_foreign_opaque_are_normalized(self):
+        body = {
+            "reasoning": {"context": {"new": "shape"}, "effort": "high"},
+            "input": [{
+                "type": "message", "role": "user",
+                "content": [{
+                    "type": "input_text", "text": "visible",
+                    "encrypted_content": "foreign",
+                }],
+            }],
+        }
+        result = project_mantle_input(body)
+        assert result.safe_to_retry
+        assert result.body["reasoning"]["context"] == "auto"
+        assert "encrypted_content" not in result.body["input"][0]["content"][0]
+
+    def test_item_reference_and_web_search_call_are_preserved(self):
+        items = [
+            {"type": "item_reference", "id": "ref"},
+            {"type": "web_search_call", "id": "search", "status": "completed"},
+            {"type": "agent_message", "text": "visible"},
+        ]
+        result = project_mantle_input({"input": items})
+        assert result.safe_to_retry
+        assert result.body["input"][:2] == items[:2]
+
+
 class TestProjectionDetails:
     def test_object_arguments_stable_json_string(self):
         body = {"input": [

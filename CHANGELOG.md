@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.6.2] — 2026-08-18
+
+### 修复
+
+- Mantle Responses fallback 补齐从旧 normalizer 迁移时遗漏的 `additional_tools` 提升、developer message 折叠、tool 去重、message text、reasoning context、web-search 与 nested opaque 规则；实际 59 项 Codex 历史不再因 `additional_tools` 被误判 unsafe。
+- `item_reference`、`web_search_call` 等已真机接受的 item 明确保留；无法安全映射的 legacy shape 继续拒绝fallback，不盲删可见语义或工具状态。
+
+### 测试
+
+- 增加 legacy compatibility 对照矩阵；全量 1023 项通过，并用 `additional_tools + developer + agent_message` 流式组合真机验证 fallback 400→200。
+
 ## [0.6.1] — 2026-08-18
 
 ### 修复

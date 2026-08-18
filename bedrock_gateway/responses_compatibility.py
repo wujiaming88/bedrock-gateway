@@ -56,6 +56,8 @@ _ACCEPTED_ITEM_TYPES = frozenset(
         "custom_tool_call",
         "custom_tool_call_output",
         "reasoning",
+        "item_reference",
+        "web_search_call",
     }
 )
 
@@ -375,11 +377,33 @@ def project_mantle_input(body: dict[str, Any]) -> ProjectionResult:
 
     analysis = analyze_history(input_value)
     projected_items: list[Any] = []
+    lifted_tools: list[Any] = []
+    developer_texts: list[str] = []
     decisions: dict[str, int] = {}
     unsafe_reasons: list[str] = []
     changed = False
 
     for item in input_value:
+        if isinstance(item, dict) and item.get("type") == "additional_tools":
+            tools = item.get("tools")
+            if isinstance(tools, list):
+                lifted_tools.extend(tools)
+                _count(decisions, "lift_additional_tools")
+                changed = True
+                continue
+            unsafe_reasons.append("additional_tools_not_list")
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "message"
+            and item.get("role") == "developer"
+        ):
+            text = _extract_text_from_content(item.get("content"))
+            if text:
+                developer_texts.append(text)
+                _count(decisions, "fold_developer_message")
+                changed = True
+                continue
+            unsafe_reasons.append("developer_message_unmappable")
         new_item, decision, unsafe = _project_item(item)
         if decision is not None:
             _count(decisions, decision)
@@ -401,7 +425,30 @@ def project_mantle_input(body: dict[str, Any]) -> ProjectionResult:
         unsafe_reasons.append("duplicate_call_id")
 
     out = dict(body)
+    if lifted_tools:
+        out["tools"] = _merge_tools(out.get("tools"), lifted_tools)
+    if "tools" in out:
+        normalized_tools = _normalize_tools(out.get("tools"))
+        if normalized_tools != out.get("tools"):
+            changed = True
+            _count(decisions, "normalize_tools")
+        out["tools"] = normalized_tools
+    if developer_texts:
+        out["instructions"] = _merge_instructions(
+            out.get("instructions"), developer_texts
+        )
+    if "reasoning" in out:
+        normalized_reasoning = _normalize_reasoning(out.get("reasoning"))
+        if normalized_reasoning != out.get("reasoning"):
+            changed = True
+            _count(decisions, "normalize_reasoning")
+        out["reasoning"] = normalized_reasoning
     out["input"] = projected_items
+    stripped_out, opaque_changed = _strip_foreign_opaque(out)
+    if opaque_changed:
+        out = stripped_out
+        changed = True
+        _count(decisions, "drop_foreign_opaque")
     return ProjectionResult(
         body=out,
         changed=changed,
@@ -437,6 +484,10 @@ def _project_item(item: Any) -> tuple[Any, str | None, str | None]:
         return _project_output(item)
     if itype == "reasoning":
         return _project_reasoning(item)
+    if itype in {"item_reference", "web_search_call"}:
+        return item, None, None
+    if itype == "additional_tools":
+        return item, "unsafe_additional_tools", "additional_tools_unhandled"
     if itype == "message" or (itype is None and role is not None):
         return _project_message(item)
     return item, "unsafe_unknown", f"unknown:{itype}"
@@ -555,9 +606,16 @@ def _project_reasoning(item: dict[str, Any]) -> tuple[Any, str | None, str | Non
 
 
 def _project_message(item: dict[str, Any]) -> tuple[Any, str | None, str | None]:
-    filtered, changed = _strip_foreign_opaque(item)
-    if changed:
-        return filtered, "drop_foreign_opaque", None
+    filtered, opaque_changed = _strip_foreign_opaque(item)
+    normalized = _normalize_input_item(filtered)
+    content_changed = normalized != filtered
+    if opaque_changed or content_changed:
+        decisions = []
+        if opaque_changed:
+            decisions.append("drop_foreign_opaque")
+        if content_changed:
+            decisions.append("normalize_message_content")
+        return normalized, "_".join(decisions), None
     return item, None, None
 
 
