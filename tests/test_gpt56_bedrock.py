@@ -116,9 +116,12 @@ class TestGPT56ResponsesEndpoint:
         assert _sent(mock_cls)["model"] == bedrock_id
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
-    def test_codex_like_input_is_normalized_for_bedrock_gpt5x(self, mock_cls, client):
+    def test_codex_like_input_is_forwarded_verbatim_for_bedrock_gpt5x(self, mock_cls, client):
+        # Eager normalization was removed: the FIRST request sends the raw client
+        # body verbatim (model id swapped only). additional_tools, developer
+        # messages, web_search options and reasoning.context flow through untouched.
         mock_cls.return_value = _mock_sync_client(_responses_body("openai.gpt-5.6-sol"))
-        resp = client.post("/openai/v1/responses", json={
+        body = {
             "model": "gpt-5.6-sol",
             "input": [
                 {"type": "additional_tools", "role": "developer", "tools": [
@@ -137,21 +140,19 @@ class TestGPT56ResponsesEndpoint:
                 "external_web_access": True,
                 "search_content_types": ["text"],
             }],
-        })
+        }
+        resp = client.post("/openai/v1/responses", json=body)
         assert resp.status_code == 200
         sent = _sent(mock_cls)
         assert sent["model"] == "openai.gpt-5.6-sol"
-        assert sent["tools"] == [
-            {"type": "web_search", "external_web_access": True},
-            {"type": "function", "name": "shell"},
-        ]
-        assert sent["instructions"] == "developer instruction"
-        assert sent["input"] == [
-            {"type": "message", "role": "user", "content": [
-                {"type": "input_text", "text": "hi"},
-            ]}
-        ]
-        assert sent["reasoning"] == {"effort": "medium", "context": "auto"}
+        assert sent["tools"] == [{
+            "type": "web_search",
+            "external_web_access": True,
+            "search_content_types": ["text"],
+        }]
+        assert "instructions" not in sent
+        assert sent["input"] == body["input"]
+        assert sent["reasoning"] == {"effort": "medium", "context": {"summary": "x"}}
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_azure_prefix_is_not_normalized(self, mock_cls):
@@ -184,29 +185,27 @@ class TestGPT56ResponsesEndpoint:
         }]
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
-    def test_invalid_encrypted_content_is_stripped_for_bedrock_gpt5x(self, mock_cls, client):
+    def test_encrypted_content_is_forwarded_verbatim_for_bedrock_gpt5x(self, mock_cls, client):
+        # No eager opaque stripping: foreign encrypted_content is forwarded
+        # untouched on the first attempt (projection happens only after an exact
+        # variant 400, never eagerly).
         mock_cls.return_value = _mock_sync_client(_responses_body("openai.gpt-5.6-sol"))
-        resp = client.post("/openai/v1/responses", json={
-            "model": "gpt-5.6-sol",
-            "input": [
-                {"type": "reasoning", "encrypted_content": "foreign_blob"},
-                {"type": "reasoning", "encrypted_content": "rsn_valid", "summary": []},
-                {"type": "message", "role": "assistant", "content": [
-                    {"type": "output_text", "text": "visible", "encrypted_content": "bad"},
-                ]},
-            ],
-        })
-        assert resp.status_code == 200
-        sent = _sent(mock_cls)
-        assert sent["input"] == [
+        input_items = [
+            {"type": "reasoning", "encrypted_content": "foreign_blob"},
             {"type": "reasoning", "encrypted_content": "rsn_valid", "summary": []},
             {"type": "message", "role": "assistant", "content": [
-                {"type": "output_text", "text": "visible"},
+                {"type": "output_text", "text": "visible", "encrypted_content": "bad"},
             ]},
         ]
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-5.6-sol",
+            "input": input_items,
+        })
+        assert resp.status_code == 200
+        assert _sent(mock_cls)["input"] == input_items
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
-    def test_reasoning_replay_and_custom_tool_history_are_normalized(self, mock_cls, client):
+    def test_reasoning_replay_and_custom_tool_history_forwarded_verbatim(self, mock_cls, client):
         mock_cls.return_value = _mock_sync_client(_responses_body("openai.gpt-5.6-sol"))
         history = [
             {"type": "reasoning", "id": "valid", "encrypted_content": "rsn_valid", "summary": None},
@@ -221,10 +220,7 @@ class TestGPT56ResponsesEndpoint:
         ]
         resp = client.post("/openai/v1/responses", json={"model": "gpt-5.6-sol", "input": history})
         assert resp.status_code == 200
-        sent = _sent(mock_cls)["input"]
-        assert sent == [
-            {**history[0], "summary": []}, history[2], history[3], history[4], history[5]
-        ]
+        assert _sent(mock_cls)["input"] == history
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_azure_reasoning_replay_is_forwarded_verbatim(self, mock_cls):

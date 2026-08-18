@@ -51,7 +51,7 @@ configured this way and uses native Chat, Responses, and Anthropic passthrough.
 ### Endpoints → dialects
 - `POST /v1/chat/completions` — branches by dialect: `anthropic` (Claude,
   converted) vs `openai-chat` (Azure/mantle, passthrough).
-- `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.x, Grok, Azure). Bedrock GPT-5.x requests pass through a small compatibility normalizer (`responses_normalizer.py`) before upstream dispatch: Codex `additional_tools` items are lifted to top-level `tools`, developer messages become `instructions`, and text blocks are normalized to `input_text`. Keep this dialect-adjacent; do not put it in transport.
+- `POST /openai/v1/responses` — `openai-responses` dialect (GPT-5.x, Grok, Azure). The raw client body is sent verbatim on the FIRST attempt (model id swapped only). For Bedrock mantle GPT-5.x native Responses only, an exact schema-variant 400 (deserialization-stage, e.g. `Invalid 'input'`) triggers a one-time safe projection via the pure `responses_compatibility.py` module and a single bounded retry; unsafe projections and relationship errors (No tool output/call found) return the original 400 unchanged. The compatibility policy is derived automatically from `(transport=bedrock, dialect=openai-responses, model=openai.gpt-5*)` — never a user switch. `responses_normalizer.py` is a legacy facade over that module; the endpoint no longer calls it eagerly.
 - `POST /openai/v1/images/generations` — `openai-images` dialect (Azure
   `gpt-image-2`, passthrough, sync JSON only; no streaming).
 - `POST /openai/v1/images/edits` — the same `openai-images` dialect with an

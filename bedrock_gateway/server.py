@@ -59,9 +59,11 @@ from .messages_to_responses import (
 )
 from .logging_config import configure_logging
 from .models import ModelRegistry, UnknownModelError
-from .responses_normalizer import (
-    is_bedrock_gpt5x_responses_model,
-    normalize_bedrock_gpt5x_responses_request,
+from .responses_compatibility import (
+    CompatibilityPolicy,
+    is_exact_variant_rejection,
+    project_mantle_input,
+    responses_compat_policy,
 )
 from .providers import (
     Dialect,
@@ -453,6 +455,36 @@ def _log_request_shape_for_upstream_error(
         )
     except Exception:  # noqa: BLE001 — diagnostics must never break requests
         logger.exception("REQ-SHAPE failed model=%s", model)
+
+
+def _compat_projection(
+    compat: CompatibilityPolicy | None,
+    body: dict[str, Any] | None,
+    model: str,
+) -> dict[str, Any] | None:
+    """Run the one-time safe projection for an exact-variant 400.
+
+    The caller has already validated ``is_exact_variant_rejection``. Returns the
+    projected body when it is safe to retry (changed AND no unsafe relation/item),
+    else None. Logs a redacted decision record either way — decisions, counts and
+    categories only, never request values.
+    """
+    if compat is None or body is None or not isinstance(body, dict):
+        logger.warning("COMPAT model=%s no_projection_body", model)
+        return None
+    result = project_mantle_input(body)
+    logger.info(
+        "COMPAT model=%s safe=%s changed=%s decisions=%s unsafe=%s relations=%s",
+        model,
+        result.safe_to_retry,
+        result.changed,
+        json.dumps(result.decisions, sort_keys=True),
+        json.dumps(list(result.unsafe_reasons), sort_keys=True),
+        json.dumps(result.relation_counts, sort_keys=True),
+    )
+    if result.safe_to_retry and result.changed:
+        return result.body
+    return None
 
 
 # Connections should fail fast (DNS/refused/TLS is not something a long read
@@ -863,12 +895,15 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         # Passthrough: the client body is already native Responses format.
         # Swap the client-facing alias for the upstream id — the Azure
         # deployment name for Azure models, else the resolved Bedrock id.
-        # Every other field (input, image blocks, reasoning, tools) is untouched.
+        # Every other field (input, image blocks, reasoning, tools) is untouched
+        # on the FIRST attempt: the raw client body is sent verbatim (model id
+        # swapped only). No eager normalization.
         upstream_id = entry.deployment if entry.transport == "azure" else model
         upstream_body = dict(body)
         upstream_body["model"] = upstream_id
-        if is_bedrock_gpt5x_responses_model(entry.transport, entry.dialect, upstream_id):
-            upstream_body = normalize_bedrock_gpt5x_responses_request(upstream_body)
+        # One-time safe-projection fallback policy, armed only for Bedrock
+        # mantle GPT-5.x native Responses (never a user switch).
+        compat = responses_compat_policy(entry.transport, entry.dialect, upstream_id)
 
         logger.info(
             "REQ [responses] model=%s -> %s (%s) stream=%s",
@@ -880,11 +915,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 transport, dialect, entry, upstream_id, config.region,
                 upstream_body, auth, max_retries, retry_base_delay,
                 timeout=request_timeout, request=request, health=health,
+                compat=compat,
             )
         return await _handle_sync(
             transport, dialect, entry, upstream_id, config.region,
             upstream_body, auth, max_retries, retry_base_delay,
             timeout=request_timeout, request=request, health=health,
+            compat=compat,
         )
 
     # ------------------------------------------------------------------
@@ -1475,16 +1512,20 @@ async def _handle_sync(
     timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
+    compat: CompatibilityPolicy | None = None,
 ) -> dict | JSONResponse:
     url = transport.build_url(
         _operation_path(dialect, entry, False, operation), region, entry
     )
     payload = _prepare_request_body(bedrock_body)
-    body_bytes = payload.content
     last_error: str | None = None
     deadline = _retry_deadline(timeout, max_retries)
+    attempt = 0
+    compat_attempted = False
 
-    for attempt in range(max_retries):
+    while True:
+        if attempt >= max_retries:
+            break
         # P3: stop retrying once the total wall-clock budget is spent, rather
         # than stacking N full per-attempt timeouts into a multi-minute hang.
         if attempt > 0 and time.monotonic() >= deadline:
@@ -1498,7 +1539,7 @@ async def _handle_sync(
             # gateway's global auth; None → use the global SigV4/Bearer path.
             headers = _payload_headers(transport, entry, auth, url, payload)
             async with _track_upstream(health), httpx.AsyncClient(timeout=_httpx_timeout(timeout)) as client:
-                resp = await client.post(url, headers=headers, content=body_bytes)
+                resp = await client.post(url, headers=headers, content=payload.content)
 
             if resp.status_code == 200:
                 # P1: a 200 with an unparseable body is an upstream fault (502),
@@ -1538,7 +1579,24 @@ async def _handle_sync(
                 )
                 _note_retry(request)
                 await asyncio.sleep(delay)
+                attempt += 1
                 continue
+
+            # One-time compatibility fallback: only an exact variant 400 on a
+            # Bedrock GPT-5.x native Responses request. Independent of the normal
+            # retry budget (but bounded by the shared deadline), hard-capped at 1.
+            if (
+                compat is not None
+                and not compat_attempted
+                and resp.status_code == 400
+                and is_exact_variant_rejection(400, resp.text)
+            ):
+                compat_attempted = True
+                projected_body = _compat_projection(compat, payload.log_body, model)
+                if projected_body is not None and time.monotonic() < deadline:
+                    payload = _prepare_request_body(projected_body)
+                    continue
+                # unsafe / no-change projection → fall through to the original 400
 
             error = parse_bedrock_error(resp.status_code, resp.text)
             _log_upstream_error(
@@ -1570,6 +1628,7 @@ async def _handle_sync(
             _note_retry(request)
             _note_timeout(request)
             await asyncio.sleep(retry_base_delay * (2**attempt))
+            attempt += 1
 
         except Exception as exc:
             logger.exception("UNEXPECTED model=%s during %s", model, log_tag)
@@ -1600,6 +1659,7 @@ async def _open_upstream_stream(
     log_tag: str,
     extra_headers: dict[str, str] | None = None,
     timeout: float = 300.0,
+    compat: CompatibilityPolicy | None = None,
 ) -> tuple[Any, AsyncExitStack | None, dict | None]:
     """Open the Bedrock streaming connection and inspect the HTTP status
     *before* any bytes are handed to the client.
@@ -1620,7 +1680,11 @@ async def _open_upstream_stream(
     last_status = 502
     last_message = "upstream unavailable"
     deadline = _retry_deadline(timeout, max_retries)
-    for attempt in range(max_retries):
+    attempt = 0
+    compat_attempted = False
+    while True:
+        if attempt >= max_retries:
+            break
         if attempt > 0 and time.monotonic() >= deadline:  # P3: total budget
             logger.warning(
                 "STREAM-OPEN retry-budget exhausted [%s] attempt=%d/%d",
@@ -1654,6 +1718,7 @@ async def _open_upstream_stream(
             if attempt < max_retries - 1:
                 _note_retry(request)
                 await asyncio.sleep(retry_base_delay * (2**attempt))
+            attempt += 1
             continue
         except Exception as exc:  # noqa: BLE001
             # Connection-level failure before any bytes flowed (DNS, refused,
@@ -1691,7 +1756,26 @@ async def _open_upstream_stream(
                 status, log_tag, attempt + 1, max_retries,
             )
             await asyncio.sleep(retry_base_delay * (2**attempt))
+            attempt += 1
             continue
+
+        # One-time compatibility fallback: exact variant 400, before any client
+        # SSE byte is emitted, on a Bedrock GPT-5.x native Responses request.
+        if (
+            compat is not None
+            and not compat_attempted
+            and status == 400
+            and is_exact_variant_rejection(400, err_body)
+        ):
+            compat_attempted = True
+            model = str(log_tag)
+            if isinstance(payload.log_body, dict) and payload.log_body.get("model"):
+                model = str(payload.log_body["model"])
+            projected_body = _compat_projection(compat, payload.log_body, model)
+            if projected_body is not None and time.monotonic() < deadline:
+                payload = _prepare_request_body(projected_body)
+                continue
+            # unsafe / no-change projection → fall through to the original error
 
         # Deterministic, non-retryable failure → surface as real HTTP error.
         error = parse_bedrock_error(status, err_body)
@@ -1744,6 +1828,7 @@ async def _handle_stream(
     timeout: float = 300.0,
     request: Request | None = None,
     health: HealthMonitor | None = None,
+    compat: CompatibilityPolicy | None = None,
 ) -> JSONResponse | StreamingResponse:
     url = transport.build_url(
         _operation_path(dialect, entry, True, operation), region, entry
@@ -1758,6 +1843,7 @@ async def _handle_stream(
         request=request, health=health, log_tag=f"{log_tag} model={model}",
         extra_headers=_transport_payload_headers(transport, entry, payload),
         timeout=timeout,
+        compat=compat,
     )
     if err is not None:
         return _oai_error(err["status"], err["message"], err["type"])

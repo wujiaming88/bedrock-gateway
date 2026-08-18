@@ -3,6 +3,19 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.6.1] — 2026-08-18
+
+### 修复
+
+- `/openai/v1/responses` 不再在第一次请求前做 eager 归一化：客户端原始 body 原样发送（仅替换 model id）。
+- 新增纯函数模块 `responses_compatibility.py`（版本化 `MantleResponsesProfile` v1、`analyze_history`、`project_mantle_input`、`is_exact_variant_rejection`），集中承载已真机验证的 Bedrock Mantle GPT-5.x Responses input 差异；`responses_normalizer.py` 退化为兼容 facade。
+- Bedrock Mantle GPT-5.x 原生 Responses 现在对精确 schema variant 400（反序列化阶段）执行一次确定性的安全投影后重试：投影无损且安全才重试一次，不安全则原样返回上游 400 并记录脱敏诊断；关系错误（No tool output/call found）永不 fallback。sync 与 stream preflight 各共享同一状态机，兼容重试硬上限为 1，且独立于普通 429/503/529 重试预算。
+- 兼容策略由 `(transport=bedrock, dialect=openai-responses, model=openai.gpt-5*)` 自动派生，不引入任何用户开关；Azure/DeepSeek/Grok 与其他 endpoint（Chat/Messages/Images）零变化。
+
+### 测试
+
+- 新增 `test_responses_compatibility.py`：8 类 exact-variant 触发矩阵、object→JSON 稳定编码、bare-text 包装、agent_message 安全/不安全映射、required 缺失/side-effect/unknown/关系 unsafe 判定、reasoning/phase/namespace/caller 保留、copy-on-write 与幂等、长历史（53/220 项）、`is_exact_variant_rejection` 矩阵、`analyze_history` 值安全、policy 门控、sync/stream 有界 fallback（恰好 1 或 2 次上游调用）与 Azure/`/v1/messages` 隔离。
+
 ## [0.6.0] — 2026-08-16
 
 ### 新增
