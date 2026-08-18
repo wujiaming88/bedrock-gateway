@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.6.3] — 2026-08-18
+
+### 清理
+
+- 删除已被 `multi-cloud-multimodal-design.md` 取代且无引用的旧 Provider 抽象设计文档，修正文档中已失效的 Provider 类架构说明，并移除一个未使用 import。
+- 清理本地 ignored build/test 产物；不删除兼容 CLI/import/env/systemd/path，也不删除仍覆盖生命周期与历史回归的版本化测试。
+
+### 修复
+
+- Mantle fallback 的 `agent_message` 现在会保留可见文本并安全忽略纯 provider opaque `encrypted_content` block；opaque-only 或携带未知 metadata 的 block 仍判定 unsafe，避免静默丢语义。
+
 ## [0.6.2] — 2026-08-18
 
 ### 修复

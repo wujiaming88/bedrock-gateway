@@ -831,12 +831,12 @@ git clone https://github.com/wujiaming88/bedrock-gateway.git
 cd bedrock-gateway
 pip install -e ".[dev]"
 
-pytest -q                                   # 815 用例
+pytest -q
 ruff check bedrock_gateway/ tests/
 mypy bedrock_gateway/ --ignore-missing-imports
 ```
 
-**架构**：新增模型 / 上游厂商 = 加一个 Provider（`bedrock_gateway/providers/`）+ 一条 `ModelEntry`，`server.py` 的编排逻辑（重试 / 预检 / 超时 / metrics）不用改。Provider 封装"如何与某个上游对话"（URL 构造、请求 / 响应渲染、流转换）：`AnthropicBedrockProvider` 走 `bedrock-runtime` + Anthropic 格式，`OpenAIResponsesProvider` 走 `bedrock-mantle` + Responses 透传。设计细节见 [`docs/provider-abstraction-design.md`](docs/provider-abstraction-design.md)。
+**架构**：模型由正交的 `Transport × Dialect` 组合描述。新增云或认证方式只增加 Transport；新增 wire format 只增加 Dialect；同格式的新模型通常只需增加 `ModelEntry`。重试、预检、超时和 metrics 继续由 `server.py` 统一编排。设计细节见 [`docs/multi-cloud-multimodal-design.md`](docs/multi-cloud-multimodal-design.md)。
 
 ---
 

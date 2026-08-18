@@ -524,6 +524,12 @@ def _project_agent_message(item: dict[str, Any]) -> tuple[Any, str | None, str |
             if isinstance(block, str):
                 blocks.append({"type": "input_text", "text": block})
                 continue
+            if isinstance(block, dict) and block.get("type") == "encrypted_content":
+                # Provider-private state has no visible conversational semantics.
+                # Drop only a pure opaque shell; any extra field remains unsafe.
+                if set(block) <= {"type", "encrypted_content"}:
+                    continue
+                return item, "unsafe_agent_message", "agent_message_opaque_with_metadata"
             if isinstance(block, dict) and block.get("type") in {
                 "input_text", "output_text", "text",
             }:

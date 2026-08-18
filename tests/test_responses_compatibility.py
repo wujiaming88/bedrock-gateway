@@ -407,6 +407,35 @@ class TestProjectionDetails:
             assert r.safe_to_retry is False, unsafe
             assert "agent_message" in r.unsafe_reasons[0]
 
+    def test_agent_message_visible_text_survives_pure_opaque_block(self):
+        item = {
+            "type": "agent_message", "author": "agent", "recipient": "user",
+            "content": [
+                {"type": "input_text", "text": "visible"},
+                {"type": "encrypted_content", "encrypted_content": "foreign"},
+            ],
+        }
+        result = project_mantle_input({"input": [item]})
+        assert result.safe_to_retry
+        assert result.body["input"] == [{
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "visible"}],
+        }]
+
+    def test_agent_message_opaque_only_or_opaque_metadata_is_unsafe(self):
+        for item, reason in [
+            ({"type": "agent_message", "content": [
+                {"type": "encrypted_content", "encrypted_content": "foreign"},
+            ]}, "agent_message_no_visible_text"),
+            ({"type": "agent_message", "content": [
+                {"type": "input_text", "text": "visible"},
+                {"type": "encrypted_content", "future": "unknown"},
+            ]}, "agent_message_opaque_with_metadata"),
+        ]:
+            result = project_mantle_input({"input": [item]})
+            assert not result.safe_to_retry
+            assert reason in result.unsafe_reasons
+
     def test_namespace_phase_caller_preserved(self):
         body = {"input": [
             {"type": "message", "role": "assistant", "phase": "final_answer",

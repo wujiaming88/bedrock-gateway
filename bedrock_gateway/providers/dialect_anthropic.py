@@ -12,9 +12,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import AsyncIterator
-
-import httpx
+from typing import TYPE_CHECKING, AsyncIterator
 
 from ..converter import (
     convert_usage,
@@ -23,7 +21,6 @@ from ..converter import (
     parse_bedrock_error,
     parse_bedrock_response,
 )
-from typing import TYPE_CHECKING
 
 from .base import Dialect
 
