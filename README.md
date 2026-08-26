@@ -56,6 +56,9 @@
 | `gpt-5.6-terra` | `openai.gpt-5.6-terra` | 1M | 128K* | **`/openai/v1/responses`** |
 | `gpt-5.6-luna` | `openai.gpt-5.6-luna` | 1M | 128K* | **`/openai/v1/responses`** |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
+| `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
+| `cohere-embed-v4-query` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
+| `titan-embed-text-v2` | `amazon.titan-embed-text-v2:0` | 8K | 1024维默认 | **`/v1/embeddings`** |
 | Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
 - Claude 系别名有大量常见变体自动解析：Opus 的点号与连字符写法均可（`claude-opus-4.7` ＝ `claude-opus-4-7`，4.8 / 4.6 同理），以及 Anthropic SDK 默认模型名、带日期的官方名（如 `claude-opus-4-7-20250428`）。裸 `claude-sonnet` 解析到当前最新的 Sonnet（4.6）。
@@ -70,6 +73,7 @@
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
+| `POST` | `/v1/embeddings` | OpenAI Embeddings（Cohere Embed v4 document/query原生批量；Titan Text V2受控并发fan-out；非流式） |
 | `POST` | `/openai/v1/responses` | OpenAI Responses（Bedrock GPT-5.x / Grok 4.3 / Azure，同步 + 流式；Bedrock GPT-5.x 会做最小兼容 normalizer 以适配 Codex input） |
 | `POST` | `/openai/v1/images/generations` | OpenAI Images Generations（Azure `gpt-image-2`，透传，同步） |
 | `POST` | `/openai/v1/images/edits` | OpenAI Images Edits（Azure `gpt-image-2`，multipart，同步 + SSE） |
@@ -431,6 +435,45 @@ chmod 600 /opt/bedrock-gateway/.env
 > Thinking + Tools 时必须完整保存并回传 assistant 的 `reasoning_content`；官方不支持该模式下的强制 `tool_choice`。网关按官方 wire 原样透传，不会伪造或补齐这段历史。
 
 ---
+
+## Embeddings
+
+标准端点：
+
+```text
+POST /v1/embeddings
+```
+
+使用OpenAI SDK：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="<gateway-key>")
+
+# 文档入库
+vectors = client.embeddings.create(
+    model="cohere-embed-v4-document",
+    input=["文档一", "文档二"],
+    dimensions=1024,
+)
+
+# 查询向量
+query = client.embeddings.create(
+    model="cohere-embed-v4-query",
+    input="苹果本季度毛利率是多少？",
+    dimensions=1024,
+)
+
+# Titan 对称向量；数组会在网关内以最多8并发fan-out，结果保序且全有或全无
+fallback = client.embeddings.create(
+    model="titan-embed-text-v2",
+    input=["文本一", "文本二"],
+    dimensions=512,
+)
+```
+
+协议支持：string/string[]、`encoding_format=float|base64`、`dimensions`、`user`。Cohere单批最多96条；Titan数组使用受控fan-out。当前两种Bedrock模型不接受OpenAI token-ID数组，收到int[]/int[][]时返回标准400。Cohere使用document/query两个alias固定正确任务空间；Titan为对称模型。Cohere上游不返回token usage，因此稳定返回0；Titan使用真实`inputTextTokenCount`聚合。
 
 ## 使用
 

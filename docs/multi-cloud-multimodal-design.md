@@ -177,7 +177,7 @@ upstream_resources:
 | **M1** | 定义 `Transport` / `Dialect` 接口；把现有 2 个 Provider 拆成 `BedrockTransport` + `AnthropicMessagesDialect` / `ResponsesPassthroughDialect`；server 编排改为 transport×dialect；旧 `protocol` 映射到新轴 | 643 测试零回归（现有 Bedrock/GPT-5.5/Grok 全绿） |
 | **M2** | `AzureTransport`（api-key + per-资源 endpoint）；`azure-gpt-5` 走 Responses 方言 | 单测 + 真机冒烟（实测已通） |
 | **M3** | `ChatPassthroughDialect`；Azure + Bedrock 都能走 `/v1/chat/completions` 透传（与现有 Anthropic 转换版分流共存） | 单测 + 真机（gpt-5 chat 实测已通） |
-| **M4** | `EmbeddingsPassthroughDialect` + `/v1/embeddings` 端点（无流式） | 单测 + 真机 |
+| **M4** | `openai-embeddings` + 通用Embedding Adapter/Profile + `/v1/embeddings`（Cohere原生batch、Titan受控fan-out，无流式） | 单测 + 真机 |
 | **M5** | 文档、config.example、CHANGELOG(0.3.0)、README | 一致 |
 | **后续** | 图像（JSON 方言，较易）、audio（二进制缝，单独设计） | 独立立项 |
 

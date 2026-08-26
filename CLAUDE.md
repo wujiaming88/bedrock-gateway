@@ -58,6 +58,9 @@ configured this way and uses native Chat, Responses, and Anthropic passthrough.
   explicit `edits` operation (Azure `gpt-image-2`, replayable multipart,
   sync JSON or SSE). The endpoint is constrained by Azure transport + Images
   dialect, not a model-name allowlist; variations and Bedrock image models are absent.
+- `POST /v1/embeddings` — strict OpenAI Embeddings contract. One `openai-embeddings`
+  dialect selects an `embedding_profile`: Cohere v4 document/query use native batches;
+  Titan Text V2 uses bounded all-or-nothing fan-out. Adapter logic stays out of transports.
 - `POST /v1/messages` — branches by dialect: `anthropic` (Bedrock Claude),
   `anthropic-passthrough` (native HTTP Messages) vs `openai-responses` (GPT-5.5/Grok/`azure/<dep>`, **translated**
   Anthropic Messages ⇄ Responses via `messages_to_responses.py`). This is what

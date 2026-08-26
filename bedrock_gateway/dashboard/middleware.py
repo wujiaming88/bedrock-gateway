@@ -43,6 +43,7 @@ _EXCLUDED_EXACT = {
 _LLM_PATHS = frozenset({
     "/v1/chat/completions",
     "/v1/messages",
+    "/v1/embeddings",
     "/openai/v1/responses",
     "/openai/v1/images/generations",
     "/openai/v1/images/edits",

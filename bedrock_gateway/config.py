@@ -241,7 +241,11 @@ class ModelEntry:
     endpoint: str = "runtime"     # transport hint: "runtime" | "mantle"
     protocol: str = "anthropic"   # LEGACY — mapped to transport/dialect
     transport: str = "bedrock"    # "bedrock" | "azure"
-    dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "openai-images" | "embeddings"
+    dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "openai-images" | "openai-embeddings"
+    # Embeddings-only metadata: which semantic profile an embedding model
+    # serves ("document" | "query" | ""). Adapter selection is by model name;
+    # this field documents the intent and future per-entry overrides.
+    embedding_profile: str = ""
     # ── Azure-only fields (unused for Bedrock models) ──
     deployment: str = ""          # Azure deployment name → request body "model"
     azure_endpoint: str = ""      # resolved from AzureResource.base_url
@@ -351,6 +355,32 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
+    # ── Embeddings (Bedrock runtime, native invoke) ────────────────────
+    # Cohere embed v4 is a *single* Bedrock model exposed under two gateway
+    # aliases; the ``embedding_profile`` (document vs query) is selected by
+    # model name, which the embeddings adapter layer maps to Cohere's
+    # ``input_type`` (search_document / search_query).
+    "cohere-embed-v4-document": {
+        "bedrock_id": "cohere.embed-v4:0",
+        "context_length": 128_000,
+        "max_output": 1_024,
+        "dialect": "openai-embeddings",
+        "embedding_profile": "cohere-embed-v4",
+    },
+    "cohere-embed-v4-query": {
+        "bedrock_id": "cohere.embed-v4:0",
+        "context_length": 128_000,
+        "max_output": 1_024,
+        "dialect": "openai-embeddings",
+        "embedding_profile": "cohere-embed-v4-query",
+    },
+    "titan-embed-text-v2": {
+        "bedrock_id": "amazon.titan-embed-text-v2:0",
+        "context_length": 8192,
+        "max_output": 1_024,
+        "dialect": "openai-embeddings",
+        "embedding_profile": "amazon-titan-embed-v2",
+    },
 }
 
 # Common model name variations → canonical alias
@@ -426,6 +456,19 @@ _MODEL_ALIASES: dict[str, str] = {
     "grok-4-3": "grok-4.3",
     "xai.grok-4.3": "grok-4.3",
     "xai-grok-4.3": "grok-4.3",
+    # Cohere embed v4 (document + query profiles)
+    "cohere.embed-v4:0": "cohere-embed-v4-document",
+    "cohere-embed-v4": "cohere-embed-v4-document",
+    "cohere-embed": "cohere-embed-v4-document",
+    "embed-v4": "cohere-embed-v4-document",
+    "embed-v-4": "cohere-embed-v4-document",
+    "cohere.embed-v4-query": "cohere-embed-v4-query",
+    "cohere-embed-query": "cohere-embed-v4-query",
+    "embed-v4-query": "cohere-embed-v4-query",
+    # Amazon Titan Embeddings V2
+    "amazon.titan-embed-text-v2:0": "titan-embed-text-v2",
+    "amazon-titan-embed-text-v2": "titan-embed-text-v2",
+    "titan-embed-v2": "titan-embed-text-v2",
 }
 
 
@@ -511,7 +554,12 @@ def _build_entry(
         protocol=protocol,
         transport=transport,
         dialect=dialect,
+        embedding_profile=str(info.get("embedding_profile", "")),
     )
+    if entry.dialect == "openai-embeddings" and not entry.embedding_profile:
+        raise ValueError(
+            f"embedding model {name!r} requires an embedding_profile"
+        )
     # Resolve Azure resource reference → concrete endpoint + key.
     res_ref = info.get("azure_resource")
     if res_ref is not None:

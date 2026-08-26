@@ -3,6 +3,18 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.7.0] — 2026-08-26
+
+### 新增
+
+- 新增严格OpenAI-compatible `POST /v1/embeddings`，通过通用Embedding IR、capability和adapter registry接入Bedrock Cohere Embed v4与Titan Text Embeddings V2。
+- Cohere提供document/query两个公开alias并使用原生batch；Titan数组使用固定8并发、共享deadline、all-or-nothing fan-out，结果保序并聚合真实`inputTextTokenCount`。
+- 支持float与OpenAI float32 little-endian base64、模型维度校验、标准OpenAI success/error envelope、dashboard metrics与隐私日志。
+
+### 测试
+
+- 新增parser/adapter/profile/endpoint/fan-out/retry/timeout/error/metrics测试，并以两种原生schema验证新增模型只需注册profile而无需修改Transport或公共endpoint。
+
 ## [0.6.3] — 2026-08-18
 
 ### 清理

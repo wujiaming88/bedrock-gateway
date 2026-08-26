@@ -130,8 +130,9 @@ class TestModelEntryDefaults:
     def test_all_claude_defaults_are_anthropic(self):
         """No Claude model accidentally got a non-anthropic dialect.
 
-        Only the explicitly-known mantle/Responses models may differ; every
-        other default must stay on the bedrock/anthropic path.
+        Only the explicitly-known mantle/Responses models and the embeddings
+        models may differ; every other default must stay on the
+        bedrock/anthropic path.
         """
         responses_models = {
             GPT55_ALIAS,
@@ -140,11 +141,21 @@ class TestModelEntryDefaults:
             "gpt-5.6-luna",
             GROK_ALIAS,
         }
+        embeddings_models = {
+            "cohere-embed-v4-document",
+            "cohere-embed-v4-query",
+            "titan-embed-text-v2",
+        }
         models = _parse_models(_DEFAULT_MODELS)
         for alias, e in models.items():
             if alias in responses_models:
                 assert e.dialect == "openai-responses", alias
                 assert e.endpoint == "mantle", alias
+                continue
+            if alias in embeddings_models:
+                assert e.dialect == "openai-embeddings", alias
+                assert e.transport == "bedrock", alias
+                assert e.endpoint == "runtime", alias
                 continue
             assert e.dialect == "anthropic", alias
             assert e.transport == "bedrock", alias

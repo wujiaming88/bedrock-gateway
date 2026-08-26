@@ -51,6 +51,17 @@ from .dashboard import (
     metrics_middleware_factory,
 )
 from .dashboard.storage import MetricsStorage
+from .embeddings import (
+    EmbeddingRequest,
+    EmbeddingsAdapter,
+    EmbeddingsError,
+    EmbeddingsValidationError,
+    UnsupportedEmbeddingsModelError,
+    apply_default_dimensions,
+    parse_request,
+    render_openai,
+    resolve_profile,
+)
 from .messages_to_responses import (
     AnthropicStreamAdapter,
     responses_error_to_anthropic,
@@ -91,11 +102,20 @@ def _oai_error(
     etype: str = "api_error",
     *,
     headers: dict[str, str] | None = None,
+    param: str | None = None,
+    code: str | int | None = None,
 ) -> JSONResponse:
     """Return an OpenAI-style error response."""
+    error: dict[str, Any] = {
+        "message": message,
+        "type": etype,
+        "code": status if code is None else code,
+    }
+    if param is not None:
+        error["param"] = param
     return JSONResponse(
         status_code=status,
-        content={"error": {"message": message, "type": etype, "code": status}},
+        content={"error": error},
         headers=headers,
     )
 
@@ -1107,6 +1127,74 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         )
 
     # ------------------------------------------------------------------
+    # POST /v1/embeddings  (OpenAI Embeddings API — Cohere / Titan)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/embeddings")
+    async def embeddings(request: Request) -> Any:
+        try:
+            body = await request.json()
+        except Exception:
+            return _oai_error(400, "Invalid JSON body")
+
+        raw_model = body.get("model", "cohere-embed-v4")
+
+        try:
+            model = registry.resolve(raw_model)
+        except UnknownModelError as exc:
+            return _oai_error(400, str(exc), "invalid_request_error")
+        entry = registry.get_entry(raw_model) or _fallback_entry(model)
+
+        transport = get_transport(entry)
+        dialect = get_dialect(entry)
+        if dialect.name != "openai-embeddings":
+            return _oai_error(
+                400,
+                f"Model '{raw_model}' is not available on /v1/embeddings; "
+                f"use /v1/chat/completions or /openai/v1/responses instead.",
+                "invalid_request_error",
+            )
+
+        # Shape half: parse/validate the strict OpenAI request and resolve the
+        # embeddings adapter (the only place a model→adapter decision is made).
+        # The adapter builds the native bodies; the transport/dialect above own
+        # URL + auth — never a provider branch in the server.
+        try:
+            ir = parse_request(body)
+            adapter = resolve_profile(entry.embedding_profile)
+            ir = apply_default_dimensions(ir, adapter)
+            adapter.validate(ir)
+        except EmbeddingsValidationError as exc:
+            return _oai_error(
+                exc.status_code,
+                exc.message,
+                "invalid_request_error",
+                param=exc.param,
+                code=exc.code,
+            )
+        except UnsupportedEmbeddingsModelError as exc:
+            return _oai_error(
+                exc.status_code,
+                str(exc),
+                "invalid_request_error",
+                param="model",
+                code="model_not_found",
+            )
+
+        native_bodies = adapter.build_requests(ir)
+
+        logger.info(
+            "REQ [embeddings] model=%s -> %s inputs=%d native_requests=%d",
+            raw_model, model, len(ir.inputs), len(native_bodies),
+        )
+
+        return await _handle_embeddings(
+            transport, dialect, entry, model, config.region,
+            adapter, ir, native_bodies, auth, max_retries, retry_base_delay,
+            timeout=request_timeout, request=request, health=health,
+        )
+
+    # ------------------------------------------------------------------
     # POST /v1/messages  (Anthropic Messages API)
     # ------------------------------------------------------------------
 
@@ -1641,6 +1729,190 @@ async def _handle_sync(
         last_error,
     )
     return _oai_error(502, f"All {max_retries} retries failed: {last_error}")
+
+
+# ---------------------------------------------------------------------------
+# Embeddings fanout handler
+# ---------------------------------------------------------------------------
+
+# Cap concurrent native embedding requests so a wide Titan batch can't open an
+# unbounded number of upstream connections at once.
+_EMBEDDINGS_MAX_CONCURRENCY = 8
+
+# Upstream statuses worth retrying per native request (same set as the chat /
+# responses sync path; timeouts are handled as a separate exception below).
+_EMBEDDINGS_RETRYABLE = frozenset({429, 503, 529})
+
+
+class _EmbeddingsUpstreamError(Exception):
+    """A native embeddings request failed permanently (after its retries)."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+async def _embeddings_attempt(
+    *,
+    index: int,
+    payload: PreparedRequestBody,
+    url: str,
+    transport: Transport,
+    entry: ModelEntry,
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+    timeout: float,
+    deadline: float,
+    request: Request | None,
+    health: HealthMonitor | None,
+    model: str,
+) -> dict:
+    """Send one native embeddings body, retrying 429/503/529 and timeouts.
+
+    Returns the parsed 200 upstream JSON on success; raises
+    :class:`_EmbeddingsUpstreamError` on a permanent failure. The caller
+    enforces all-or-nothing across the fan-out.
+    """
+    last_error: str | None = None
+    for attempt in range(max_retries):
+        if attempt > 0 and time.monotonic() >= deadline:
+            logger.warning(
+                "EMB retry-budget exhausted model=%s index=%d attempt=%d/%d",
+                model, index, attempt + 1, max_retries,
+            )
+            break
+        try:
+            headers = _payload_headers(transport, entry, auth, url, payload)
+            async with _track_upstream(health), httpx.AsyncClient(
+                timeout=_httpx_timeout(timeout)
+            ) as client:
+                resp = await client.post(url, headers=headers, content=payload.content)
+        except httpx.TimeoutException:
+            last_error = "Upstream request timeout"
+            _note_timeout(request)
+            if attempt < max_retries - 1 and time.monotonic() < deadline:
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2 ** attempt))
+                continue
+            break
+        except httpx.HTTPError as exc:
+            last_error = f"Upstream connection failed: {exc}"
+            if attempt < max_retries - 1 and time.monotonic() < deadline:
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2 ** attempt))
+                continue
+            break
+
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except (ValueError, json.JSONDecodeError):
+                logger.error(
+                    "BADJSON [embeddings] model=%s index=%d upstream 200 but "
+                    "body not JSON", model, index,
+                )
+                raise _EmbeddingsUpstreamError(
+                    502, "Upstream returned a malformed (non-JSON) response"
+                )
+
+        if resp.status_code in _EMBEDDINGS_RETRYABLE:
+            last_error = resp.text[:200] or f"upstream {resp.status_code}"
+            logger.warning(
+                "RETRY [embeddings] %d model=%s index=%d attempt=%d/%d",
+                resp.status_code, model, index, attempt + 1, max_retries,
+            )
+            if attempt < max_retries - 1 and time.monotonic() < deadline:
+                _note_retry(request)
+                await asyncio.sleep(retry_base_delay * (2 ** attempt))
+                continue
+            break
+
+        error = parse_bedrock_error(resp.status_code, resp.text)
+        _log_upstream_error(
+            resp.status_code,
+            "ERR [embeddings] %d model=%s index=%d msg=%s",
+            resp.status_code, model, index, error["message"][:300],
+        )
+        raise _EmbeddingsUpstreamError(resp.status_code, error["message"])
+
+    raise _EmbeddingsUpstreamError(
+        502,
+        f"All {max_retries} retries failed: {last_error or 'upstream unavailable'}",
+    )
+
+
+async def _handle_embeddings(
+    transport: Transport,
+    dialect: Dialect,
+    entry: ModelEntry,
+    model: str,
+    region: str,
+    adapter: EmbeddingsAdapter,
+    ir: EmbeddingRequest,
+    native_bodies: list[dict],
+    auth: AuthProvider,
+    max_retries: int,
+    retry_base_delay: float,
+    *,
+    timeout: float = 300.0,
+    request: Request | None = None,
+    health: HealthMonitor | None = None,
+) -> dict | JSONResponse:
+    """Fan out native embedding requests with bounded concurrency.
+
+    All items share one wall-clock deadline; each item retries its own
+    429/503/529/timeouts independently. Results are re-ordered to match the
+    input, usage is aggregated by the adapter, and any permanent item failure
+    fails the whole request (all-or-nothing — never a partial vector list).
+    """
+    url = transport.build_url(dialect.operation_path(entry, False), region, entry)
+    payloads = [_prepare_request_body(body) for body in native_bodies]
+    deadline = _retry_deadline(timeout, max_retries)
+    semaphore = asyncio.Semaphore(_EMBEDDINGS_MAX_CONCURRENCY)
+
+    async def run(index: int, payload: PreparedRequestBody) -> dict:
+        async with semaphore:
+            return await _embeddings_attempt(
+                index=index,
+                payload=payload,
+                url=url,
+                transport=transport,
+                entry=entry,
+                auth=auth,
+                max_retries=max_retries,
+                retry_base_delay=retry_base_delay,
+                timeout=timeout,
+                deadline=deadline,
+                request=request,
+                health=health,
+                model=model,
+            )
+
+    results = await asyncio.gather(
+        *(run(i, payload) for i, payload in enumerate(payloads)),
+        return_exceptions=True,
+    )
+
+    # All-or-nothing: a permanent failure on any native request aborts the
+    # whole response rather than returning a partial ``data`` array.
+    for index, result in enumerate(results):
+        if isinstance(result, BaseException):
+            if isinstance(result, _EmbeddingsUpstreamError):
+                return _oai_error(result.status, result.message, "api_error")
+            logger.exception(
+                "UNEXPECTED [embeddings] model=%s index=%d", model, index,
+            )
+            return _oai_error(500, str(result))
+
+    natives = [result for result in results if isinstance(result, dict)]
+    try:
+        response_ir = adapter.render_responses(natives, ir)
+    except EmbeddingsError as exc:
+        return _oai_error(502, str(exc), "api_error")
+
+    return render_openai(response_ir, ir.encoding_format)
 
 
 # ---------------------------------------------------------------------------

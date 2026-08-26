@@ -409,6 +409,7 @@ All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI chat completions, sync and streaming |
 | `POST` | `/v1/messages` | Anthropic messages, sync and streaming |
+| `POST` | `/v1/embeddings` | OpenAI embeddings: Cohere v4 document/query batches and Titan V2 bounded fan-out |
 | `POST` | `/openai/v1/responses` | OpenAI Responses passthrough, sync and streaming |
 | `POST` | `/openai/v1/images/generations` | Azure `gpt-image-2` generation, sync JSON |
 | `POST` | `/openai/v1/images/edits` | Azure `gpt-image-2` editing, multipart, sync and SSE |
@@ -420,6 +421,31 @@ All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`
 ### Azure Images
 
 `/openai/v1/images/generations` remains a synchronous JSON passthrough. `/openai/v1/images/edits` accepts the OpenAI multipart contract (repeated `image` parts and optional `mask`) and passes through synchronous JSON or `stream=true` SSE responses. Routing follows the Azure Images API capability rather than a model-name allowlist; `gpt-image-2` is the strict live-validation baseline. Variations, Nova Canvas, and Titan Image Generator are not supported yet.
+
+### Embeddings
+
+Use the standard plural endpoint with an OpenAI SDK configured at the gateway `/v1` root:
+
+```python
+client = OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="<gateway-key>")
+client.embeddings.create(
+    model="cohere-embed-v4-document",
+    input=["document one", "document two"],
+    dimensions=1024,
+)
+client.embeddings.create(
+    model="cohere-embed-v4-query",
+    input="search question",
+    dimensions=1024,
+)
+client.embeddings.create(
+    model="titan-embed-text-v2",
+    input=["text one", "text two"],
+    dimensions=512,
+)
+```
+
+Supported OpenAI fields are string/string-array `input`, `encoding_format` (`float` or OpenAI float32 `base64`), `dimensions`, and `user`. Cohere batches up to 96 items natively and uses separate document/query aliases. Titan arrays use bounded concurrency (8), preserve order, aggregate real token usage, and return all-or-nothing. These Bedrock profiles reject token-ID arrays with a standard 400. Cohere's Bedrock response has no token usage, so its OpenAI usage fields are reported as zero.
 
 ### OpenAI parameters (`/v1/chat/completions`)
 

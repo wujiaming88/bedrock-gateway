@@ -16,6 +16,7 @@ from .base import Dialect, Transport
 from .dialect_anthropic import AnthropicMessagesDialect
 from .dialect_anthropic_passthrough import AnthropicPassthroughDialect
 from .dialect_chat import ChatPassthroughDialect
+from .dialect_embeddings import EmbeddingsPassthroughDialect
 from .dialect_images import ImagesPassthroughDialect
 from .dialect_responses import ResponsesPassthroughDialect
 from .transports import AzureTransport, BedrockTransport, HttpTransport
@@ -41,6 +42,7 @@ _DIALECTS: dict[str, Dialect] = {
     ResponsesPassthroughDialect.name: ResponsesPassthroughDialect(),
     ChatPassthroughDialect.name: ChatPassthroughDialect(),
     ImagesPassthroughDialect.name: ImagesPassthroughDialect(),
+    EmbeddingsPassthroughDialect.name: EmbeddingsPassthroughDialect(),
 }
 
 
@@ -71,6 +73,7 @@ __all__ = [
     "ResponsesPassthroughDialect",
     "ChatPassthroughDialect",
     "ImagesPassthroughDialect",
+    "EmbeddingsPassthroughDialect",
     "UnsupportedProtocolError",
     "get_transport",
     "get_dialect",

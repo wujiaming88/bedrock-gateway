@@ -143,6 +143,32 @@ models:
     endpoint: mantle
     protocol: openai-responses
 
+  # ── OpenAI-compatible Embeddings on Bedrock runtime ──────
+  # Same /v1/embeddings endpoint, different adapter profiles. Cohere separates
+  # document/query vector spaces; Titan is symmetric and fans out string arrays
+  # with bounded concurrency while preserving OpenAI response ordering.
+  cohere-embed-v4-document:
+    bedrock_id: cohere.embed-v4:0
+    context_length: 128000
+    max_output: 1024
+    endpoint: runtime
+    dialect: openai-embeddings
+    embedding_profile: cohere-embed-v4
+  cohere-embed-v4-query:
+    bedrock_id: cohere.embed-v4:0
+    context_length: 128000
+    max_output: 1024
+    endpoint: runtime
+    dialect: openai-embeddings
+    embedding_profile: cohere-embed-v4-query
+  titan-embed-text-v2:
+    bedrock_id: amazon.titan-embed-text-v2:0
+    context_length: 8192
+    max_output: 1024
+    endpoint: runtime
+    dialect: openai-embeddings
+    embedding_profile: amazon-titan-embed-v2
+
   # ── Azure OpenAI models (see azure_resources below) ─────
   # Two orthogonal axes describe every model:
   #   transport: bedrock (default) | azure    — where + how to auth
