@@ -145,15 +145,22 @@ models:
 
   # ── OpenAI-compatible Embeddings on Bedrock runtime ──────
   # Same /v1/embeddings endpoint, different adapter profiles. Cohere separates
-  # document/query vector spaces; Titan is symmetric and fans out string arrays
-  # with bounded concurrency while preserving OpenAI response ordering.
+  # document/query vector spaces (plus classification/clustering); Titan is
+  # symmetric and fans out string arrays with bounded concurrency while
+  # preserving OpenAI response ordering.
+  #
+  # -document / -query fix the task by model name and stay standard OpenAI
+  # (no input_type). The bare cohere-embed-v4 is the *dynamic* profile: it
+  # requires the OpenClaw input_type extension (query | document |
+  # classification | clustering) and maps it to Cohere's native input_type.
+  # Titan is symmetric and rejects any input_type.
   cohere-embed-v4-document:
     bedrock_id: cohere.embed-v4:0
     context_length: 128000
     max_output: 1024
     endpoint: runtime
     dialect: openai-embeddings
-    embedding_profile: cohere-embed-v4
+    embedding_profile: cohere-embed-v4-document
   cohere-embed-v4-query:
     bedrock_id: cohere.embed-v4:0
     context_length: 128000
@@ -161,6 +168,13 @@ models:
     endpoint: runtime
     dialect: openai-embeddings
     embedding_profile: cohere-embed-v4-query
+  cohere-embed-v4:
+    bedrock_id: cohere.embed-v4:0
+    context_length: 128000
+    max_output: 1024
+    endpoint: runtime
+    dialect: openai-embeddings
+    embedding_profile: cohere-embed-v4
   titan-embed-text-v2:
     bedrock_id: amazon.titan-embed-text-v2:0
     context_length: 8192

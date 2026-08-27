@@ -58,6 +58,7 @@
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
 | `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
 | `cohere-embed-v4-query` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
+| `cohere-embed-v4` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`**（需 `input_type`） |
 | `titan-embed-text-v2` | `amazon.titan-embed-text-v2:0` | 8K | 1024维默认 | **`/v1/embeddings`** |
 | Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
@@ -73,7 +74,7 @@
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
-| `POST` | `/v1/embeddings` | OpenAI Embeddings（Cohere Embed v4 document/query原生批量；Titan Text V2受控并发fan-out；非流式） |
+| `POST` | `/v1/embeddings` | OpenAI Embeddings（Cohere Embed v4 document/query/动态任务原生批量；Titan Text V2受控并发fan-out；非流式） |
 | `POST` | `/openai/v1/responses` | OpenAI Responses（Bedrock GPT-5.x / Grok 4.3 / Azure，同步 + 流式；Bedrock GPT-5.x 会做最小兼容 normalizer 以适配 Codex input） |
 | `POST` | `/openai/v1/images/generations` | OpenAI Images Generations（Azure `gpt-image-2`，透传，同步） |
 | `POST` | `/openai/v1/images/edits` | OpenAI Images Edits（Azure `gpt-image-2`，multipart，同步 + SSE） |
@@ -471,9 +472,39 @@ fallback = client.embeddings.create(
     input=["文本一", "文本二"],
     dimensions=512,
 )
+
 ```
 
-协议支持：string/string[]、`encoding_format=float|base64`、`dimensions`、`user`。Cohere单批最多96条；Titan数组使用受控fan-out。当前两种Bedrock模型不接受OpenAI token-ID数组，收到int[]/int[][]时返回标准400。Cohere使用document/query两个alias固定正确任务空间；Titan为对称模型。Cohere上游不返回token usage，因此稳定返回0；Titan使用真实`inputTextTokenCount`聚合。
+OpenClaw非对称配置（其openai-compatible provider会把query/document角色写为wire字段`input_type`）：
+
+```json5
+{
+  provider: "openai-compatible",
+  model: "cohere-embed-v4",
+  remote: {
+    baseUrl: "http://127.0.0.1:4000/v1",
+    apiKey: "${EMBEDDINGS_API_KEY}",
+  },
+  queryInputType: "query",
+  documentInputType: "document",
+  outputDimensionality: 1024,
+}
+```
+
+如需用OpenAI SDK调用动态profile，必须通过SDK的扩展body机制，而非标准方法参数：
+
+```python
+client.embeddings.create(
+    model="cohere-embed-v4",
+    input="查询",
+    dimensions=1024,
+    extra_body={"input_type": "query"},
+)
+```
+
+协议支持：string/string[]、`encoding_format=float|base64`、`dimensions`、`user`。Cohere单批最多96条；Titan数组使用受控fan-out。当前两种Bedrock模型不接受OpenAI token-ID数组，收到int[]/int[][]时返回标准400。
+
+任务空间（`input_type`）：`cohere-embed-v4-document` / `cohere-embed-v4-query` 是**固定** alias，任务由模型名决定，不接受 `input_type`（保持标准 OpenAI）。裸 `cohere-embed-v4` 是**动态** profile，必须携带 `input_type`（`document` | `query` | `classification` | `clustering`），网关会映射到 Cohere 原生 `search_document` / `search_query` / `classification` / `clustering`。Titan 为对称模型，不接受任何 `input_type`。Cohere上游不返回token usage，因此稳定返回0；Titan使用真实`inputTextTokenCount`聚合。
 
 ## 使用
 

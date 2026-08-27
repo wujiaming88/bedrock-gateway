@@ -3,17 +3,31 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.7.1] — 2026-08-27
+
+### 新增
+
+- Embeddings IR新增provider-neutral `EmbeddingTask`与可注册客户端扩展decoder；OpenClaw `input_type`仅在decoder层出现，不污染Provider Adapter接口。
+- 新增动态 `cohere-embed-v4` profile，按OpenClaw query/document/classification/clustering角色映射Cohere原生任务；固定document/query alias继续保持纯OpenAI标准调用。
+- Titan V2明确作为对称模型，拒绝任何非对称`input_type`扩展，验证未来对称与非对称adapter的清晰边界。
+
+### 测试
+
+- 新增OpenClaw精确wire、动态四任务、固定profile冲突、Titan symmetric拒绝和可插拔decoder测试；真机验证query/document向量差异和完整边界。
+
 ## [0.7.0] — 2026-08-26
 
 ### 新增
 
 - 新增严格OpenAI-compatible `POST /v1/embeddings`，通过通用Embedding IR、capability和adapter registry接入Bedrock Cohere Embed v4与Titan Text Embeddings V2。
 - Cohere提供document/query两个公开alias并使用原生batch；Titan数组使用固定8并发、共享deadline、all-or-nothing fan-out，结果保序并聚合真实`inputTextTokenCount`。
+- IR引入provider-neutral `EmbeddingTask` 与 capability `TaskPolicy`（fixed/accepted/symmetric）：Cohere document/query alias为fixed任务（保持标准OpenAI、不接受`input_type`）；新增动态 `cohere-embed-v4` profile，要求OpenClaw `input_type`（query/document/classification/clustering）并映射到Cohere原生术语；Titan为symmetric，拒绝任何`input_type`。adapter只按IR task构建请求，不读provider wire术语；原始Bedrock id `cohere.embed-v4:0` 仍解析到fixed document alias。
 - 支持float与OpenAI float32 little-endian base64、模型维度校验、标准OpenAI success/error envelope、dashboard metrics与隐私日志。
 
 ### 测试
 
 - 新增parser/adapter/profile/endpoint/fan-out/retry/timeout/error/metrics测试，并以两种原生schema验证新增模型只需注册profile而无需修改Transport或公共endpoint。
+- 新增OpenClaw `input_type` 覆盖：精确OpenClaw请求、fixed冲突、动态missing/invalid、Titan symmetric拒绝，以及E2E mock验证各任务到Cohere原生术语的映射。
 
 ## [0.6.3] — 2026-08-18
 

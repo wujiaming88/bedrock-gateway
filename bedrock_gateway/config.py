@@ -242,9 +242,11 @@ class ModelEntry:
     protocol: str = "anthropic"   # LEGACY — mapped to transport/dialect
     transport: str = "bedrock"    # "bedrock" | "azure"
     dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "openai-images" | "openai-embeddings"
-    # Embeddings-only metadata: which semantic profile an embedding model
-    # serves ("document" | "query" | ""). Adapter selection is by model name;
-    # this field documents the intent and future per-entry overrides.
+    # Embeddings-only metadata: which adapter profile an embedding model
+    # serves (e.g. "cohere-embed-v4-document", "cohere-embed-v4" dynamic,
+    # "amazon-titan-embed-v2"). The server resolves it against the adapter
+    # registry; the name — not the client model name — is the single source of
+    # truth for which task policy applies.
     embedding_profile: str = ""
     # ── Azure-only fields (unused for Bedrock models) ──
     deployment: str = ""          # Azure deployment name → request body "model"
@@ -356,16 +358,19 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "protocol": "openai-responses",
     },
     # ── Embeddings (Bedrock runtime, native invoke) ────────────────────
-    # Cohere embed v4 is a *single* Bedrock model exposed under two gateway
-    # aliases; the ``embedding_profile`` (document vs query) is selected by
-    # model name, which the embeddings adapter layer maps to Cohere's
-    # ``input_type`` (search_document / search_query).
+    # Cohere embed v4 is a *single* Bedrock model exposed under three gateway
+    # aliases. ``-document`` / ``-query`` fix the task by model name (standard
+    # OpenAI clients; no ``input_type``). The bare ``cohere-embed-v4`` alias is
+    # the *dynamic* profile: it requires the OpenClaw ``input_type`` extension
+    # and maps query/document/classification/clustering to Cohere's native
+    # terms. The raw Bedrock id ``cohere.embed-v4:0`` still resolves to the
+    # fixed document alias (see ``_MODEL_ALIASES``).
     "cohere-embed-v4-document": {
         "bedrock_id": "cohere.embed-v4:0",
         "context_length": 128_000,
         "max_output": 1_024,
         "dialect": "openai-embeddings",
-        "embedding_profile": "cohere-embed-v4",
+        "embedding_profile": "cohere-embed-v4-document",
     },
     "cohere-embed-v4-query": {
         "bedrock_id": "cohere.embed-v4:0",
@@ -373,6 +378,13 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "max_output": 1_024,
         "dialect": "openai-embeddings",
         "embedding_profile": "cohere-embed-v4-query",
+    },
+    "cohere-embed-v4": {
+        "bedrock_id": "cohere.embed-v4:0",
+        "context_length": 128_000,
+        "max_output": 1_024,
+        "dialect": "openai-embeddings",
+        "embedding_profile": "cohere-embed-v4",
     },
     "titan-embed-text-v2": {
         "bedrock_id": "amazon.titan-embed-text-v2:0",
@@ -456,9 +468,12 @@ _MODEL_ALIASES: dict[str, str] = {
     "grok-4-3": "grok-4.3",
     "xai.grok-4.3": "grok-4.3",
     "xai-grok-4.3": "grok-4.3",
-    # Cohere embed v4 (document + query profiles)
+    # Cohere embed v4 (document + query + dynamic profiles)
+    # The raw Bedrock id keeps resolving to the fixed document alias so raw-id
+    # passthrough never silently becomes the dynamic (input_type-required)
+    # profile. The bare "cohere-embed-v4" spelling is a registered *model* now,
+    # so it is no longer an alias.
     "cohere.embed-v4:0": "cohere-embed-v4-document",
-    "cohere-embed-v4": "cohere-embed-v4-document",
     "cohere-embed": "cohere-embed-v4-document",
     "embed-v4": "cohere-embed-v4-document",
     "embed-v-4": "cohere-embed-v4-document",

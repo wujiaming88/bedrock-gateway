@@ -409,7 +409,7 @@ All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI chat completions, sync and streaming |
 | `POST` | `/v1/messages` | Anthropic messages, sync and streaming |
-| `POST` | `/v1/embeddings` | OpenAI embeddings: Cohere v4 document/query batches and Titan V2 bounded fan-out |
+| `POST` | `/v1/embeddings` | OpenAI embeddings: Cohere v4 document/query/dynamic batches and Titan V2 bounded fan-out |
 | `POST` | `/openai/v1/responses` | OpenAI Responses passthrough, sync and streaming |
 | `POST` | `/openai/v1/images/generations` | Azure `gpt-image-2` generation, sync JSON |
 | `POST` | `/openai/v1/images/edits` | Azure `gpt-image-2` editing, multipart, sync and SSE |
@@ -445,7 +445,24 @@ client.embeddings.create(
 )
 ```
 
-Supported OpenAI fields are string/string-array `input`, `encoding_format` (`float` or OpenAI float32 `base64`), `dimensions`, and `user`. Cohere batches up to 96 items natively and uses separate document/query aliases. Titan arrays use bounded concurrency (8), preserve order, aggregate real token usage, and return all-or-nothing. These Bedrock profiles reject token-ID arrays with a standard 400. Cohere's Bedrock response has no token usage, so its OpenAI usage fields are reported as zero.
+OpenClaw asymmetric configuration (its openai-compatible provider sends the role as the wire extension `input_type`):
+
+```json5
+{
+  provider: "openai-compatible",
+  model: "cohere-embed-v4",
+  remote: { baseUrl: "http://127.0.0.1:4000/v1", apiKey: "${EMBEDDINGS_API_KEY}" },
+  queryInputType: "query",
+  documentInputType: "document",
+  outputDimensionality: 1024,
+}
+```
+
+OpenAI SDK callers can reach the dynamic profile only through `extra_body={"input_type":"query"}`; `input_type` is not an OpenAI-standard method parameter.
+
+Supported OpenAI fields are string/string-array `input`, `encoding_format` (`float` or OpenAI float32 `base64`), `dimensions`, and `user`. Cohere batches up to 96 items natively and uses separate fixed document/query aliases plus a dynamic profile. Titan arrays use bounded concurrency (8), preserve order, aggregate real token usage, and return all-or-nothing. These Bedrock profiles reject token-ID arrays with a standard 400. Cohere's Bedrock response has no token usage, so its OpenAI usage fields are reported as zero.
+
+Task space (`input_type`, an OpenClaw extension): the `-document` / `-query` aliases fix the task by model name and reject `input_type` (standard OpenAI). The bare `cohere-embed-v4` profile is dynamic — it requires `input_type` in `document | query | classification | clustering` and maps each to Cohere's native `search_document` / `search_query` / `classification` / `clustering`. Titan is symmetric and rejects any `input_type`.
 
 ### OpenAI parameters (`/v1/chat/completions`)
 

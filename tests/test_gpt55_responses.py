@@ -144,6 +144,7 @@ class TestModelEntryDefaults:
         embeddings_models = {
             "cohere-embed-v4-document",
             "cohere-embed-v4-query",
+            "cohere-embed-v4",
             "titan-embed-text-v2",
         }
         models = _parse_models(_DEFAULT_MODELS)

@@ -60,7 +60,12 @@ configured this way and uses native Chat, Responses, and Anthropic passthrough.
   dialect, not a model-name allowlist; variations and Bedrock image models are absent.
 - `POST /v1/embeddings` — strict OpenAI Embeddings contract. One `openai-embeddings`
   dialect selects an `embedding_profile`: Cohere v4 document/query use native batches;
-  Titan Text V2 uses bounded all-or-nothing fan-out. Adapter logic stays out of transports.
+  Titan Text V2 uses bounded all-or-nothing fan-out. Adapter logic stays out of
+  transports. The IR carries a provider-neutral `EmbeddingTask`; a thin OpenClaw
+  `input_type` decoder fills it, and each adapter's `Capabilities` task policy
+  (fixed/accepted/symmetric) accepts or rejects it — fixed Cohere doc/query
+  aliases stay standard OpenAI, the dynamic `cohere-embed-v4` profile requires
+  `input_type`, and symmetric Titan rejects any `input_type`.
 - `POST /v1/messages` — branches by dialect: `anthropic` (Bedrock Claude),
   `anthropic-passthrough` (native HTTP Messages) vs `openai-responses` (GPT-5.5/Grok/`azure/<dep>`, **translated**
   Anthropic Messages ⇄ Responses via `messages_to_responses.py`). This is what

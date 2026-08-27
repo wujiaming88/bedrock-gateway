@@ -28,19 +28,25 @@ from bedrock_gateway.config import (
 from bedrock_gateway.embeddings import (
     DEFAULT_REGISTRY,
     CohereEmbedV4DocumentAdapter,
+    CohereEmbedV4DynamicAdapter,
     CohereEmbedV4QueryAdapter,
     EmbeddingsAdapter,
     EmbeddingsAdapterRegistry,
     EmbeddingsValidationError,
+    EmbeddingRequestExtensionDecoder,
     EmbeddingData,
     EmbeddingResponse,
+    EmbeddingTask,
+    TaskPolicy,
     TitanEmbedV2Adapter,
     UnsupportedEmbeddingsModelError,
+    decode_input_type,
     encode_base64,
     parse_request,
     prepare_request,
     render_openai,
     resolve_adapter,
+    resolve_profile,
 )
 from bedrock_gateway.models import ModelRegistry
 from bedrock_gateway.providers import get_dialect, get_transport
@@ -158,6 +164,80 @@ class TestParseRequest:
         assert exc.value.code == "unknown_parameter"
         assert exc.value.param == "extra"
 
+    def test_input_type_is_accepted_and_decoded(self):
+        ir = parse_request(_body(input_type="query"))
+        assert ir.task is EmbeddingTask.RETRIEVAL_QUERY
+
+    def test_input_type_document_decoded(self):
+        ir = parse_request(_body(input_type="document"))
+        assert ir.task is EmbeddingTask.RETRIEVAL_DOCUMENT
+
+    def test_input_type_classification_and_clustering(self):
+        assert parse_request(_body(input_type="classification")).task is EmbeddingTask.CLASSIFICATION
+        assert parse_request(_body(input_type="clustering")).task is EmbeddingTask.CLUSTERING
+
+    def test_input_type_is_case_and_space_insensitive(self):
+        assert parse_request(_body(input_type="  QUERY ")).task is EmbeddingTask.RETRIEVAL_QUERY
+
+    def test_input_type_absent_is_none(self):
+        assert parse_request(_body()).task is None
+
+    def test_invalid_input_type_rejected(self):
+        with pytest.raises(EmbeddingsValidationError) as exc:
+            parse_request(_body(input_type="bogus"))
+        assert exc.value.param == "input_type"
+
+    def test_empty_input_type_rejected(self):
+        with pytest.raises(EmbeddingsValidationError) as exc:
+            parse_request(_body(input_type="   "))
+        assert exc.value.param == "input_type"
+
+    def test_non_string_input_type_rejected(self):
+        with pytest.raises(EmbeddingsValidationError) as exc:
+            parse_request(_body(input_type=42))
+        assert exc.value.param == "input_type"
+
+
+class TestExtensionDecoderArchitecture:
+    def test_openclaw_decoder_is_registered_without_provider_terms_in_ir(self):
+        from bedrock_gateway import embeddings
+
+        decoder = embeddings._EXTENSION_DECODERS["input_type"]
+        assert isinstance(decoder, EmbeddingRequestExtensionDecoder)
+        assert decoder.decode("query") is EmbeddingTask.RETRIEVAL_QUERY
+
+    def test_new_decoder_can_map_another_wire_field_without_changing_ir(self):
+        from bedrock_gateway import embeddings
+
+        class TaskTypeDecoder(EmbeddingRequestExtensionDecoder):
+            field = "task_type"
+
+            def decode(self, value):
+                if value != "RETRIEVAL_QUERY":
+                    raise EmbeddingsValidationError("bad task", param=self.field)
+                return EmbeddingTask.RETRIEVAL_QUERY
+
+        original = dict(embeddings._EXTENSION_DECODERS)
+        try:
+            embeddings._EXTENSION_DECODERS["task_type"] = TaskTypeDecoder()
+            ir = parse_request(_body(task_type="RETRIEVAL_QUERY"))
+            assert ir.task is EmbeddingTask.RETRIEVAL_QUERY
+        finally:
+            embeddings._EXTENSION_DECODERS.clear()
+            embeddings._EXTENSION_DECODERS.update(original)
+
+
+class TestDecodeInputType:
+    def test_maps_openclaw_wire_terms(self):
+        assert decode_input_type("query") is EmbeddingTask.RETRIEVAL_QUERY
+        assert decode_input_type("document") is EmbeddingTask.RETRIEVAL_DOCUMENT
+        assert decode_input_type("classification") is EmbeddingTask.CLASSIFICATION
+        assert decode_input_type("clustering") is EmbeddingTask.CLUSTERING
+
+    def test_rejects_unknown_term(self):
+        with pytest.raises(EmbeddingsValidationError):
+            decode_input_type("search_document")
+
 
 # ---------------------------------------------------------------------------
 # 2. Capability validation
@@ -217,6 +297,78 @@ class TestCapabilityValidation:
         ir = parse_request(_body(dimensions=8192))
         with pytest.raises(EmbeddingsValidationError):
             adapter.validate(ir)
+
+
+# ---------------------------------------------------------------------------
+# 2b. Task policy — fixed / accepted / symmetric
+# ---------------------------------------------------------------------------
+
+class TestTaskPolicy:
+    def test_fixed_document_rejects_input_type(self):
+        adapter = CohereEmbedV4DocumentAdapter()
+        ir = parse_request(_body(input_type="query"))
+        with pytest.raises(EmbeddingsValidationError) as exc:
+            adapter.validate(ir)
+        assert exc.value.param == "input_type"
+
+    def test_fixed_query_rejects_input_type(self):
+        adapter = CohereEmbedV4QueryAdapter()
+        ir = parse_request(_body(input_type="document"))
+        with pytest.raises(EmbeddingsValidationError):
+            adapter.validate(ir)
+
+    def test_fixed_accepts_when_no_input_type(self):
+        CohereEmbedV4DocumentAdapter().validate(parse_request(_body()))
+        CohereEmbedV4QueryAdapter().validate(parse_request(_body()))
+
+    def test_dynamic_requires_input_type(self):
+        adapter = CohereEmbedV4DynamicAdapter()
+        ir = parse_request(_body())
+        with pytest.raises(EmbeddingsValidationError) as exc:
+            adapter.validate(ir)
+        assert exc.value.param == "input_type"
+
+    def test_dynamic_accepts_all_four_tasks(self):
+        adapter = CohereEmbedV4DynamicAdapter()
+        for value in ("document", "query", "classification", "clustering"):
+            adapter.validate(parse_request(_body(input_type=value)))
+
+    def test_dynamic_accepted_tasks_are_the_four_cohere_tasks(self):
+        adapter = CohereEmbedV4DynamicAdapter()
+        assert adapter.capabilities.task_policy is TaskPolicy.ACCEPTED
+        assert adapter.capabilities.accepted_tasks == frozenset(
+            {
+                EmbeddingTask.RETRIEVAL_DOCUMENT,
+                EmbeddingTask.RETRIEVAL_QUERY,
+                EmbeddingTask.CLASSIFICATION,
+                EmbeddingTask.CLUSTERING,
+            }
+        )
+
+    def test_titan_symmetric_rejects_any_input_type(self):
+        adapter = TitanEmbedV2Adapter()
+        ir = parse_request(_body(model="amazon.titan-embed-text-v2:0", input_type="query"))
+        with pytest.raises(EmbeddingsValidationError) as exc:
+            adapter.validate(ir)
+        assert exc.value.param == "input_type"
+
+    def test_titan_symmetric_accepts_no_input_type(self):
+        adapter = TitanEmbedV2Adapter()
+        adapter.validate(parse_request(_body(model="amazon.titan-embed-text-v2:0")))
+
+    def test_policy_defaults_are_fixed(self):
+        # An adapter that never opts in stays FIXED: it rejects input_type.
+        class BareAdapter(EmbeddingsAdapter):
+            name = "bare"
+            def build_request(self, ir):
+                return {}
+            def render_response(self, native, ir):
+                return EmbeddingResponse(model=ir.model, data=[], prompt_tokens=0, total_tokens=0)
+
+        adapter = BareAdapter()
+        assert adapter.capabilities.task_policy is TaskPolicy.FIXED
+        with pytest.raises(EmbeddingsValidationError):
+            adapter.validate(parse_request(_body(input_type="query")))
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +448,43 @@ class TestCohereQueryAdapter:
     def test_document_does_not_match_query_model(self):
         document = CohereEmbedV4DocumentAdapter()
         assert not document.matches("cohere.embed-v4-query")
+
+
+# ---------------------------------------------------------------------------
+# 4b. Cohere embed v4 — dynamic adapter (OpenClaw input_type)
+# ---------------------------------------------------------------------------
+
+class TestCohereDynamicAdapter:
+    def setup_method(self):
+        self.adapter = CohereEmbedV4DynamicAdapter()
+
+    @pytest.mark.parametrize(
+        "wire,native",
+        [
+            ("document", "search_document"),
+            ("query", "search_query"),
+            ("classification", "classification"),
+            ("clustering", "clustering"),
+        ],
+    )
+    def test_maps_openclaw_task_to_cohere_native(self, wire, native):
+        ir = parse_request(_body(input="a", input_type=wire))
+        assert self.adapter.build_request(ir)["input_type"] == native
+
+    def test_requires_input_type_before_building(self):
+        ir = parse_request(_body(input="a"))
+        with pytest.raises(EmbeddingsValidationError):
+            self.adapter.validate(ir)
+
+    def test_output_dimension_applied(self):
+        ir = parse_request(_body(input="a", input_type="query", dimensions=512))
+        assert self.adapter.build_request(ir)["output_dimension"] == 512
+
+    def test_does_not_claim_model_names(self):
+        # The dynamic profile is selected explicitly by profile name; it never
+        # claims a model name, so legacy name resolution stays fixed-document.
+        assert not self.adapter.matches("cohere-embed-v4")
+        assert not self.adapter.matches("cohere.embed-v4:0")
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +587,36 @@ class TestRegistry:
         assert len(registry) == 1
 
     def test_default_registry_len(self):
-        assert len(DEFAULT_REGISTRY) == 3
+        assert len(DEFAULT_REGISTRY) == 4
+
+    def test_resolve_dynamic_profile(self):
+        assert isinstance(
+            resolve_profile("cohere-embed-v4"), CohereEmbedV4DynamicAdapter
+        )
+
+    def test_resolve_document_profile(self):
+        assert isinstance(
+            resolve_profile("cohere-embed-v4-document"), CohereEmbedV4DocumentAdapter
+        )
+
+    def test_resolve_query_profile(self):
+        assert isinstance(
+            resolve_profile("cohere-embed-v4-query"), CohereEmbedV4QueryAdapter
+        )
+
+    def test_resolve_titan_profile(self):
+        assert isinstance(resolve_profile("amazon-titan-embed-v2"), TitanEmbedV2Adapter)
+
+    def test_unknown_profile_raises(self):
+        with pytest.raises(UnsupportedEmbeddingsModelError):
+            resolve_profile("unknown-profile")
+
+    def test_raw_model_still_resolves_to_fixed_document(self):
+        # The raw Bedrock id keeps resolving by name to the fixed document
+        # adapter (not the dynamic profile, which needs an explicit profile).
+        assert isinstance(
+            resolve_adapter("cohere.embed-v4:0"), CohereEmbedV4DocumentAdapter
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -492,12 +710,20 @@ class TestEmbeddingsConfig:
     def test_default_models_carry_embedding_profile(self):
         cfg = load_config("/nonexistent/config.yaml")
         assert cfg.models["cohere-embed-v4-document"].bedrock_id == "cohere.embed-v4:0"
-        assert cfg.models["cohere-embed-v4-document"].embedding_profile == "cohere-embed-v4"
+        assert (
+            cfg.models["cohere-embed-v4-document"].embedding_profile
+            == "cohere-embed-v4-document"
+        )
         assert (
             cfg.models["cohere-embed-v4-query"].embedding_profile
             == "cohere-embed-v4-query"
         )
         assert cfg.models["cohere-embed-v4-query"].bedrock_id == "cohere.embed-v4:0"
+        # The dynamic profile is a distinct default model sharing the Bedrock id.
+        dynamic = cfg.models["cohere-embed-v4"]
+        assert dynamic.bedrock_id == "cohere.embed-v4:0"
+        assert dynamic.dialect == "openai-embeddings"
+        assert dynamic.embedding_profile == "cohere-embed-v4"
         titan = cfg.models["titan-embed-text-v2"]
         assert titan.bedrock_id == "amazon.titan-embed-text-v2:0"
         assert titan.dialect == "openai-embeddings"
@@ -507,8 +733,20 @@ class TestEmbeddingsConfig:
     def test_aliases_resolve_through_registry(self):
         registry = ModelRegistry(load_config("/nonexistent/config.yaml"))
         assert registry.resolve("cohere.embed-v4:0") == "cohere.embed-v4:0"
-        assert registry.resolve("cohere.embed-v4-query") == "cohere.embed-v4:0"
+        assert registry.resolve("cohere-embed-v4-query") == "cohere.embed-v4:0"
         assert registry.resolve("embed-v4") == "cohere.embed-v4:0"
+        # Bare "cohere-embed-v4" is now a registered *model* (dynamic profile),
+        # not an alias — and the raw Bedrock id still resolves to the fixed
+        # document alias.
+        assert registry.resolve("cohere-embed-v4") == "cohere.embed-v4:0"
+        assert (
+            registry.get_entry("cohere.embed-v4:0").embedding_profile
+            == "cohere-embed-v4-document"
+        )
+        assert (
+            registry.get_entry("cohere-embed-v4").embedding_profile
+            == "cohere-embed-v4"
+        )
         assert (
             registry.resolve("amazon.titan-embed-text-v2:0")
             == "amazon.titan-embed-text-v2:0"
@@ -553,12 +791,17 @@ def _embeddings_config() -> GatewayConfig:
             "cohere-embed-v4-document": ModelEntry(
                 bedrock_id="cohere.embed-v4:0",
                 dialect="openai-embeddings",
-                embedding_profile="cohere-embed-v4",
+                embedding_profile="cohere-embed-v4-document",
             ),
             "cohere-embed-v4-query": ModelEntry(
                 bedrock_id="cohere.embed-v4:0",
                 dialect="openai-embeddings",
                 embedding_profile="cohere-embed-v4-query",
+            ),
+            "cohere-embed-v4": ModelEntry(
+                bedrock_id="cohere.embed-v4:0",
+                dialect="openai-embeddings",
+                embedding_profile="cohere-embed-v4",
             ),
             "titan-embed-text-v2": ModelEntry(
                 bedrock_id="amazon.titan-embed-text-v2:0",
@@ -675,6 +918,92 @@ class TestEmbeddingsEndpoint:
             "/v1/embeddings", json={"model": "custom-embed", "input": "x"}
         )
         assert resp.status_code == 404
+
+
+class TestOpenClawInputTypeEndpoint:
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_exact_openclaw_query_request(self, mock_client_cls, emb_client):
+        mock_instance = _sync_mock(mock_client_cls, {"embeddings": [[0.1, 0.2]]})
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={"model": "cohere-embed-v4", "input": "hi", "input_type": "query"},
+        )
+        assert resp.status_code == 200
+        sent = json.loads(mock_instance.post.call_args.kwargs["content"])
+        assert sent["input_type"] == "search_query"
+        assert sent["texts"] == ["hi"]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    @pytest.mark.parametrize(
+        "wire,native",
+        [
+            ("document", "search_document"),
+            ("classification", "classification"),
+            ("clustering", "clustering"),
+        ],
+    )
+    def test_openclaw_tasks_map_to_cohere_native(
+        self, mock_client_cls, emb_client, wire, native
+    ):
+        mock_instance = _sync_mock(mock_client_cls, {"embeddings": [[0.5]]})
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={"model": "cohere-embed-v4", "input": "hi", "input_type": wire},
+        )
+        assert resp.status_code == 200
+        sent = json.loads(mock_instance.post.call_args.kwargs["content"])
+        assert sent["input_type"] == native
+
+    def test_fixed_document_rejects_input_type(self, emb_client):
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={
+                "model": "cohere-embed-v4-document",
+                "input": "x",
+                "input_type": "query",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["param"] == "input_type"
+
+    def test_fixed_query_rejects_input_type(self, emb_client):
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={
+                "model": "cohere-embed-v4-query",
+                "input": "x",
+                "input_type": "document",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["param"] == "input_type"
+
+    def test_dynamic_requires_input_type(self, emb_client):
+        resp = emb_client.post(
+            "/v1/embeddings", json={"model": "cohere-embed-v4", "input": "x"}
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["param"] == "input_type"
+
+    def test_invalid_input_type_400(self, emb_client):
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={"model": "cohere-embed-v4", "input": "x", "input_type": "bogus"},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["param"] == "input_type"
+
+    def test_titan_symmetric_rejects_input_type(self, emb_client):
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={
+                "model": "titan-embed-text-v2",
+                "input": "x",
+                "input_type": "query",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["param"] == "input_type"
 
 
 class TestEmbeddingsFanout:
