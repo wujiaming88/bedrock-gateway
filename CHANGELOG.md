@@ -3,6 +3,22 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.0] — 2026-08-27
+
+### 新增
+
+- 新增Bedrock Grok 4.6（`xai.grok-4.6`，500K上下文），复用现有Responses与Messages翻译链路。
+- `ModelEntry.region`提供通用per-model Bedrock区域覆盖；Grok 4.6自动路由到mantle `us-west-2`，其他模型继续继承全局region。
+
+### 变更
+
+- 移除含义不明确的`grok`与`grok-4`别名；调用方必须明确使用Grok 4.3或4.6版本名。
+- 所有应用日志统一使用本地时间与固定三位毫秒；业务、Uvicorn、httpx/httpcore的console/journald消息和每日文件格式一致。
+
+### 测试
+
+- 增加region override、Grok 4.6注册/alias、Responses sync、Messages sync/stream、endpoint guard及GPT-5兼容隔离回归；真机确认`us-west-2`与131072输出参数返回200，而`us-east-1`返回404。
+
 ## [0.7.1] — 2026-08-27
 
 ### 新增

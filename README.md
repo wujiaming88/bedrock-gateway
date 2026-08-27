@@ -56,6 +56,7 @@
 | `gpt-5.6-terra` | `openai.gpt-5.6-terra` | 1M | 128K* | **`/openai/v1/responses`** |
 | `gpt-5.6-luna` | `openai.gpt-5.6-luna` | 1M | 128K* | **`/openai/v1/responses`** |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
+| `grok-4.6` | `xai.grok-4.6` | 500K | 128K | **`/openai/v1/responses`**（mantle `us-west-2`） |
 | `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
 | `cohere-embed-v4-query` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
 | `cohere-embed-v4` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`**（需 `input_type`） |
@@ -63,7 +64,8 @@
 | Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
 - Claude 系别名有大量常见变体自动解析：Opus 的点号与连字符写法均可（`claude-opus-4.7` ＝ `claude-opus-4-7`，4.8 / 4.6 同理），以及 Anthropic SDK 默认模型名、带日期的官方名（如 `claude-opus-4-7-20250428`）。裸 `claude-sonnet` 解析到当前最新的 Sonnet（4.6）。
-- GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；GPT-5.6 家族别名：`gpt-5.6-sol` / `gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol`（Terra/Luna 同理）；Grok 4.3 别名：`grok-4.3` / `grok` / `grok-4` / `grok4.3` / `grok-4-3`。
+- GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；GPT-5.6 家族别名：`gpt-5.6-sol` / `gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol`（Terra/Luna 同理）。Grok 必须明确版本：4.3 可用 `grok-4.3` / `grok4.3` / `grok-4-3`，4.6 可用 `grok-4.6` / `grok4.6` / `grok-4-6`；不提供含义不明确的 `grok` / `grok-4`。
+- Grok 4.6 mantle 仅在 `us-west-2` 提供In-Region服务。内置 `grok-4.6` 条目通过通用per-model `region`覆盖自动路由；推荐使用注册alias，而非直接传原始ID（raw ID没有这份区域元数据）。
 - `gpt-5.6-*` 在 Bedrock mantle 上均为 1M 上下文；128K 最大输出字段仍为 advisory，若官方 model card 后续给出不同规格，应同步修正。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
@@ -75,7 +77,7 @@
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（Claude 转换 / Azure·mantle 透传，同步 + 流式） |
 | `POST` | `/v1/messages` | Anthropic Messages。Claude 系透传；**GPT-5.5 / Grok / `azure/<dep>` 自动翻译**为 Responses（让 Claude Code 等 Anthropic-only 客户端调任意模型，见 [Claude Code 接入](#claude-code-接入任意模型)） |
 | `POST` | `/v1/embeddings` | OpenAI Embeddings（Cohere Embed v4 document/query/动态任务原生批量；Titan Text V2受控并发fan-out；非流式） |
-| `POST` | `/openai/v1/responses` | OpenAI Responses（Bedrock GPT-5.x / Grok 4.3 / Azure，同步 + 流式；Bedrock GPT-5.x 会做最小兼容 normalizer 以适配 Codex input） |
+| `POST` | `/openai/v1/responses` | OpenAI Responses（Bedrock GPT-5.x / Grok 4.3与4.6 / Azure，同步 + 流式；Bedrock GPT-5.x 会做最小兼容 fallback 以适配 Codex input） |
 | `POST` | `/openai/v1/images/generations` | OpenAI Images Generations（Azure `gpt-image-2`，透传，同步） |
 | `POST` | `/openai/v1/images/edits` | OpenAI Images Edits（Azure `gpt-image-2`，multipart，同步 + SSE） |
 | `GET` | `/v1/models` | 模型列表（OpenAI 格式） |
@@ -537,9 +539,9 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-### GPT-5.x / Grok 4.3 —— OpenAI SDK（Responses）
+### GPT-5.x / Grok 4.3与4.6 —— OpenAI SDK（Responses）
 
-这类模型在 Bedrock 上经 `bedrock-mantle` 的 OpenAI Responses API 提供；网关转发到上游前会把模型别名替换为上游 ID。对 Bedrock GPT-5.x,网关还会做一层**最小兼容 normalizer**：Codex 的 `additional_tools` input item 会提升到 top-level `tools`,developer message 会合并到 `instructions`,并把 `text` content block 标准化为 `input_text`。其他字段（`reasoning`、`tool_choice`、`stream` 等）保持透传。注意 base_url 用 **`/openai/v1`**：
+这类模型在 Bedrock 上经 `bedrock-mantle` 的 OpenAI Responses API 提供；网关转发到上游前会把模型别名替换为上游 ID。对 Bedrock GPT-5.x，网关在上游返回精确schema-variant 400时才做一次安全兼容投影与重试；Grok不进入该兼容路径，Responses字段原样透传。注意 base_url 用 **`/openai/v1`**：
 
 ```python
 from openai import OpenAI
@@ -548,8 +550,8 @@ client = OpenAI(base_url="http://127.0.0.1:4000/openai/v1", api_key="<gateway-ke
 resp = client.responses.create(model="gpt-5.5", input="用一句话解释 ETF")
 print(resp.output[0].content[0].text)
 
-# Grok 4.3 同一用法，换 model 即可（官方定位金融/法律文档分析）
-resp = client.responses.create(model="grok-4.3", input="分析这份财报的关键风险")
+# Grok 4.3 / 4.6 同一用法；4.6会自动路由到us-west-2
+resp = client.responses.create(model="grok-4.6", input="分析这份财报的关键风险")
 ```
 
 **图片输入**（`input_image` 支持 `data:` base64 与 `s3://`，**不支持公网 http(s) URL**）：
@@ -663,7 +665,7 @@ Claude Code 只会说 Anthropic Messages 协议（它把请求发往 `/v1/messag
 unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX    # 关键：清掉云直连开关
 export ANTHROPIC_BASE_URL="http://127.0.0.1:4000"
 export ANTHROPIC_AUTH_TOKEN="<gateway-key>"     # 网关的 server.api_key（→ Bearer）
-export ANTHROPIC_MODEL="gpt-5.5"                # 也可 grok-4.3
+export ANTHROPIC_MODEL="gpt-5.5"                # 也可 grok-4.3 / grok-4.6
 claude
 
 # 或用 Azure 上的 GPT-5.5（前缀透传，需资源配 prefix: azure）
@@ -871,7 +873,7 @@ server {
 | 上游 5xx 或重试耗尽 | ERROR | 真正的故障 |
 | 网关代码意外异常 | ERROR + traceback | 完整栈帧写入文件与 journald |
 
-文件日志默认开启；仅显式设置 `logging.file_enabled: false` 时关闭。网关业务日志、Uvicorn 启动/错误/访问日志和 httpx 上游请求日志会同时写入 `/var/log/bedrock-gateway/bedrock-gateway-YYYY-MM-DD.log`。文件按主机本地午夜切分并自动保留最近 30 天；console 输出仍保留，因此 journald 不受影响：
+文件日志默认开启；仅显式设置 `logging.file_enabled: false` 时关闭。网关业务日志、Uvicorn 启动/错误/访问日志和 httpx 上游请求日志会同时写入 `/var/log/bedrock-gateway/bedrock-gateway-YYYY-MM-DD.log`。console/journald应用消息和每日文件统一使用主机本地时间及固定三位毫秒（如 `2026-08-27 12:34:56.123`）。文件按主机本地午夜切分并自动保留最近 30 天；console 输出仍保留，因此 journald 不受影响：
 
 ```bash
 tail -f /var/log/bedrock-gateway/bedrock-gateway-$(date +%F).log

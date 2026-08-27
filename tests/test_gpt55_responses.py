@@ -45,6 +45,8 @@ GPT55_ALIAS = "gpt-5.5"
 GPT55_BEDROCK_ID = "openai.gpt-5.5"
 GROK_ALIAS = "grok-4.3"
 GROK_BEDROCK_ID = "xai.grok-4.3"
+GROK46_ALIAS = "grok-4.6"
+GROK46_BEDROCK_ID = "xai.grok-4.6"
 
 
 # ---------------------------------------------------------------------------
@@ -85,13 +87,35 @@ class TestGrokRegistration:
         assert e["context_length"] == 1_000_000
 
     @pytest.mark.parametrize(
-        "alias", ["grok", "grok-4", "grok4.3", "grok-4-3", "xai.grok-4.3", "xai-grok-4.3"]
+        "alias", ["grok4.3", "grok-4-3", "xai.grok-4.3", "xai-grok-4.3"]
     )
-    def test_aliases_resolve(self, alias):
+    def test_43_aliases_resolve(self, alias):
         assert _MODEL_ALIASES[alias] == GROK_ALIAS
 
-    def test_selects_responses_dialect(self):
-        e = _parse_models(_DEFAULT_MODELS)[GROK_ALIAS]
+    def test_grok46_registered(self):
+        e = _DEFAULT_MODELS[GROK46_ALIAS]
+        assert e == {
+            "bedrock_id": GROK46_BEDROCK_ID,
+            "context_length": 500_000,
+            "max_output": 131_072,
+            "endpoint": "mantle",
+            "protocol": "openai-responses",
+            "region": "us-west-2",
+        }
+
+    @pytest.mark.parametrize(
+        "alias", ["grok4.6", "grok-4-6", "xai.grok-4.6", "xai-grok-4.6"]
+    )
+    def test_46_aliases_resolve(self, alias):
+        assert _MODEL_ALIASES[alias] == GROK46_ALIAS
+
+    @pytest.mark.parametrize("alias", ["grok", "grok-4"])
+    def test_ambiguous_aliases_are_absent(self, alias):
+        assert alias not in _MODEL_ALIASES
+
+    @pytest.mark.parametrize("alias", [GROK_ALIAS, GROK46_ALIAS])
+    def test_selects_responses_dialect(self, alias):
+        e = _parse_models(_DEFAULT_MODELS)[alias]
         assert get_dialect(e).name == "openai-responses"
         assert get_transport(e).name == "bedrock"
 
@@ -105,6 +129,7 @@ class TestModelEntryDefaults:
         """A bare ModelEntry keeps the original bedrock/anthropic behaviour."""
         e = ModelEntry(bedrock_id="us.anthropic.claude-x")
         assert e.endpoint == "runtime"
+        assert e.region == ""
         assert e.transport == "bedrock"
         assert e.dialect == "anthropic"
 
@@ -140,6 +165,7 @@ class TestModelEntryDefaults:
             "gpt-5.6-terra",
             "gpt-5.6-luna",
             GROK_ALIAS,
+            GROK46_ALIAS,
         }
         embeddings_models = {
             "cohere-embed-v4-document",
@@ -223,6 +249,20 @@ class TestResponsesProviderUnit:
         op = self.dialect.operation_path(e, False)
         u = self.transport.build_url(op, "us-east-2", e)
         assert "bedrock-mantle.us-east-2.api.aws" in u
+
+    @pytest.mark.parametrize("endpoint,host", [
+        ("mantle", "bedrock-mantle.us-west-2.api.aws"),
+        ("runtime", "bedrock-runtime.us-west-2.amazonaws.com"),
+    ])
+    def test_model_region_overrides_global_region(self, endpoint, host):
+        e = ModelEntry(
+            bedrock_id="model-id",
+            endpoint=endpoint,
+            region="us-west-2",
+            dialect="openai-responses",
+        )
+        url = self.transport.build_url("/responses", "us-east-1", e)
+        assert host in url
 
     def test_render_sync_is_verbatim(self):
         upstream = {
@@ -434,20 +474,45 @@ class TestResponsesEndToEnd:
         assert resp.status_code == 200
         assert _sent(mock_cls)["model"] == GPT55_BEDROCK_ID
 
+    @pytest.mark.parametrize(
+        "model,region,upstream_id",
+        [
+            ("grok-4.3", "us-east-1", GROK_BEDROCK_ID),
+            ("grok4.6", "us-west-2", GROK46_BEDROCK_ID),
+        ],
+    )
     @patch("bedrock_gateway.server.httpx.AsyncClient")
-    def test_grok_routes_to_mantle(self, mock_cls, client):
+    def test_grok_routes_to_mantle(
+        self, mock_cls, model, region, upstream_id, client
+    ):
         mock_cls.return_value = _mock_sync_client(_responses_body())
         resp = client.post("/openai/v1/responses", json={
-            "model": "grok", "input": "hi",   # alias → grok-4.3
+            "model": model, "input": "hi", "future_field": {"preserve": True},
         })
         assert resp.status_code == 200
         url = mock_cls.return_value.post.call_args[0][0]
-        assert "bedrock-mantle.us-east-1.api.aws/openai/v1/responses" in url
-        assert _sent(mock_cls)["model"] == GROK_BEDROCK_ID
+        assert f"bedrock-mantle.{region}.api.aws/openai/v1/responses" in url
+        assert _sent(mock_cls)["model"] == upstream_id
+        assert _sent(mock_cls)["future_field"] == {"preserve": True}
 
-    def test_grok_rejected_on_chat_completions(self, client):
+    @pytest.mark.parametrize("model", ["grok", "grok-4"])
+    def test_ambiguous_grok_model_is_unknown(self, client, model):
+        resp = client.post("/openai/v1/responses", json={
+            "model": model, "input": "hi",
+        })
+        assert resp.status_code == 400
+        assert "Unknown model" in resp.json()["error"]["message"]
+
+    def test_models_lists_grok46_metadata(self, client):
+        resp = client.get("/v1/models")
+        model = next(item for item in resp.json()["data"] if item["id"] == "grok-4.6")
+        assert model["context_length"] == 500_000
+        assert model["max_output_tokens"] == 131_072
+
+    @pytest.mark.parametrize("model", ["grok-4.3", "grok-4.6"])
+    def test_grok_rejected_on_chat_completions(self, client, model):
         resp = client.post("/v1/chat/completions", json={
-            "model": "grok-4.3",
+            "model": model,
             "messages": [{"role": "user", "content": "hi"}],
         })
         assert resp.status_code == 400

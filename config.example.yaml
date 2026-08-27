@@ -133,15 +133,23 @@ models:
     endpoint: mantle
     protocol: openai-responses
 
-  # ── xAI Grok 4.3 ────────────────────────────────────────
-  # Same mantle + Responses transport as GPT-5.5; exposed on
-  # POST /openai/v1/responses. Strong on financial/legal document analysis.
+  # ── xAI Grok ────────────────────────────────────────────
+  # Same mantle + Responses protocol as GPT-5.x. Grok 4.6 mantle is available
+  # in-region only from us-west-2, so its model-level region overrides the
+  # gateway-wide default without affecting any other model.
   grok-4.3:
     bedrock_id: xai.grok-4.3
     context_length: 1000000
     max_output: 131072
     endpoint: mantle
     protocol: openai-responses
+  grok-4.6:
+    bedrock_id: xai.grok-4.6
+    context_length: 500000
+    max_output: 131072
+    endpoint: mantle
+    protocol: openai-responses
+    region: us-west-2
 
   # ── OpenAI-compatible Embeddings on Bedrock runtime ──────
   # Same /v1/embeddings endpoint, different adapter profiles. Cohere separates

@@ -111,7 +111,7 @@ logging:
   retention_days: 30
 ```
 
-File logging is enabled by default; set `file_enabled: false` explicitly to disable it. Gateway, Uvicorn access/error, and httpx records are written to `bedrock-gateway-YYYY-MM-DD.log`, rotated at local midnight and retained for 30 days. Console output remains enabled for journald or container logging.
+File logging is enabled by default; set `file_enabled: false` explicitly to disable it. Gateway, Uvicorn access/error, and httpx records are written to `bedrock-gateway-YYYY-MM-DD.log`, rotated at local midnight and retained for 30 days. Console/journald application messages and daily files use local time with fixed three-digit milliseconds (for example, `2026-08-27 12:34:56.123`). Console output remains enabled for journald or container logging.
 
 ### `region`
 
@@ -410,7 +410,7 @@ All dashboard responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`
 | `POST` | `/v1/chat/completions` | OpenAI chat completions, sync and streaming |
 | `POST` | `/v1/messages` | Anthropic messages, sync and streaming |
 | `POST` | `/v1/embeddings` | OpenAI embeddings: Cohere v4 document/query/dynamic batches and Titan V2 bounded fan-out |
-| `POST` | `/openai/v1/responses` | OpenAI Responses passthrough, sync and streaming |
+| `POST` | `/openai/v1/responses` | OpenAI Responses passthrough for Bedrock GPT-5.x, Grok 4.3/4.6, and Azure; sync and streaming |
 | `POST` | `/openai/v1/images/generations` | Azure `gpt-image-2` generation, sync JSON |
 | `POST` | `/openai/v1/images/edits` | Azure `gpt-image-2` editing, multipart, sync and SSE |
 | `GET`  | `/v1/models` | Model list (OpenAI format) |
@@ -505,11 +505,14 @@ When `thinking` is set, `temperature` is stripped (Bedrock rejects it) and `budg
 | `claude-opus-4.7` | `us.anthropic.claude-opus-4-7` | 1M | 128K |
 | `claude-opus-4` | `us.anthropic.claude-opus-4-6-v1` | 1M | 128K |
 | `claude-sonnet-4.6` | `us.anthropic.claude-sonnet-4-6` | 1M | 64K |
-| `claude-sonnet-4` | `us.anthropic.claude-sonnet-4-20250514-v1:0` | 200K | 64K |
 | `claude-haiku` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | 200K | 64K |
-| `claude-sonnet-3.5` | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` | 200K | 64K |
+| `gpt-5.5` | `openai.gpt-5.5` | 1.05M | 128K |
+| `grok-4.3` | `xai.grok-4.3` | 1M | 128K |
+| `grok-4.6` | `xai.grok-4.6` | 500K | 128K |
 
-Common name variants (e.g. `claude-3-5-sonnet-latest`, `claude-sonnet-4-20250514`) resolve to the canonical alias, so stock Anthropic SDK defaults work as-is.
+Common Claude name variants resolve to their canonical alias. Grok names must be versioned: use `grok-4.3` / `grok4.3` / `grok-4-3`, or `grok-4.6` / `grok4.6` / `grok-4-6`. Ambiguous `grok` and `grok-4` aliases are intentionally unsupported.
+
+Grok 4.6 mantle is available in-region only in `us-west-2`. Its built-in model entry uses the generic per-model `region` override, while all other models continue to inherit the global region. Prefer the registered `grok-4.6` alias over the raw `xai.grok-4.6` ID because raw-ID passthrough does not carry this routing metadata.
 
 ## Security
 

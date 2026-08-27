@@ -124,6 +124,7 @@ class TestPolicyGating:
         ("azure", "openai-responses", "gpt-5.5"),
         ("http", "openai-responses", "deepseek-responses"),
         ("bedrock", "openai-responses", "xai.grok-4.3"),
+        ("bedrock", "openai-responses", "xai.grok-4.6"),
         ("bedrock", "openai-chat", "openai.gpt-5.5"),
         ("bedrock", "anthropic", "openai.gpt-5.5"),
         ("bedrock", "openai-images", "openai.gpt-5.5"),
@@ -134,6 +135,7 @@ class TestPolicyGating:
     def test_model_gate_matches_policy(self):
         assert is_bedrock_gpt5x_responses_model("bedrock", "openai-responses", "openai.gpt-5.5")
         assert not is_bedrock_gpt5x_responses_model("bedrock", "openai-responses", "xai.grok-4.3")
+        assert not is_bedrock_gpt5x_responses_model("bedrock", "openai-responses", "xai.grok-4.6")
 
 
 # ---------------------------------------------------------------------------

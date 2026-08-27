@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 
 from bedrock_gateway.config import GatewayConfig, LoggingConfig, ServerConfig
@@ -11,6 +12,42 @@ from bedrock_gateway.logging_config import DailyFileHandler, configure_logging
 
 def _timestamp(value: str) -> float:
     return datetime.fromisoformat(value).timestamp()
+
+
+_LOG_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} ")
+
+
+def test_shared_formatter_uses_fixed_three_digit_milliseconds(tmp_path):
+    cfg = GatewayConfig(
+        server=ServerConfig(log_level="info"),
+        logging=LoggingConfig(
+            file_enabled=True, directory=str(tmp_path), retention_days=30
+        ),
+    )
+    root = logging.getLogger()
+    original_handlers = list(root.handlers)
+    original_level = root.level
+    try:
+        configure_logging(cfg)
+        formatter = next(
+            handler.formatter
+            for handler in root.handlers
+            if handler not in original_handlers
+        )
+        assert formatter is not None
+        record = logging.LogRecord(
+            "bedrock_gateway", logging.INFO, __file__, 1, "marker", (), None
+        )
+        record.created = _timestamp("2026-08-27 12:34:56")
+        record.msecs = 7.0
+        assert formatter.format(record).startswith("2026-08-27 12:34:56.007 ")
+    finally:
+        for handler in list(root.handlers):
+            if handler not in original_handlers:
+                root.removeHandler(handler)
+                handler.close()
+        root.handlers[:] = original_handlers
+        root.setLevel(original_level)
 
 
 def test_daily_handler_switches_files_at_local_midnight(tmp_path):
@@ -54,7 +91,9 @@ def test_daily_handler_deletes_only_expired_matching_files(tmp_path):
     assert (tmp_path / "other-2026-01-01.log").exists()
 
 
-def test_configure_logging_collects_all_loggers_without_duplicates(tmp_path):
+def test_configure_logging_collects_all_loggers_without_duplicates(
+    tmp_path, capsys
+):
     cfg = GatewayConfig(
         server=ServerConfig(log_level="info"),
         logging=LoggingConfig(
@@ -78,9 +117,14 @@ def test_configure_logging_collects_all_loggers_without_duplicates(tmp_path):
             logging.getLogger(name).info("unique-marker-%d", index)
 
         text = next(tmp_path.glob("bedrock-gateway-*.log")).read_text()
+        console = capsys.readouterr().err
         for index in range(len(names)):
-            assert text.count(f"unique-marker-{index}") == 1
+            marker = f"unique-marker-{index}"
+            assert text.count(marker) == 1
+            assert console.count(marker) == 1
         assert "[test_logging_config.py:" in text
+        assert all(_LOG_PREFIX.match(line) for line in text.splitlines())
+        assert all(_LOG_PREFIX.match(line) for line in console.splitlines())
     finally:
         for handler in list(root.handlers):
             if handler not in original_handlers:

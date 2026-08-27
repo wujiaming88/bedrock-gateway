@@ -188,10 +188,11 @@ def check_gpt56_messages_stream(base: str) -> None:
 
 
 def check_grok(base: str) -> None:
-    d = _post(base + "/openai/v1/responses",
-              {"model": "grok-4.3", "input": "one word: ok"})
-    assert d.get("status") == "completed", d
-    record("bedrock grok-4.3 — responses sync", PASS)
+    for model in ("grok-4.3", "grok-4.6"):
+        d = _post(base + "/openai/v1/responses",
+                  {"model": model, "input": "one word: ok"})
+        assert d.get("status") == "completed", d
+        record(f"bedrock {model} — responses sync", PASS)
 
 
 def check_azure_responses(base: str) -> None:

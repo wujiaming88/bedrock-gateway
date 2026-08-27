@@ -41,14 +41,18 @@ class BedrockTransport(Transport):
     def build_url(
         self, operation_path: str, region: str, entry: "ModelEntry"
     ) -> str:
+        effective_region = entry.region or region
         if entry.endpoint == "mantle":
             # OpenAI-compatible surface: dialect gives a bare op, we add the root.
             return (
-                f"https://bedrock-mantle.{region}.api.aws/openai/v1"
+                f"https://bedrock-mantle.{effective_region}.api.aws/openai/v1"
                 + operation_path
             )
         # runtime: native Bedrock path, already complete from the dialect.
-        return f"https://bedrock-runtime.{region}.amazonaws.com" + operation_path
+        return (
+            f"https://bedrock-runtime.{effective_region}.amazonaws.com"
+            + operation_path
+        )
 
 
 class HttpTransport(Transport):

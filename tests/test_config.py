@@ -66,6 +66,18 @@ class TestDefaultConfig:
         assert "claude-haiku" in cfg.models
         assert "claude-opus-4" in cfg.models
 
+    def test_model_region_override_is_parsed(self, tmp_path: Path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "use_default_models: false\n"
+            "models:\n"
+            "  regional-model:\n"
+            "    bedrock_id: vendor.model\n"
+            "    region: eu-west-1\n"
+        )
+        cfg = load_config(config_file)
+        assert cfg.models["regional-model"].region == "eu-west-1"
+
 
 class TestLoggingConfig:
     def test_defaults(self, tmp_path: Path):

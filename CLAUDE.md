@@ -87,6 +87,8 @@ configured this way and uses native Chat, Responses, and Anthropic passthrough.
 
 1. Bedrock model, same dialect as an existing one → add one entry to
    `_DEFAULT_MODELS` in `config.py` + aliases in `_MODEL_ALIASES`. Zero code.
+   If its upstream is regional, set the model's generic `region`; an empty value
+   inherits the gateway-wide region. Grok 4.6 uses `us-west-2` this way.
 2. New Bedrock vendor prefix → also add it to `_BEDROCK_ID_PREFIXES` in
    `models.py` so raw-id passthrough works.
 3. Azure model → add an `azure_resources` entry (endpoint + key) and a model

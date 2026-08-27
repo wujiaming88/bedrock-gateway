@@ -95,7 +95,8 @@ def configure_logging(config: GatewayConfig) -> None:
     """Configure one console path plus an optional daily file path."""
     level = getattr(logging, config.server.log_level.upper(), logging.INFO)
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] [%(name)s] [%(filename)s:%(lineno)d] %(message)s",
+        "%(asctime)s.%(msecs)03d [%(levelname)s] [%(name)s] "
+        "[%(filename)s:%(lineno)d] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     root = logging.getLogger()

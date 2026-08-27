@@ -239,6 +239,7 @@ class ModelEntry:
     context_length: int = 200000
     max_output: int = 64000
     endpoint: str = "runtime"     # transport hint: "runtime" | "mantle"
+    region: str = ""               # Bedrock region override; empty inherits global
     protocol: str = "anthropic"   # LEGACY — mapped to transport/dialect
     transport: str = "bedrock"    # "bedrock" | "azure"
     dialect: str = "anthropic"    # "anthropic" | "openai-responses" | "openai-chat" | "openai-images" | "openai-embeddings"
@@ -349,13 +350,23 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
-    # ── xAI Grok 4.3 (mantle endpoint, Responses API) ─────────────────
+    # ── xAI Grok (mantle endpoint, Responses API) ─────────────────────
     "grok-4.3": {
         "bedrock_id": "xai.grok-4.3",
         "context_length": 1_000_000,
         "max_output": 131_072,
         "endpoint": "mantle",
         "protocol": "openai-responses",
+    },
+    # Mantle serves Grok 4.6 in-region only from us-west-2. Keep this routing
+    # metadata on the model so the transport remains generic.
+    "grok-4.6": {
+        "bedrock_id": "xai.grok-4.6",
+        "context_length": 500_000,
+        "max_output": 131_072,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+        "region": "us-west-2",
     },
     # ── Embeddings (Bedrock runtime, native invoke) ────────────────────
     # Cohere embed v4 is a *single* Bedrock model exposed under three gateway
@@ -461,13 +472,15 @@ _MODEL_ALIASES: dict[str, str] = {
     "gpt-5-6-luna": "gpt-5.6-luna",
     "openai.gpt-5.6-luna": "gpt-5.6-luna",
     "openai-gpt-5.6-luna": "gpt-5.6-luna",
-    # Grok 4.3 variations
-    "grok": "grok-4.3",
-    "grok-4": "grok-4.3",
+    # Grok variations. Deliberately omit ambiguous unversioned names.
     "grok4.3": "grok-4.3",
     "grok-4-3": "grok-4.3",
     "xai.grok-4.3": "grok-4.3",
     "xai-grok-4.3": "grok-4.3",
+    "grok4.6": "grok-4.6",
+    "grok-4-6": "grok-4.6",
+    "xai.grok-4.6": "grok-4.6",
+    "xai-grok-4.6": "grok-4.6",
     # Cohere embed v4 (document + query + dynamic profiles)
     # The raw Bedrock id keeps resolving to the fixed document alias so raw-id
     # passthrough never silently becomes the dynamic (input_type-required)
@@ -566,6 +579,7 @@ def _build_entry(
         context_length=int(info.get("context_length", 200_000)),
         max_output=int(info.get("max_output", 64_000)),
         endpoint=endpoint,
+        region=str(info.get("region", "")),
         protocol=protocol,
         transport=transport,
         dialect=dialect,

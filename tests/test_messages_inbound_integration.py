@@ -172,6 +172,20 @@ class TestMantleSync:
         ]
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_grok46_uses_model_region_and_preserves_alias(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_responses_body("hello"))
+        resp = client.post("/v1/messages", json={
+            "model": "grok-4.6",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 200
+        assert resp.json()["model"] == "grok-4.6"
+        url, _ = _sent_url_headers(mock_cls)
+        assert "bedrock-mantle.us-west-2.api.aws/openai/v1/responses" in url
+        assert _sent(mock_cls)["model"] == "xai.grok-4.6"
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_gpt55_tool_use(self, mock_cls, client):
         mock_cls.return_value = _mock_sync_client(_responses_tool_body())
         resp = client.post("/v1/messages", json={
@@ -247,10 +261,10 @@ class TestMantleSync:
 
 
 class TestMantleStream:
-    def _collect(self, client, mock_cls, frames):
+    def _collect(self, client, mock_cls, frames, model="gpt-5.5"):
         mock_cls.return_value = _mock_stream_client(frames)
         with client.stream("POST", "/v1/messages", json={
-            "model": "gpt-5.5",
+            "model": model,
             "max_tokens": 50,
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
@@ -291,6 +305,20 @@ class TestMantleStream:
         assert sent["stream"] is True
         assert sent["model"] == "openai.gpt-5.5"
         assert sent["input"][0]["content"][0]["text"] == "hi"
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_grok46_stream_uses_model_region(self, mock_cls, client):
+        frames = [
+            b'event: response.created\ndata: {"type":"response.created","response":{"usage":{"input_tokens":1}}}\n\n',
+            b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"ok"}\n\n',
+            b'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+        ]
+        body = self._collect(client, mock_cls, frames, model="grok-4.6")
+        assert '"model":"grok-4.6"' in body or '"model": "grok-4.6"' in body
+        stream_call = mock_cls.return_value.stream.call_args
+        assert "bedrock-mantle.us-west-2.api.aws" in stream_call[0][1]
+        sent = json.loads(stream_call.kwargs.get("content", b"{}"))
+        assert sent["model"] == "xai.grok-4.6"
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_stream_upstream_preflight_error(self, mock_cls, client):
