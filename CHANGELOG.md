@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.1] — 2026-09-02
+
+### 变更
+
+- 所有业务/第三方日志增加方向标记：`[DN]`（客户端 → 网关的 `REQ` 请求、`MULTIPART_PARSE_FAILED` 与 `uvicorn.access` 访问日志）与 `[UP]`（网关 → 上游的 `RES`、`STREAM-OPEN`、`RESPONSES-STREAM`、`RETRY`、`TIMEOUT`、`ERR`、`FAILED`、`BADJSON` 及 `httpx`/`httpcore` 日志）；网关内部事件（`COMPAT`、`REQ-SHAPE`、`UNEXPECTED`）不标记。
+- 同步请求记录上游往返延迟 `RES ... latency_ms=<ms>`；流式请求记录首字节延迟 `STREAM-OPEN ok ... latency_ms=<ms>`（TTFT）。
+
+### 测试
+
+- 新增 `DirectionFilter` 单测（`httpx`/`httpcore` → `[UP]`、`uvicorn.access` → `[DN]`、业务/`uvicorn.error` 不标记、重复标记幂等）；同步/流式/embeddings 路径回归全部通过。
+
 ## [0.8.0] — 2026-08-27
 
 ### 新增

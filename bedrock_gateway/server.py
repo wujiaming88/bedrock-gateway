@@ -162,7 +162,7 @@ def _multipart_parse_error(
             content_length = "invalid"
     boundary = options.get(b"boundary")
     logger.warning(
-        "MULTIPART_PARSE_FAILED request_id=%s exception=%s content_length=%s "
+        "[DN] MULTIPART_PARSE_FAILED request_id=%s exception=%s content_length=%s "
         "transfer_encoding=%s content_encoding=%s boundary_present=%s boundary_length=%d",
         request_id,
         type(exc).__name__,
@@ -292,11 +292,11 @@ def _log_upstream_error(status_code: int, fmt: str, *args: Any) -> None:
       * 5xx and unknown codes → ERROR.
     """
     if status_code in (401, 403):
-        logger.error(fmt + " [auth-failure]", *args)
+        logger.error("[UP] " + fmt + " [auth-failure]", *args)
     elif 400 <= status_code < 500:
-        logger.warning(fmt, *args)
+        logger.warning("[UP] " + fmt, *args)
     else:
-        logger.error(fmt, *args)
+        logger.error("[UP] " + fmt, *args)
 
 
 def _value_shape(value: Any) -> Any:
@@ -770,7 +770,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             upstream_body = dict(body)
             upstream_body["model"] = upstream_id
             logger.info(
-                "REQ [chat-passthrough] model=%s -> %s (%s) stream=%s",
+                "[DN] REQ [chat-passthrough] model=%s -> %s (%s) stream=%s",
                 raw_model, upstream_id, entry.transport, stream,
             )
             if stream:
@@ -793,7 +793,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
 
         logger.info(
-            "REQ model=%s -> %s msgs=%d tools=%d stream=%s",
+            "[DN] REQ model=%s -> %s msgs=%d tools=%d stream=%s",
             raw_model,
             model,
             len(body.get("messages", [])),
@@ -926,7 +926,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         compat = responses_compat_policy(entry.transport, entry.dialect, upstream_id)
 
         logger.info(
-            "REQ [responses] model=%s -> %s (%s) stream=%s",
+            "[DN] REQ [responses] model=%s -> %s (%s) stream=%s",
             raw_model, upstream_id, entry.transport, stream,
         )
 
@@ -990,7 +990,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         upstream_body["model"] = upstream_id
 
         logger.info(
-            "REQ [images] model=%s -> %s (%s)",
+            "[DN] REQ [images] model=%s -> %s (%s)",
             raw_model, upstream_id, entry.transport,
         )
         return await _handle_sync(
@@ -1115,7 +1115,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         transport = get_transport(entry)
         dialect = get_dialect(entry)
         logger.info(
-            "REQ [images.edits] model=%s -> %s (%s) files=%d",
+            "[DN] REQ [images.edits] model=%s -> %s (%s) files=%d",
             raw_model, upstream_id, entry.transport, image_count,
         )
         handler = _handle_stream if stream else _handle_sync
@@ -1184,7 +1184,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         native_bodies = adapter.build_requests(ir)
 
         logger.info(
-            "REQ [embeddings] model=%s -> %s inputs=%d native_requests=%d",
+            "[DN] REQ [embeddings] model=%s -> %s inputs=%d native_requests=%d",
             raw_model, model, len(ir.inputs), len(native_bodies),
         )
 
@@ -1255,7 +1255,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 if (value := request.headers.get(key)) is not None
             }
             logger.info(
-                "REQ [messages-passthrough] model=%s -> %s (%s) stream=%s",
+                "[DN] REQ [messages-passthrough] model=%s -> %s (%s) stream=%s",
                 raw_model, model, entry.transport, stream,
             )
             return await _handle_raw_passthrough(
@@ -1280,7 +1280,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 translated_body["max_tokens"] = entry.max_output
             responses_body = to_responses_request(translated_body, upstream_id)
             logger.info(
-                "REQ [messages->responses] client_model=%s upstream_model=%s "
+                "[DN] REQ [messages->responses] client_model=%s upstream_model=%s "
                 "transport=%s stream=%s max_output_tokens=%s defaulted=%s",
                 client_model, upstream_id, entry.transport, stream,
                 responses_body.get("max_output_tokens"), "max_tokens" not in body,
@@ -1312,7 +1312,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             max_tokens = registry.get_max_output(raw_model, 64_000)
 
         logger.info(
-            "REQ [messages] model=%s -> %s msgs=%d stream=%s",
+            "[DN] REQ [messages] model=%s -> %s msgs=%d stream=%s",
             raw_model,
             model,
             len(body.get("messages", [])),
@@ -1618,7 +1618,7 @@ async def _handle_sync(
         # than stacking N full per-attempt timeouts into a multi-minute hang.
         if attempt > 0 and time.monotonic() >= deadline:
             logger.warning(
-                "RETRY-BUDGET exhausted model=%s attempt=%d/%d", model,
+                "[UP] RETRY-BUDGET exhausted model=%s attempt=%d/%d", model,
                 attempt + 1, max_retries,
             )
             break
@@ -1626,8 +1626,10 @@ async def _handle_sync(
             # Transport-specific headers (e.g. Azure api-key) override the
             # gateway's global auth; None → use the global SigV4/Bearer path.
             headers = _payload_headers(transport, entry, auth, url, payload)
+            started = time.monotonic()
             async with _track_upstream(health), httpx.AsyncClient(timeout=_httpx_timeout(timeout)) as client:
                 resp = await client.post(url, headers=headers, content=payload.content)
+            upstream_ms = int((time.monotonic() - started) * 1000)
 
             if resp.status_code == 200:
                 # P1: a 200 with an unparseable body is an upstream fault (502),
@@ -1636,7 +1638,7 @@ async def _handle_sync(
                     result = resp.json()
                 except (ValueError, json.JSONDecodeError):
                     logger.error(
-                        "BADJSON model=%s upstream 200 but body not JSON (%d bytes)",
+                        "[UP] BADJSON model=%s upstream 200 but body not JSON (%d bytes)",
                         model, len(resp.content),
                     )
                     return _oai_error(
@@ -1645,11 +1647,12 @@ async def _handle_sync(
                     )
                 client_body, log_info = dialect.render_sync(result, model)
                 logger.info(
-                    "RES model=%s finish=%s in=%s out=%s attempt=%d",
+                    "[UP] RES model=%s finish=%s in=%s out=%s latency_ms=%d attempt=%d",
                     model,
                     log_info.get("finish", "?"),
                     log_info.get("input_tokens", "?"),
                     log_info.get("output_tokens", "?"),
+                    upstream_ms,
                     attempt + 1,
                 )
                 return client_body
@@ -1658,7 +1661,7 @@ async def _handle_sync(
                 last_error = resp.text[:200]
                 delay = retry_base_delay * (2**attempt)
                 logger.warning(
-                    "RETRY %d model=%s attempt=%d/%d delay=%.1fs",
+                    "[UP] RETRY %d model=%s attempt=%d/%d delay=%.1fs",
                     resp.status_code,
                     model,
                     attempt + 1,
@@ -1708,7 +1711,7 @@ async def _handle_sync(
         except httpx.TimeoutException:
             last_error = "Request timeout"
             logger.warning(
-                "TIMEOUT model=%s attempt=%d/%d",
+                "[UP] TIMEOUT model=%s attempt=%d/%d",
                 model,
                 attempt + 1,
                 max_retries,
@@ -1723,7 +1726,7 @@ async def _handle_sync(
             return _oai_error(500, str(exc))
 
     logger.error(
-        "FAILED model=%s all %d retries exhausted: %s",
+        "[UP] FAILED model=%s all %d retries exhausted: %s",
         model,
         max_retries,
         last_error,
@@ -1779,7 +1782,7 @@ async def _embeddings_attempt(
     for attempt in range(max_retries):
         if attempt > 0 and time.monotonic() >= deadline:
             logger.warning(
-                "EMB retry-budget exhausted model=%s index=%d attempt=%d/%d",
+                "[UP] EMB retry-budget exhausted model=%s index=%d attempt=%d/%d",
                 model, index, attempt + 1, max_retries,
             )
             break
@@ -1810,7 +1813,7 @@ async def _embeddings_attempt(
                 return resp.json()
             except (ValueError, json.JSONDecodeError):
                 logger.error(
-                    "BADJSON [embeddings] model=%s index=%d upstream 200 but "
+                    "[UP] BADJSON [embeddings] model=%s index=%d upstream 200 but "
                     "body not JSON", model, index,
                 )
                 raise _EmbeddingsUpstreamError(
@@ -1820,7 +1823,7 @@ async def _embeddings_attempt(
         if resp.status_code in _EMBEDDINGS_RETRYABLE:
             last_error = resp.text[:200] or f"upstream {resp.status_code}"
             logger.warning(
-                "RETRY [embeddings] %d model=%s index=%d attempt=%d/%d",
+                "[UP] RETRY [embeddings] %d model=%s index=%d attempt=%d/%d",
                 resp.status_code, model, index, attempt + 1, max_retries,
             )
             if attempt < max_retries - 1 and time.monotonic() < deadline:
@@ -1959,7 +1962,7 @@ async def _open_upstream_stream(
             break
         if attempt > 0 and time.monotonic() >= deadline:  # P3: total budget
             logger.warning(
-                "STREAM-OPEN retry-budget exhausted [%s] attempt=%d/%d",
+                "[UP] STREAM-OPEN retry-budget exhausted [%s] attempt=%d/%d",
                 log_tag, attempt + 1, max_retries,
             )
             break
@@ -1976,6 +1979,7 @@ async def _open_upstream_stream(
             client = await stack.enter_async_context(
                 httpx.AsyncClient(timeout=_httpx_timeout(timeout))
             )
+            started = time.monotonic()
             resp = await stack.enter_async_context(
                 client.stream("POST", url, headers=headers, content=payload.content)
             )
@@ -1984,7 +1988,7 @@ async def _open_upstream_stream(
             _note_timeout(request)
             last_status, last_message = 504, "Upstream connect timeout"
             logger.warning(
-                "STREAM-OPEN timeout [%s] attempt=%d/%d",
+                "[UP] STREAM-OPEN timeout [%s] attempt=%d/%d",
                 log_tag, attempt + 1, max_retries,
             )
             if attempt < max_retries - 1:
@@ -2007,7 +2011,11 @@ async def _open_upstream_stream(
         status = resp.status_code
 
         if status == 200:
-            logger.info("STREAM-OPEN ok [%s] attempt=%d", log_tag, attempt + 1)
+            upstream_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "[UP] STREAM-OPEN ok [%s] latency_ms=%d attempt=%d",
+                log_tag, upstream_ms, attempt + 1,
+            )
             return resp, stack, None
 
         # Read the upstream error body, then release the connection.
@@ -2024,7 +2032,7 @@ async def _open_upstream_stream(
             last_message = err_body[:200] or f"upstream {status}"
             _note_retry(request)
             logger.warning(
-                "STREAM-OPEN retryable %d [%s] attempt=%d/%d",
+                "[UP] STREAM-OPEN retryable %d [%s] attempt=%d/%d",
                 status, log_tag, attempt + 1, max_retries,
             )
             await asyncio.sleep(retry_base_delay * (2**attempt))
@@ -2070,7 +2078,7 @@ async def _open_upstream_stream(
         }
 
     logger.error(
-        "STREAM-OPEN failed [%s] all %d attempts exhausted: %s",
+        "[UP] STREAM-OPEN failed [%s] all %d attempts exhausted: %s",
         log_tag, max_retries, last_message,
     )
     return None, None, {
@@ -2132,7 +2140,7 @@ async def _handle_stream(
         except httpx.TimeoutException:
             # Connection dropped mid-stream after data may have flowed.
             _note_timeout(request)
-            logger.warning("STREAM-MID timeout [chat] model=%s", model)
+            logger.warning("[UP] STREAM-MID timeout [chat] model=%s", model)
             yield dialect.stream_error("Upstream timeout mid-stream", 504)
         except Exception as exc:  # noqa: BLE001
             logger.exception("UNEXPECTED [stream] model=%s during chat.completions", model)
@@ -2167,21 +2175,23 @@ async def _handle_messages_sync(
     for attempt in range(max_retries):
         if attempt > 0 and time.monotonic() >= deadline:  # P3: total budget
             logger.warning(
-                "RETRY-BUDGET exhausted [messages] model=%s attempt=%d/%d",
+                "[UP] RETRY-BUDGET exhausted [messages] model=%s attempt=%d/%d",
                 model, attempt + 1, max_retries,
             )
             break
         try:
             headers = auth.get_headers(method="POST", url=url, body=body_bytes)
+            started = time.monotonic()
             async with _track_upstream(health), httpx.AsyncClient(timeout=_httpx_timeout(timeout)) as client:
                 resp = await client.post(url, headers=headers, content=body_bytes)
+            upstream_ms = int((time.monotonic() - started) * 1000)
 
             if resp.status_code == 200:
                 try:  # P1: malformed 200 body → 502, not a 500 crash
                     result = resp.json()
                 except (ValueError, json.JSONDecodeError):
                     logger.error(
-                        "BADJSON [messages] model=%s upstream 200 but body not JSON",
+                        "[UP] BADJSON [messages] model=%s upstream 200 but body not JSON",
                         model,
                     )
                     return JSONResponse(
@@ -2192,11 +2202,12 @@ async def _handle_messages_sync(
                     )
                 usage = result.get("usage", {})
                 logger.info(
-                    "RES [messages] model=%s stop=%s in=%s out=%s attempt=%d",
+                    "[UP] RES [messages] model=%s stop=%s in=%s out=%s latency_ms=%d attempt=%d",
                     model,
                     result.get("stop_reason", "?"),
                     usage.get("input_tokens", "?"),
                     usage.get("output_tokens", "?"),
+                    upstream_ms,
                     attempt + 1,
                 )
                 return format_anthropic_response(result, model)
@@ -2205,7 +2216,7 @@ async def _handle_messages_sync(
                 last_error = resp.text[:200]
                 delay = retry_base_delay * (2**attempt)
                 logger.warning(
-                    "RETRY [messages] %d model=%s attempt=%d/%d delay=%.1fs",
+                    "[UP] RETRY [messages] %d model=%s attempt=%d/%d delay=%.1fs",
                     resp.status_code,
                     model,
                     attempt + 1,
@@ -2234,7 +2245,7 @@ async def _handle_messages_sync(
         except httpx.TimeoutException:
             last_error = "Request timeout"
             logger.warning(
-                "TIMEOUT [messages] model=%s attempt=%d/%d",
+                "[UP] TIMEOUT [messages] model=%s attempt=%d/%d",
                 model,
                 attempt + 1,
                 max_retries,
@@ -2251,7 +2262,7 @@ async def _handle_messages_sync(
             )
 
     logger.error(
-        "FAILED [messages] model=%s all %d retries exhausted: %s",
+        "[UP] FAILED [messages] model=%s all %d retries exhausted: %s",
         model,
         max_retries,
         last_error,
@@ -2394,7 +2405,7 @@ async def _handle_messages_stream(
         except httpx.TimeoutException:
             _note_timeout(request)
             logger.warning(
-                "STREAM-MID timeout [messages] model=%s started=%s",
+                "[UP] STREAM-MID timeout [messages] model=%s started=%s",
                 model, started,
             )
             yield make_anthropic_sse(
@@ -2485,7 +2496,7 @@ async def _handle_messages_via_responses_sync(
             result.get("error") or result
         )
         logger.warning(
-            "RESPONSES-FAILED client_model=%s upstream_model=%s status=%d "
+            "[UP] RESPONSES-FAILED client_model=%s upstream_model=%s status=%d "
             "error_type=%s",
             client_model, upstream_model, status, error_type,
         )
@@ -2549,7 +2560,7 @@ async def _handle_messages_via_responses_stream(
         except httpx.TimeoutException:
             _note_timeout(request)
             logger.warning(
-                "STREAM-MID timeout [messages->responses] client_model=%s "
+                "[UP] STREAM-MID timeout [messages->responses] client_model=%s "
                 "upstream_model=%s terminal=%s",
                 client_model, upstream_model, adapter.terminal,
             )

@@ -875,6 +875,14 @@ server {
 
 文件日志默认开启；仅显式设置 `logging.file_enabled: false` 时关闭。网关业务日志、Uvicorn 启动/错误/访问日志和 httpx 上游请求日志会同时写入 `/var/log/bedrock-gateway/bedrock-gateway-YYYY-MM-DD.log`。console/journald应用消息和每日文件统一使用主机本地时间及固定三位毫秒（如 `2026-08-27 12:34:56.123`）。文件按主机本地午夜切分并自动保留最近 30 天；console 输出仍保留，因此 journald 不受影响：
 
+每条业务/第三方日志都带方向标记，便于一眼分辨流量走向：
+
+- `[DN]`（下行，客户端 → 网关）：`REQ ...` 请求、`MULTIPART_PARSE_FAILED`、`uvicorn.access` 访问日志。
+- `[UP]`（上行，网关 → 上游）：`RES ...`、`STREAM-OPEN ...`、`RESPONSES-STREAM ...`、`RETRY`、`TIMEOUT`、`ERR`、`FAILED`、`BADJSON`，以及 `httpx`/`httpcore` 上游请求日志。
+- 无标记：网关内部事件（`COMPAT`、`REQ-SHAPE`、`UNEXPECTED` 等）。
+
+同步与流式请求都记录转发延迟：同步结果行 `RES ... latency_ms=<ms>` 为整次上游往返耗时；流式 `STREAM-OPEN ok ... latency_ms=<ms>` 为首字节到达前的耗时（TTFT）。
+
 ```bash
 tail -f /var/log/bedrock-gateway/bedrock-gateway-$(date +%F).log
 journalctl -u bedrock-gateway -f

@@ -194,7 +194,7 @@ class TestUpstreamLogLevel:
         err_records = [
             rec for rec in caplog.records
             if rec.name == "bedrock_gateway"
-            and rec.message.startswith("ERR ")
+            and rec.message.startswith("[UP] ERR ")
         ]
         assert err_records, "expected an ERR log line"
         # All ERR lines for a 4xx must be WARNING.
@@ -228,7 +228,7 @@ class TestUpstreamLogLevel:
         err_records = [
             rec for rec in caplog.records
             if rec.name == "bedrock_gateway"
-            and rec.message.startswith("ERR ")
+            and rec.message.startswith("[UP] ERR ")
         ]
         assert any(rec.levelno == logging.ERROR for rec in err_records), (
             "expected an ERROR log line for an upstream 5xx"

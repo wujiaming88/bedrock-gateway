@@ -651,7 +651,7 @@ class AnthropicStreamAdapter:
         out.append(make_anthropic_sse("message_stop", {"type": "message_stop"}))
         self._terminal = "success"
         logger.info(
-            "RESPONSES-STREAM terminal=success model=%s status=%s input=%d "
+            "[UP] RESPONSES-STREAM terminal=success model=%s status=%s input=%d "
             "cache_read=%d cache_creation=%d output=%d",
             self.model, resp.get("status"), self._usage["input_tokens"],
             self._usage["cache_read_input_tokens"],
@@ -682,7 +682,7 @@ class AnthropicStreamAdapter:
             return []
         self._terminal = "error"
         logger.warning(
-            "RESPONSES-STREAM terminal=error model=%s error_type=%s",
+            "[UP] RESPONSES-STREAM terminal=error model=%s error_type=%s",
             self.model, error_type,
         )
         return [self.error_event(message, error_type)]

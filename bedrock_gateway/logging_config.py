@@ -91,6 +91,36 @@ class DailyFileHandler(logging.Handler):
         super().close()
 
 
+class DirectionFilter(logging.Filter):
+    """Prefix third-party traffic logs with an ``[UP]`` / ``[DN]`` direction tag.
+
+    The gateway's own business logs carry the tag inline in the message string;
+    this filter adds the same tag to the third-party loggers that only emit raw
+    network activity, so every line can be read left-to-right as *who is talking
+    to whom*: ``[UP]`` = outbound to a provider (httpx/httpcore), ``[DN]`` =
+    inbound from a client (uvicorn.access). Idempotent: a message that already
+    starts with a tag is left untouched, so records flowing through both console
+    and file handlers are tagged exactly once.
+    """
+
+    _UP_LOGGERS = ("httpx", "httpcore")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        name = record.name
+        if name == "uvicorn.access":
+            tag = "[DN] "
+        elif name in self._UP_LOGGERS or name.startswith(
+            tuple(f"{p}." for p in self._UP_LOGGERS)
+        ):
+            tag = "[UP] "
+        else:
+            return True
+        msg = record.msg
+        if isinstance(msg, str) and not msg.startswith(("[UP] ", "[DN] ")):
+            record.msg = tag + msg
+        return True
+
+
 def configure_logging(config: GatewayConfig) -> None:
     """Configure one console path plus an optional daily file path."""
     level = getattr(logging, config.server.log_level.upper(), logging.INFO)
@@ -105,8 +135,11 @@ def configure_logging(config: GatewayConfig) -> None:
             root.removeHandler(handler)
             handler.close()
 
+    direction = DirectionFilter()
+
     console = logging.StreamHandler()
     console.setFormatter(formatter)
+    console.addFilter(direction)
     setattr(console, _MANAGED, True)
     root.addHandler(console)
 
@@ -116,6 +149,7 @@ def configure_logging(config: GatewayConfig) -> None:
             config.logging.retention_days,
         )
         file_handler.setFormatter(formatter)
+        file_handler.addFilter(direction)
         setattr(file_handler, _MANAGED, True)
         root.addHandler(file_handler)
 

@@ -113,6 +113,14 @@ logging:
 
 File logging is enabled by default; set `file_enabled: false` explicitly to disable it. Gateway, Uvicorn access/error, and httpx records are written to `bedrock-gateway-YYYY-MM-DD.log`, rotated at local midnight and retained for 30 days. Console/journald application messages and daily files use local time with fixed three-digit milliseconds (for example, `2026-08-27 12:34:56.123`). Console output remains enabled for journald or container logging.
 
+Every business and third-party log line carries a direction tag so traffic flow reads left-to-right:
+
+- `[DN]` (downstream, client → gateway): `REQ ...` requests, `MULTIPART_PARSE_FAILED`, and `uvicorn.access` lines.
+- `[UP]` (upstream, gateway → provider): `RES ...`, `STREAM-OPEN ...`, `RESPONSES-STREAM ...`, `RETRY`, `TIMEOUT`, `ERR`, `FAILED`, `BADJSON`, and `httpx`/`httpcore` lines.
+- Untagged: gateway-internal events (`COMPAT`, `REQ-SHAPE`, `UNEXPECTED`, …).
+
+Both sync and streaming requests record forwarding latency: a sync result line `RES ... latency_ms=<ms>` is the whole upstream round-trip; a streaming `STREAM-OPEN ok ... latency_ms=<ms>` is the time-to-first-byte (TTFT).
+
 ### `region`
 
 ```yaml

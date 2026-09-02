@@ -7,7 +7,11 @@ import re
 from datetime import datetime
 
 from bedrock_gateway.config import GatewayConfig, LoggingConfig, ServerConfig
-from bedrock_gateway.logging_config import DailyFileHandler, configure_logging
+from bedrock_gateway.logging_config import (
+    DailyFileHandler,
+    DirectionFilter,
+    configure_logging,
+)
 
 
 def _timestamp(value: str) -> float:
@@ -132,3 +136,36 @@ def test_configure_logging_collects_all_loggers_without_duplicates(
                 handler.close()
         root.handlers[:] = original_handlers
         root.setLevel(original_level)
+
+
+def _record(name: str, message: str) -> logging.LogRecord:
+    return logging.LogRecord(name, logging.INFO, __file__, 1, message, (), None)
+
+
+def test_direction_filter_tags_third_party_loggers():
+    filt = DirectionFilter()
+
+    tagged = [
+        ("httpx", "[UP] "),
+        ("httpx._client", "[UP] "),
+        ("httpcore", "[UP] "),
+        ("httpcore.http11", "[UP] "),
+        ("uvicorn.access", "[DN] "),
+    ]
+    for name, tag in tagged:
+        record = _record(name, "hello")
+        assert filt.filter(record) is True
+        assert record.getMessage() == f"{tag}hello"
+
+    for name in ("bedrock_gateway", "uvicorn.error", "uvicorn.asgi"):
+        record = _record(name, "hello")
+        assert filt.filter(record) is True
+        assert record.getMessage() == "hello"
+
+
+def test_direction_filter_is_idempotent():
+    filt = DirectionFilter()
+    for message in ("[UP] hello", "[DN] hello"):
+        record = _record("httpx", message)
+        assert filt.filter(record) is True
+        assert record.getMessage() == message

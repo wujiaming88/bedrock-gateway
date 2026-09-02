@@ -183,7 +183,7 @@ class TestEndToEndLogLevels:
         err_lines = [
             rec for rec in caplog.records
             if rec.name == "bedrock_gateway"
-            and rec.message.startswith("ERR ")
+            and rec.message.startswith("[UP] ERR ")
         ]
         assert err_lines
         assert all(rec.levelno == logging.WARNING for rec in err_lines)
@@ -213,7 +213,7 @@ class TestEndToEndLogLevels:
         err_lines = [
             rec for rec in caplog.records
             if rec.name == "bedrock_gateway"
-            and rec.message.startswith("ERR ")
+            and rec.message.startswith("[UP] ERR ")
         ]
         assert err_lines
         assert any(rec.levelno == logging.ERROR for rec in err_lines)
