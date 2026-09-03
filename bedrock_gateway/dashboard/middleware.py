@@ -120,6 +120,17 @@ def _parse_sse_line(line: str) -> tuple[int, int]:
             in_t = _anthropic_input_total(m_usage) or in_t
             out_t = m_usage.get("output_tokens", out_t) or out_t
 
+    # OpenAI Responses stream ``response.completed`` — usage is nested under
+    # ``response.usage`` ({input_tokens, output_tokens, total_tokens}), unlike
+    # the chat stream's top-level ``usage``.
+    if etype == "response.completed":
+        resp = data.get("response") or {}
+        if isinstance(resp, dict):
+            r_usage = resp.get("usage") or {}
+            if isinstance(r_usage, dict):
+                in_t = _anthropic_input_total(r_usage) or in_t
+                out_t = r_usage.get("output_tokens", out_t) or out_t
+
     return int(in_t or 0), int(out_t or 0)
 
 
@@ -135,6 +146,7 @@ def _scan_chunk_usage(chunk: bytes | str) -> tuple[int, int]:
         "usage" not in text
         and "message_start" not in text
         and "message_delta" not in text
+        and "response.completed" not in text
     ):
         return 0, 0
     best_in = 0

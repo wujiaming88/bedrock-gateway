@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.3] — 2026-09-03
+
+### 修复
+
+- 修复 Responses 流式模型输出 token 采集缺失：`_parse_sse_line` 现解析 `response.completed` 事件的 `response.usage.output_tokens`，使 `gpt-5.6-terra`/`gpt-5.6-sol` 等 Responses 流式模型在 `MODEL-PERF` 日志中的 `out`/`tok/s` 正确显示（此前为 0）。
+
+### 测试
+
+- 新增 `response.completed` 用量解析单测（正常/非 dict response/非 dict usage/整块流）；全量 1187 通过。
+
 ## [0.8.2] — 2026-09-03
 
 ### 新增

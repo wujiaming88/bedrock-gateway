@@ -707,6 +707,24 @@ class TestParseSseLine:
         line = 'data: {"type": "message_start", "message": {"usage": "x"}}'
         assert _parse_sse_line(line) == (0, 0)
 
+    def test_responses_completed_usage(self):
+        line = (
+            'data: {"type": "response.completed", '
+            '"response": {"usage": {"input_tokens": 10, "output_tokens": 20}}}'
+        )
+        assert _parse_sse_line(line) == (10, 20)
+
+    def test_responses_completed_non_dict_response(self):
+        line = 'data: {"type": "response.completed", "response": "x"}'
+        assert _parse_sse_line(line) == (0, 0)
+
+    def test_responses_completed_non_dict_usage(self):
+        line = (
+            'data: {"type": "response.completed", '
+            '"response": {"usage": "x"}}'
+        )
+        assert _parse_sse_line(line) == (0, 0)
+
 
 class TestScanChunkUsage:
     def test_str_chunk_path(self):
@@ -716,6 +734,13 @@ class TestScanChunkUsage:
 
     def test_no_usage_marker_short_circuit(self):
         assert _scan_chunk_usage(b"just some random bytes") == (0, 0)
+
+    def test_responses_completed_chunk(self):
+        chunk = (
+            'data: {"type":"response.completed","response":{"usage":'
+            '{"input_tokens": 10, "output_tokens": 20}}}\n'
+        )
+        assert _scan_chunk_usage(chunk) == (10, 20)
 
 
 class TestParseJsonUsage:

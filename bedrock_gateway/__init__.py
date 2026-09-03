@@ -5,4 +5,4 @@ Lets any OpenAI client access AWS Bedrock models via Bearer Token,
 AK/SK credentials, IAM Role, or AWS Profile authentication.
 """
 
-__version__ = "0.8.2"
+__version__ = "0.8.3"
