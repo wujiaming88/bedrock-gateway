@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.2] — 2026-09-03
+
+### 新增
+
+- 按模型性能统计日志：`MetricsCollector` 新增每模型延迟/TTFT/输出 token 的有界累加（`_ModelPerf`，样本上限 4096）与 `model_performance()` 摘要方法（请求数、成功率、延迟均值与 p50/p95/p99、输出速度 `tokens_per_sec`、TTFT）。
+- 新增后台任务 `ModelPerformanceReporter`（对齐 `HealthMonitor`），每 30 分钟向日志输出一行 `MODEL-PERF`（按请求数降序），直接写入日志（journald + 每日文件），无需 dashboard 或新 API；随应用启动/关闭生命周期注册，且不依赖 `dashboard.enabled`。
+
+### 测试
+
+- 新增 `tests/test_model_report.py`：`model_performance()` 多模型/空/零请求守卫/零延迟除零守卫、`log_model_performance()` 逐模型与空日志、reporter 循环与 start/stop 幂等；全量 1183 通过。
+
 ## [0.8.1] — 2026-09-02
 
 ### 变更

@@ -47,6 +47,10 @@ _MAX_RECENT_REQUESTS = 200
 # Max recent errors retained for the error panel
 _MAX_RECENT_ERRORS = 50
 
+# Bounded per-model latency/TTFT sample cap for the performance report. Keeps
+# the per-model accumulation memory-bounded even under sustained traffic.
+_MAX_MODEL_SAMPLES = 4096
+
 # How many recent minute-buckets to aggregate when computing dashboard-gauge
 # percentiles. Using a rolling window of several minutes makes the gauge
 # meaningful even when the most recent minute had only 1-2 requests.
@@ -120,6 +124,27 @@ class _Bucket:
     # Set to True once this bucket has been persisted after rotating out of
     # the "current minute" — keeps us from writing it to disk every second.
     flushed: bool = False
+
+
+@dataclass
+class _ModelPerf:
+    """Lifetime per-model accumulation for the periodic performance report.
+
+    Counts and token sums are lifetime (reset on restart, matching
+    ``model_stats``); latency/TTFT samples are bounded by
+    ``_MAX_MODEL_SAMPLES`` so percentile inputs stay memory-bounded.
+    """
+    requests: int = 0
+    errors: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms_total: float = 0.0
+    latency_samples: deque = field(
+        default_factory=lambda: deque(maxlen=_MAX_MODEL_SAMPLES)
+    )
+    ttft_samples: deque = field(
+        default_factory=lambda: deque(maxlen=_MAX_MODEL_SAMPLES)
+    )
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -217,6 +242,7 @@ class MetricsCollector:
         self._total_completion_tokens = 0
         self._model_totals: dict[str, int] = {}
         self._model_tokens: dict[str, int] = {}
+        self._model_perf: dict[str, _ModelPerf] = {}
 
         # Top sources by client IP (lifetime). Capped in size to keep
         # memory bounded under adversarial input.
@@ -428,6 +454,16 @@ class MetricsCollector:
                     self._model_tokens.get(model, 0)
                     + prompt_tokens + completion_tokens
                 )
+                perf = self._model_perf.setdefault(model, _ModelPerf())
+                perf.requests += 1
+                if is_err:
+                    perf.errors += 1
+                perf.prompt_tokens += prompt_tokens
+                perf.completion_tokens += completion_tokens
+                perf.latency_ms_total += latency_ms
+                perf.latency_samples.append(latency_ms)
+                if ttft_ms is not None and ttft_ms >= 0:
+                    perf.ttft_samples.append(float(ttft_ms))
             if client_ip:
                 self._ip_counts[client_ip] = self._ip_counts.get(client_ip, 0) + 1
                 # Trim if the map grows pathologically large (unique IPs
@@ -952,6 +988,60 @@ class MetricsCollector:
             ]
         models.sort(key=lambda x: x["requests"], reverse=True)
         return {"models": models}
+
+    def model_performance(self) -> dict[str, Any]:
+        """Return per-model performance (latency, speed, TTFT) since start.
+
+        Counts and token sums are lifetime; latency/TTFT percentiles are
+        computed from the bounded recent samples. ``tokens_per_sec`` is the
+        aggregate output rate ``completion_tokens / total_latency_seconds``,
+        matching :meth:`overview`'s ``tokens_per_sec_avg`` semantics.
+        """
+        with self._lock:
+            models = []
+            for model, p in self._model_perf.items():
+                if p.requests <= 0:
+                    continue
+                avg_latency = p.latency_ms_total / p.requests
+                tokens_per_sec = (
+                    p.completion_tokens / (p.latency_ms_total / 1000.0)
+                    if p.latency_ms_total > 0
+                    else 0.0
+                )
+                models.append(
+                    {
+                        "model": model,
+                        "requests": p.requests,
+                        "success_rate": round(
+                            (p.requests - p.errors) / p.requests * 100.0, 2
+                        ),
+                        "avg_latency_ms": round(avg_latency, 2),
+                        "p50_latency_ms": round(
+                            _percentile(p.latency_samples, 50), 2
+                        ),
+                        "p95_latency_ms": round(
+                            _percentile(p.latency_samples, 95), 2
+                        ),
+                        "p99_latency_ms": round(
+                            _percentile(p.latency_samples, 99), 2
+                        ),
+                        "tokens_per_sec": round(tokens_per_sec, 2),
+                        "prompt_tokens": p.prompt_tokens,
+                        "completion_tokens": p.completion_tokens,
+                        "avg_ttft_ms": (
+                            round(sum(p.ttft_samples) / len(p.ttft_samples), 2)
+                            if p.ttft_samples
+                            else None
+                        ),
+                        "p50_ttft_ms": (
+                            round(_percentile(p.ttft_samples, 50), 2)
+                            if p.ttft_samples
+                            else None
+                        ),
+                    }
+                )
+        models.sort(key=lambda x: x["requests"], reverse=True)
+        return {"models": models, "window": "since_start"}
 
     def recent_requests(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return most-recent request summaries (newest first)."""

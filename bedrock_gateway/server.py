@@ -69,6 +69,7 @@ from .messages_to_responses import (
     to_responses_request,
 )
 from .logging_config import configure_logging
+from .model_report import ModelPerformanceReporter
 from .models import ModelRegistry, UnknownModelError
 from .responses_compatibility import (
     CompatibilityPolicy,
@@ -607,6 +608,20 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     app.state.health = health
     app.state.dashboard_auth = dashboard_auth
     app.state.dashboard_rate_limiter = dashboard_rate_limiter
+
+    # Per-model performance reporter (log-only, every 30 min). Unlike the
+    # dashboard's event-loop-lag sampler it runs unconditionally: metrics
+    # collection itself is unconditional, so the summary is available even
+    # when the dashboard UI/API is disabled.
+    model_perf_reporter = ModelPerformanceReporter(metrics)
+
+    @app.on_event("startup")
+    async def _model_perf_startup() -> None:
+        model_perf_reporter.start()
+
+    @app.on_event("shutdown")
+    async def _model_perf_shutdown() -> None:
+        await model_perf_reporter.stop()
 
     # Start/stop the event-loop-lag sampler with the app lifecycle.
     # Only runs when the dashboard is enabled — it exists solely to
