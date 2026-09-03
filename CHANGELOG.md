@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.4] — 2026-09-03
+
+### 文档
+
+- 新增 OpenRouter 作为通用 HTTP 上游的接入文档（`prefix` 直通、三端点 Bearer 鉴权），见 README「通用 HTTP 上游：OpenRouter」与 `config.example.yaml`。纯配置接入，无代码改动。
+
 ## [0.8.3] — 2026-09-03
 
 ### 修复

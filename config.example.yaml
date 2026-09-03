@@ -270,3 +270,29 @@ models:
 #     dialect: openai-chat
 #     context_length: 1000000
 #     max_output: 393216
+#
+# OpenRouter example — OpenAI-compatible aggregator (keys start `sk-or-v1-`).
+# Unlike DeepSeek, OpenRouter uses Bearer auth on ALL three endpoints (its
+# native /messages accepts Bearer, not x-api-key). The `prefix` enables
+# passthrough: any client model `openrouter/<vendor>/<model>` routes straight
+# through with NO named alias — e.g. `openrouter/anthropic/claude-opus-4.6`,
+# `openrouter/openai/gpt-5.5`, `openrouter/google/gemini-2.5-pro`.
+# upstream_resources:
+#   openrouter:
+#     prefix: openrouter
+#     secret_env: OPENROUTER_API_KEY
+#     routes:
+#       openai-chat:
+#         base_url: https://openrouter.ai/api/v1
+#         path: /chat/completions
+#         auth: bearer
+#       openai-responses:
+#         base_url: https://openrouter.ai/api/v1
+#         path: /responses
+#         auth: bearer
+#       anthropic-passthrough:
+#         base_url: https://openrouter.ai/api/v1
+#         path: /messages
+#         auth: bearer
+#         default_headers:
+#           anthropic-version: "2023-06-01"
