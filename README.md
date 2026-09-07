@@ -472,6 +472,41 @@ chmod 600 /opt/bedrock-gateway/.env
 
 ---
 
+### 通用 HTTP 上游：火山方舟（Ark）
+
+火山方舟（字节跳动，豆包 Doubao）同样走 `upstream_resources`，`prefix` 直通 `ark/<model>`。Chat / Responses 共用 `/api/v3` 根，Anthropic Messages 在 `/api/compatible/v1`；三端点**全部 `Authorization: Bearer`**（与 OpenRouter 一致）。**模型须先在方舟控制台开通**，否则报 404 `ModelNotOpen`。
+
+```yaml
+upstream_resources:
+  ark:
+    prefix: ark
+    secret_env: ARK_API_KEY
+    routes:
+      openai-chat:
+        base_url: https://ark.cn-beijing.volces.com/api/v3
+        path: /chat/completions
+        auth: bearer
+      openai-responses:
+        base_url: https://ark.cn-beijing.volces.com/api/v3
+        path: /responses
+        auth: bearer
+      anthropic-passthrough:
+        base_url: https://ark.cn-beijing.volces.com/api/compatible/v1
+        path: /messages
+        auth: bearer
+        default_headers:
+          anthropic-version: "2023-06-01"
+```
+
+```bash
+ARK_API_KEY=...
+chmod 600 /opt/bedrock-gateway/.env
+```
+
+已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260628`、`deepseek-v4-pro-ga-260813`。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。
+
+---
+
 ## Embeddings
 
 标准端点：

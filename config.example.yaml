@@ -296,3 +296,49 @@ models:
 #         auth: bearer
 #         default_headers:
 #           anthropic-version: "2023-06-01"
+#
+# Volcano Engine Ark (火山方舟) example — ByteDance's OpenAI-compatible
+# platform (Doubao/豆包 + hosted DeepSeek/Kimi/GLM). Bearer auth on all three
+# endpoints; Chat/Responses share the /api/v3 root, Anthropic Messages lives
+# under /api/compatible/v1. `prefix` enables passthrough: `ark/<model>` with NO
+# named alias. Models must be activated in the Ark console first (else 404
+# ModelNotOpen). `doubao-seed-evolving` is an alias that resolves to
+# `doubao-seed-evolving-latest-version` upstream.
+# upstream_resources:
+#   ark:
+#     prefix: ark
+#     secret_env: ARK_API_KEY
+#     routes:
+#       openai-chat:
+#         base_url: https://ark.cn-beijing.volces.com/api/v3
+#         path: /chat/completions
+#         auth: bearer
+#       openai-responses:
+#         base_url: https://ark.cn-beijing.volces.com/api/v3
+#         path: /responses
+#         auth: bearer
+#       anthropic-passthrough:
+#         base_url: https://ark.cn-beijing.volces.com/api/compatible/v1
+#         path: /messages
+#         auth: bearer
+#         default_headers:
+#           anthropic-version: "2023-06-01"
+# models:
+#   doubao-seed-evolving:
+#     upstream_resource: ark
+#     upstream_id: doubao-seed-evolving
+#     dialect: openai-chat
+#     context_length: 1024000
+#     max_output: 256000
+#   doubao-seed-2-1-pro-260628:
+#     upstream_resource: ark
+#     upstream_id: doubao-seed-2-1-pro-260628
+#     dialect: openai-chat
+#     context_length: 256000
+#     max_output: 256000
+#   deepseek-v4-pro-ga-260813:
+#     upstream_resource: ark
+#     upstream_id: deepseek-v4-pro-ga-260813
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 393216
