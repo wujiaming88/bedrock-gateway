@@ -342,3 +342,55 @@ models:
 #     dialect: openai-chat
 #     context_length: 1000000
 #     max_output: 393216
+#
+# Alibaba Cloud Bailian (百炼 / DashScope) example — Alibaba's OpenAI-compatible
+# platform hosting Qwen + third-party models (DeepSeek, Kimi, Zhipu GLM) under
+# one DASHSCOPE_API_KEY. Bearer auth on all three endpoints; Chat/Responses
+# share the /compatible-mode/v1 root, Anthropic Messages lives under
+# /apps/anthropic/v1/messages. Model IDs match the DashScope console: Qwen/Kimi/
+# DeepSeek are bare (`kimi-k3`), Zhipu GLM keeps its `ZHIPU/` prefix. GLM-5.3-Flash
+# is Chat-only on Bailian (its Responses-compatible endpoint rejects the standard
+# `input` field; it is not exposed on the Anthropic-compatible endpoint).
+# upstream_resources:
+#   dashscope:
+#     secret_env: DASHSCOPE_API_KEY
+#     routes:
+#       openai-chat:
+#         base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#         path: /chat/completions
+#         auth: bearer
+#       openai-responses:
+#         base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#         path: /responses
+#         auth: bearer
+#       anthropic-passthrough:
+#         base_url: https://dashscope.aliyuncs.com/apps/anthropic
+#         path: /v1/messages
+#         auth: bearer
+#         default_headers:
+#           anthropic-version: "2023-06-01"
+# models:
+#   qwen3.8-max:
+#     upstream_resource: dashscope
+#     upstream_id: qwen3.8-max
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 131072
+#   deepseek-v4-pro-0813:
+#     upstream_resource: dashscope
+#     upstream_id: deepseek-v4-pro-0813
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 393216
+#   kimi-k3:
+#     upstream_resource: dashscope
+#     upstream_id: kimi-k3
+#     dialect: openai-chat
+#     context_length: 1048576
+#     max_output: 1048576
+#   ZHIPU/GLM-5.3-Flash:
+#     upstream_resource: dashscope
+#     upstream_id: ZHIPU/GLM-5.3-Flash
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 131072

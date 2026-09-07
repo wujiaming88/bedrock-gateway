@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.6] — 2026-09-07
+
+### 文档
+
+- 新增阿里云百炼（DashScope）作为通用 HTTP 上游的接入文档：一个 `dashscope` 资源用同一把 `DASHSCOPE_API_KEY` 承载 Qwen 与第三方直供模型（DeepSeek / Kimi / 智谱 GLM），Chat / Responses 共用 `/compatible-mode/v1`、Anthropic Messages 走 `/apps/anthropic/v1/messages`，三端点 Bearer 鉴权；见 README「通用 HTTP 上游：阿里云百炼（DashScope）」与 `config.example.yaml`。纯配置接入，无代码改动。
+
 ## [0.8.5] — 2026-09-07
 
 ### 文档

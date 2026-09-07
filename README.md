@@ -505,6 +505,38 @@ chmod 600 /opt/bedrock-gateway/.env
 
 已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260628`、`deepseek-v4-pro-ga-260813`。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。
 
+### 通用 HTTP 上游：阿里云百炼（DashScope）
+
+百炼（阿里云，`dashscope.aliyuncs.com`）走 `upstream_resources`，一个 `dashscope` 资源用同一把 `DASHSCOPE_API_KEY` 承载 Qwen 与第三方直供模型（DeepSeek、Kimi、智谱 GLM）。Chat / Responses 共用 `/compatible-mode/v1` 根，Anthropic Messages 在 `/apps/anthropic/v1/messages`；三端点**全部 `Authorization: Bearer`**。**模型 ID 以百炼控制台为准**：Qwen / Kimi / DeepSeek 用裸 ID（`kimi-k3`），智谱 GLM 保留 `ZHIPU/` 前缀。
+
+```yaml
+upstream_resources:
+  dashscope:
+    secret_env: DASHSCOPE_API_KEY
+    routes:
+      openai-chat:
+        base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        path: /chat/completions
+        auth: bearer
+      openai-responses:
+        base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        path: /responses
+        auth: bearer
+      anthropic-passthrough:
+        base_url: https://dashscope.aliyuncs.com/apps/anthropic
+        path: /v1/messages
+        auth: bearer
+        default_headers:
+          anthropic-version: "2023-06-01"
+```
+
+```bash
+DASHSCOPE_API_KEY=...
+chmod 600 /opt/bedrock-gateway/.env
+```
+
+已实测的模型：`qwen3.8-max`、`deepseek-v4-pro-0813`、`kimi-k3`、`ZHIPU/GLM-5.3-Flash`。两点平台差异：**Kimi K3 需先在百炼控制台开通**（否则报「product is not activated」）；**GLM-5.3-Flash 仅 Chat 端点可用**——其 Responses 兼容端点返回「输入不能为空」（code 1214，不认标准 `input` 字段），且未上架百炼的 Anthropic 兼容端点（报「model does not exist」）。GLM-5.3-Flash 是「仅思考模式」模型，输出先走 `reasoning_content`。
+
 ---
 
 ## Embeddings
