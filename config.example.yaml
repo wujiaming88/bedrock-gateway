@@ -351,8 +351,13 @@ models:
 # DeepSeek are bare (`kimi-k3`), Zhipu GLM keeps its `ZHIPU/` prefix. GLM-5.3-Flash
 # is Chat-only on Bailian (its Responses-compatible endpoint rejects the standard
 # `input` field; it is not exposed on the Anthropic-compatible endpoint).
+# `prefix: qwen` enables PASSTHROUGH-BY-MODEL-PREFIX: any client model
+# `qwen/<model>` routes to this resource with <model> as the upstream ID — e.g.
+# `qwen/qwen3.8-max`, `qwen/kimi-k3`, `qwen/ZHIPU/GLM-5.3-Flash` — with no
+# per-model entry needed (bare aliases in `models:` still work too).
 # upstream_resources:
 #   dashscope:
+#     prefix: qwen
 #     secret_env: DASHSCOPE_API_KEY
 #     routes:
 #       openai-chat:

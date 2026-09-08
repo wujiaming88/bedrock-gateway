@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.7] — 2026-09-08
+
+### 变更
+
+- 为百炼（DashScope）资源加回 `prefix: qwen`，使 `qwen/<model>`（如 `qwen/qwen3.8-max`、`qwen/kimi-k3`、`qwen/ZHIPU/GLM-5.3-Flash`）直通可用，与 `models:` 里的裸别名并存；同步更新 README「通用 HTTP 上游：阿里云百炼（DashScope）」与 `config.example.yaml`。纯配置接入，无代码改动。
+
 ## [0.8.6] — 2026-09-07
 
 ### 文档
