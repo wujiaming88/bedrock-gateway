@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.10] — 2026-09-09
+
+### 修复
+
+- 修复 stream 路径「Unsupported parameter」自愈日志的 model 显示重复问题：`_open_upstream_stream` 原先把 `log_tag`（形如 `chat model=openai.gpt-6-astra`）当作 model 传入 `_strip_unsupported_400`，打出 `UNSUPPORTED-PARAM model=chat model=openai.gpt-6-astra`；现改为循环前统一从请求体解析 model（`payload.log_body["model"]`，回退 `log_tag`），日志变为 `model=openai.gpt-6-astra`，与 sync 路径一致。纯日志装饰性修复，不影响功能。
+
 ## [0.8.9] — 2026-09-09
 
 ### 新增

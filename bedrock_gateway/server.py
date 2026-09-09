@@ -2043,6 +2043,9 @@ async def _open_upstream_stream(
     attempt = 0
     compat_attempted = False
     unsupported_attempts = 0
+    model = str(log_tag)
+    if isinstance(payload.log_body, dict) and payload.log_body.get("model"):
+        model = str(payload.log_body["model"])
     while True:
         if attempt >= max_retries:
             break
@@ -2134,7 +2137,7 @@ async def _open_upstream_stream(
             and unsupported_attempts < MAX_UNSUPPORTED_STRIPS
             and status == 400
         ):
-            stripped = _strip_unsupported_400(payload.log_body, err_body, str(log_tag))
+            stripped = _strip_unsupported_400(payload.log_body, err_body, model)
             if stripped is not None and time.monotonic() < deadline:
                 unsupported_attempts += 1
                 payload = _prepare_request_body(stripped)
@@ -2150,9 +2153,6 @@ async def _open_upstream_stream(
             and is_exact_variant_rejection(400, err_body)
         ):
             compat_attempted = True
-            model = str(log_tag)
-            if isinstance(payload.log_body, dict) and payload.log_body.get("model"):
-                model = str(payload.log_body["model"])
             projected_body = _compat_projection(compat, payload.log_body, model)
             if projected_body is not None and time.monotonic() < deadline:
                 payload = _prepare_request_body(projected_body)
