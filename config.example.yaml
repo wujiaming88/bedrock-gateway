@@ -143,6 +143,16 @@ models:
     endpoint: mantle
     protocol: openai-responses
     region: us-west-2
+  # Chat-completions twin (same upstream, openai-chat dialect). The upstream
+  # rejects `max_tokens`; the gateway auto-renames it to `max_completion_tokens`
+  # on that 400, so standard OpenAI chat clients work unchanged.
+  gpt-6-astra-chat:
+    bedrock_id: openai.gpt-6-astra
+    context_length: 1050000
+    max_output: 128000
+    endpoint: mantle
+    dialect: openai-chat
+    region: us-west-2
 
   # ── xAI Grok ────────────────────────────────────────────
   # Same mantle + Responses protocol as GPT-5.x. Grok 4.6 mantle is available

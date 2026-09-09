@@ -150,25 +150,44 @@ def is_exact_variant_rejection(status: int, error_text: str | None) -> bool:
     return any(sig in text for sig in profile.exact_variant_signatures)
 
 
-def is_bedrock_gpt5x_responses_model(transport: str, dialect: str, model: str) -> bool:
-    """Return True for Bedrock mantle GPT-5.x Responses models.
+def is_bedrock_gpt_responses_model(transport: str, dialect: str, model: str) -> bool:
+    """Return True for Bedrock mantle GPT-* Responses models.
 
     Azure deployments, generic HTTP upstreams and non-Responses dialects are
-    excluded: the compatibility gap is observed only on Bedrock mantle's GPT-5.x
-    validator.
+    excluded: the ``Invalid 'input'`` compatibility gap is observed only on
+    Bedrock mantle's OpenAI GPT validator. The gate is ``openai.gpt-*`` (not
+    ``gpt-5*``) because the validator is shared across the GPT family — gpt-6
+    rejects the same Codex input shapes its gpt-5.x predecessors did.
     """
     return (
         transport == "bedrock"
         and dialect == "openai-responses"
-        and model.startswith("openai.gpt-5")
+        and model.startswith("openai.gpt-")
     )
+
+
+# Backward-compatible alias for the historical gpt-5.x-scoped name.
+is_bedrock_gpt5x_responses_model = is_bedrock_gpt_responses_model
+
+
+def is_bedrock_mantle_openai_model(transport: str, dialect: str) -> bool:
+    """Return True for any Bedrock mantle OpenAI-compatible surface.
+
+    Arms the generic ``Unsupported parameter`` remediation (Class A) for both
+    mantle Responses and mantle Chat. It is safe to arm broadly because the
+    remediation only fires on the exact ``Unsupported parameter: 'X'`` text —
+    a model that never returns it (Azure, generic HTTP, or a future endpoint)
+    is simply never touched. Azure and generic HTTP upstreams are still excluded
+    here, matching the rule that the compatibility gap is observed on mantle.
+    """
+    return transport == "bedrock" and dialect in ("openai-responses", "openai-chat")
 
 
 def responses_compat_policy(
     transport: str, dialect: str, model: str
 ) -> CompatibilityPolicy | None:
-    """Return the fallback policy for Bedrock GPT-5.x native Responses, else None."""
-    if is_bedrock_gpt5x_responses_model(transport, dialect, model):
+    """Return the fallback policy for Bedrock GPT-* native Responses, else None."""
+    if is_bedrock_gpt_responses_model(transport, dialect, model):
         return CompatibilityPolicy()
     return None
 
@@ -820,7 +839,9 @@ __all__ = [
     "CompatibilityPolicy",
     "ProjectionResult",
     "is_exact_variant_rejection",
+    "is_bedrock_gpt_responses_model",
     "is_bedrock_gpt5x_responses_model",
+    "is_bedrock_mantle_openai_model",
     "responses_compat_policy",
     "analyze_history",
     "project_mantle_input",

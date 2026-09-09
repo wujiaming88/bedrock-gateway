@@ -58,6 +58,17 @@ def _responses_body(model: str) -> dict:
     }
 
 
+def _chat_body(model: str) -> dict:
+    return {
+        "id": "chatcmpl_x",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    }
+
+
 def _sent(mock_cls) -> dict:
     return json.loads(mock_cls.return_value.post.call_args.kwargs["content"])
 
@@ -94,6 +105,24 @@ class TestGPT6AstraConfig:
         assert _MODEL_ALIASES[variant] == "gpt-6-astra"
         assert reg.resolve(variant) == expected
 
+    def test_chat_variant_entry(self):
+        e = _DEFAULT_MODELS["gpt-6-astra-chat"]
+        assert e["bedrock_id"] == "openai.gpt-6-astra"
+        assert e["endpoint"] == "mantle"
+        assert e["dialect"] == "openai-chat"
+        assert e["context_length"] == 1_050_000
+        assert e["max_output"] == 128_000
+        assert e["region"] == "us-west-2"
+
+    def test_chat_variant_resolves(self):
+        reg = ModelRegistry(GatewayConfig(models=_parse_models(_DEFAULT_MODELS)))
+        assert reg.resolve("gpt-6-astra-chat") == "openai.gpt-6-astra"
+        entry = reg.get_entry("gpt-6-astra-chat")
+        assert entry is not None
+        assert entry.dialect == "openai-chat"
+        assert entry.endpoint == "mantle"
+        assert entry.region == "us-west-2"
+
 
 class TestGPT6AstraResponsesEndpoint:
     @patch("bedrock_gateway.server.httpx.AsyncClient")
@@ -116,3 +145,21 @@ class TestGPT6AstraResponsesEndpoint:
         })
         assert resp.status_code == 400
         assert "/openai/v1/responses" in resp.json()["error"]["message"]
+
+
+class TestGPT6AstraChatEndpoint:
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_chat_routes_to_bedrock_mantle_us_west_2(self, mock_cls, client):
+        mock_cls.return_value = _mock_sync_client(_chat_body("openai.gpt-6-astra"))
+        resp = client.post("/v1/chat/completions", json={
+            "model": "gpt-6-astra-chat",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 16,
+        })
+        assert resp.status_code == 200
+        url = mock_cls.return_value.post.call_args[0][0]
+        assert url == "https://bedrock-mantle.us-west-2.api.aws/openai/v1/chat/completions"
+        sent = _sent(mock_cls)
+        assert sent["model"] == "openai.gpt-6-astra"
+        assert sent["max_completion_tokens"] == 16
+        assert "max_tokens" not in sent

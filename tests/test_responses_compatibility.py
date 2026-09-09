@@ -793,6 +793,107 @@ class TestStreamPreflightStateMachine:
 
 
 # ---------------------------------------------------------------------------
+# Class A "Unsupported parameter" fallback (strip / rename)
+# ---------------------------------------------------------------------------
+
+REASONING_SUMMARY_400 = (
+    "Unsupported parameter: 'reasoning.summary' is not supported with the "
+    "'openai.gpt-6-astra' model."
+)
+MAX_TOKENS_400 = "Unsupported parameter: 'max_tokens' is not supported with this model."
+
+
+class TestUnsupportedParamFallback:
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_strips_reasoning_summary(self, mock_cls, client):
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, REASONING_SUMMARY_400),
+            _ok_resp(_responses_body("openai.gpt-6-astra")),
+        ])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-astra",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "reasoning": {"effort": "low", "summary": "secret"},
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 2
+        # raw-first: the summary went out on the first attempt…
+        assert _nth_sent(mock_cls, 0)["reasoning"]["summary"] == "secret"
+        # …and was stripped on the retry.
+        second = _nth_sent(mock_cls, 1)
+        assert second["reasoning"] == {"effort": "low"}
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_renames_max_tokens_on_chat(self, mock_cls, client):
+        chat_ok = {
+            "id": "chatcmpl_x",
+            "object": "chat.completion",
+            "model": "openai.gpt-6-astra",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        }
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, MAX_TOKENS_400),
+            _ok_resp(chat_ok),
+        ])
+        resp = client.post("/v1/chat/completions", json={
+            "model": "gpt-6-astra-chat",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 10,
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 2
+        assert _nth_sent(mock_cls, 0)["max_tokens"] == 10
+        second = _nth_sent(mock_cls, 1)
+        assert "max_tokens" not in second
+        assert second["max_completion_tokens"] == 10
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_strip_is_bounded(self, mock_cls, client):
+        # A chain of unsupported fields converges within MAX_UNSUPPORTED_STRIPS:
+        # three strips happen, the fourth 400 is terminal.
+        errs = [
+            _err_resp(400, "Unsupported parameter: 'reasoning.summary' is not supported."),
+            _err_resp(400, "Unsupported parameter: 'reasoning.context' is not supported."),
+            _err_resp(400, "Unsupported parameter: 'reasoning.effort' is not supported."),
+            _err_resp(400, "Unsupported parameter: 'reasoning.foo' is not supported."),
+        ]
+        mock_cls.return_value = _sync_inst(errs)
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-astra",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "reasoning": {"summary": "s", "context": "c", "effort": "e", "foo": "f"},
+        })
+        assert resp.status_code == 400
+        # 1 raw + 3 stripped retries = 4 upstream posts, then terminal.
+        assert mock_cls.return_value.post.call_count == 4
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    async def test_stream_strips_reasoning_summary(self, mock_cls):
+        inst = _stream_inst([
+            _stream_resp(400, REASONING_SUMMARY_400),
+            _stream_resp(200),
+        ])
+        mock_cls.return_value = inst
+        payload = _prepare_request_body({
+            "model": "openai.gpt-6-astra",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "reasoning": {"effort": "low", "summary": "secret"},
+        })
+        resp, stack, err = await _open_upstream_stream(
+            "https://example/openai/v1/responses", payload, _auth(), 1, 0.001,
+            request=None, health=None, log_tag="t", timeout=30.0,
+            strip_unsupported=True,
+        )
+        assert err is None and resp is not None
+        assert inst.stream.call_count == 2
+        second = json.loads(inst.stream.call_args_list[1].kwargs["content"])
+        assert second["reasoning"] == {"effort": "low"}
+        await stack.aclose()
+
+
+# ---------------------------------------------------------------------------
 # Isolation and regression
 # ---------------------------------------------------------------------------
 

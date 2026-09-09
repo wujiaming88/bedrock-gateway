@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.9] — 2026-09-09
+
+### 新增
+
+- 为 GPT-6 Astra 新增 Chat Completions 别名 `gpt-6-astra-chat`（同一 `openai.gpt-6-astra`，`dialect: openai-chat` + `endpoint: mantle` + `region: us-west-2`），使 `/v1/chat/completions` 也能调用。见 README 模型表与 `config.example.yaml`。
+
+### 变更
+
+- 通用「Unsupported parameter」自愈（方案 B）：Bedrock mantle OpenAI 兼容面（Responses + Chat）在收到 `Unsupported parameter: 'X'` 的 400 后，自动删除/改名上游点名的字段并**有界重试**（`MAX_UNSUPPORTED_STRIPS=3`），模型无关，杜绝「新模型/SDK 新字段」一类 400 反复出现。`max_tokens` → `max_completion_tokens` 走无损改名词表（目标已存在时改为删除源键）。每次降级打 `UNSUPPORTED-PARAM` 日志（仅字段路径+动作，不记值）。
+- 将 `Invalid 'input'` 安全投影门槛从 `openai.gpt-5*` 放宽到 `openai.gpt-*`（mantle GPT 家族，含 gpt-6）；`is_bedrock_gpt5x_responses_model` 保留为向后兼容别名。
+
 ## [0.8.8] — 2026-09-09
 
 ### 新增

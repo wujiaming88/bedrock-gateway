@@ -73,9 +73,15 @@ from .model_report import ModelPerformanceReporter
 from .models import ModelRegistry, UnknownModelError
 from .responses_compatibility import (
     CompatibilityPolicy,
+    is_bedrock_mantle_openai_model,
     is_exact_variant_rejection,
     project_mantle_input,
     responses_compat_policy,
+)
+from .unsupported_param import (
+    MAX_UNSUPPORTED_STRIPS,
+    apply_unsupported_remediation,
+    parse_unsupported_param,
 )
 from .providers import (
     Dialect,
@@ -508,6 +514,37 @@ def _compat_projection(
     return None
 
 
+def _strip_unsupported_400(
+    body: dict[str, Any] | None,
+    error_text: str,
+    model: str,
+) -> dict[str, Any] | None:
+    """Strip/rename the exact field an ``Unsupported parameter`` 400 names.
+
+    Class A remediation: the upstream declared one field unsupported, so drop (or
+    losslessly rename) it and retry. Returns the new body to retry, else None when
+    there is nothing parseable or nothing changed. Logs a redacted decision record
+    — the field path and action only, never the field's value.
+    """
+    if body is None or not isinstance(body, dict):
+        return None
+    unsupported = parse_unsupported_param(error_text)
+    if unsupported is None:
+        return None
+    new_body, changed = apply_unsupported_remediation(body, unsupported)
+    if not changed:
+        logger.warning(
+            "UNSUPPORTED-PARAM model=%s field=%s action=%s noop",
+            model, unsupported.field_path, unsupported.action,
+        )
+        return None
+    logger.warning(
+        "UNSUPPORTED-PARAM model=%s field=%s action=%s",
+        model, unsupported.field_path, unsupported.action,
+    )
+    return new_body
+
+
 # Connections should fail fast (DNS/refused/TLS is not something a long read
 # timeout should mask); reads must be generous for slow reasoning models. So we
 # split the single ``timeout`` value: it governs read/write/pool, while connect
@@ -784,6 +821,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
             upstream_body = dict(body)
             upstream_body["model"] = upstream_id
+            # Class A (Unsupported parameter) remediation is armed for Bedrock
+            # mantle chat passthrough too — e.g. `max_tokens` → `max_completion_tokens`.
+            strip_unsupported = is_bedrock_mantle_openai_model(
+                entry.transport, entry.dialect
+            )
             logger.info(
                 "[DN] REQ [chat-passthrough] model=%s -> %s (%s) stream=%s",
                 raw_model, upstream_id, entry.transport, stream,
@@ -793,11 +835,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                     transport, dialect, entry, upstream_id, config.region,
                     upstream_body, auth, max_retries, retry_base_delay,
                     timeout=request_timeout, request=request, health=health,
+                    strip_unsupported=strip_unsupported,
                 )
             return await _handle_sync(
                 transport, dialect, entry, upstream_id, config.region,
                 upstream_body, auth, max_retries, retry_base_delay,
                 timeout=request_timeout, request=request, health=health,
+                strip_unsupported=strip_unsupported,
             )
         if dialect.name != "anthropic":
             return _oai_error(
@@ -937,8 +981,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         upstream_body = dict(body)
         upstream_body["model"] = upstream_id
         # One-time safe-projection fallback policy, armed only for Bedrock
-        # mantle GPT-5.x native Responses (never a user switch).
+        # mantle GPT-* native Responses (never a user switch).
         compat = responses_compat_policy(entry.transport, entry.dialect, upstream_id)
+        # Class A (Unsupported parameter) remediation, armed for Bedrock mantle
+        # Responses too — e.g. `reasoning.summary` on gpt-6-astra.
+        strip_unsupported = is_bedrock_mantle_openai_model(
+            entry.transport, entry.dialect
+        )
 
         logger.info(
             "[DN] REQ [responses] model=%s -> %s (%s) stream=%s",
@@ -951,12 +1000,14 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 upstream_body, auth, max_retries, retry_base_delay,
                 timeout=request_timeout, request=request, health=health,
                 compat=compat,
+                strip_unsupported=strip_unsupported,
             )
         return await _handle_sync(
             transport, dialect, entry, upstream_id, config.region,
             upstream_body, auth, max_retries, retry_base_delay,
             timeout=request_timeout, request=request, health=health,
             compat=compat,
+            strip_unsupported=strip_unsupported,
         )
 
     # ------------------------------------------------------------------
@@ -1616,6 +1667,7 @@ async def _handle_sync(
     request: Request | None = None,
     health: HealthMonitor | None = None,
     compat: CompatibilityPolicy | None = None,
+    strip_unsupported: bool = False,
 ) -> dict | JSONResponse:
     url = transport.build_url(
         _operation_path(dialect, entry, False, operation), region, entry
@@ -1625,6 +1677,7 @@ async def _handle_sync(
     deadline = _retry_deadline(timeout, max_retries)
     attempt = 0
     compat_attempted = False
+    unsupported_attempts = 0
 
     while True:
         if attempt >= max_retries:
@@ -1687,6 +1740,22 @@ async def _handle_sync(
                 await asyncio.sleep(delay)
                 attempt += 1
                 continue
+
+            # Class A fallback: the upstream named one field it does not support.
+            # Strip/rename it and retry, bounded, so a chain of unsupported fields
+            # converges instead of looping. Armed only for Bedrock mantle OpenAI
+            # surface (Responses + Chat); the exact field is parsed from the 400.
+            if (
+                strip_unsupported
+                and unsupported_attempts < MAX_UNSUPPORTED_STRIPS
+                and resp.status_code == 400
+            ):
+                stripped = _strip_unsupported_400(payload.log_body, resp.text, model)
+                if stripped is not None and time.monotonic() < deadline:
+                    unsupported_attempts += 1
+                    payload = _prepare_request_body(stripped)
+                    continue
+                # unparseable / no-change → fall through to the original 400
 
             # One-time compatibility fallback: only an exact variant 400 on a
             # Bedrock GPT-5.x native Responses request. Independent of the normal
@@ -1950,6 +2019,7 @@ async def _open_upstream_stream(
     extra_headers: dict[str, str] | None = None,
     timeout: float = 300.0,
     compat: CompatibilityPolicy | None = None,
+    strip_unsupported: bool = False,
 ) -> tuple[Any, AsyncExitStack | None, dict | None]:
     """Open the Bedrock streaming connection and inspect the HTTP status
     *before* any bytes are handed to the client.
@@ -1972,6 +2042,7 @@ async def _open_upstream_stream(
     deadline = _retry_deadline(timeout, max_retries)
     attempt = 0
     compat_attempted = False
+    unsupported_attempts = 0
     while True:
         if attempt >= max_retries:
             break
@@ -2054,6 +2125,22 @@ async def _open_upstream_stream(
             attempt += 1
             continue
 
+        # Class A fallback: the upstream named one field it does not support.
+        # Strip/rename it and retry, bounded, before any client SSE byte is
+        # emitted. Armed only for Bedrock mantle OpenAI surface (Responses +
+        # Chat); the exact field is parsed from the 400 body.
+        if (
+            strip_unsupported
+            and unsupported_attempts < MAX_UNSUPPORTED_STRIPS
+            and status == 400
+        ):
+            stripped = _strip_unsupported_400(payload.log_body, err_body, str(log_tag))
+            if stripped is not None and time.monotonic() < deadline:
+                unsupported_attempts += 1
+                payload = _prepare_request_body(stripped)
+                continue
+            # unparseable / no-change → fall through to the original error
+
         # One-time compatibility fallback: exact variant 400, before any client
         # SSE byte is emitted, on a Bedrock GPT-5.x native Responses request.
         if (
@@ -2124,6 +2211,7 @@ async def _handle_stream(
     request: Request | None = None,
     health: HealthMonitor | None = None,
     compat: CompatibilityPolicy | None = None,
+    strip_unsupported: bool = False,
 ) -> JSONResponse | StreamingResponse:
     url = transport.build_url(
         _operation_path(dialect, entry, True, operation), region, entry
@@ -2139,6 +2227,7 @@ async def _handle_stream(
         extra_headers=_transport_payload_headers(transport, entry, payload),
         timeout=timeout,
         compat=compat,
+        strip_unsupported=strip_unsupported,
     )
     if err is not None:
         return _oai_error(err["status"], err["message"], err["type"])

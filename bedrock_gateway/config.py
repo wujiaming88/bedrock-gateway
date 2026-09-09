@@ -362,6 +362,17 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "protocol": "openai-responses",
         "region": "us-west-2",
     },
+    # Chat-completions twin of GPT-6 Astra: same upstream model, but the
+    # openai-chat dialect so /v1/chat/completions serves it verbatim. NB the
+    # upstream rejects `max_tokens`; clients must send `max_completion_tokens`.
+    "gpt-6-astra-chat": {
+        "bedrock_id": "openai.gpt-6-astra",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "dialect": "openai-chat",
+        "region": "us-west-2",
+    },
     # ── xAI Grok (mantle endpoint, Responses API) ─────────────────────
     "grok-4.3": {
         "bedrock_id": "xai.grok-4.3",

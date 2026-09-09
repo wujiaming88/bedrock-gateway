@@ -56,6 +56,7 @@
 | `gpt-5.6-terra` | `openai.gpt-5.6-terra` | 1M | 128K* | **`/openai/v1/responses`** |
 | `gpt-5.6-luna` | `openai.gpt-5.6-luna` | 1M | 128K* | **`/openai/v1/responses`** |
 | `gpt-6-astra` | `openai.gpt-6-astra` | 1.05M | 128K | **`/openai/v1/responses`**（mantle `us-west-2`） |
+| `gpt-6-astra-chat` | `openai.gpt-6-astra` | 1.05M | 128K | **`/v1/chat/completions`**（mantle `us-west-2`，`max_tokens` 自动改名 `max_completion_tokens`） |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
 | `grok-4.6` | `xai.grok-4.6` | 500K | 128K | **`/openai/v1/responses`**（mantle `us-west-2`） |
 | `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
@@ -69,6 +70,7 @@
 - Grok 4.6 mantle 仅在 `us-west-2` 提供In-Region服务。内置 `grok-4.6` 条目通过通用per-model `region`覆盖自动路由；推荐使用注册alias，而非直接传原始ID（raw ID没有这份区域元数据）。
 - `gpt-5.6-*` 在 Bedrock mantle 上均为 1M 上下文；128K 最大输出字段仍为 advisory，若官方 model card 后续给出不同规格，应同步修正。
 - `gpt-6-astra` 在 Bedrock mantle 上**仅 `us-west-2`（Oregon）** 提供；内置条目通过 per-model `region` 覆盖自动路由（同 Grok 4.6），推荐使用注册 alias 而非原始 ID（raw ID 没有这份区域元数据）。别名：`gpt-6-astra` / `gpt-6astra` / `gpt6-astra` / `openai.gpt-6-astra` / `openai-gpt-6-astra`。
+- `gpt-6-astra-chat` 是同一模型的 Chat Completions 别名（`openai-chat` 透传）。该上游 **拒绝 `max_tokens`**，网关在收到该 400 后会自动把 `max_tokens` 改名为 `max_completion_tokens` 并重试，因此标准 OpenAI chat 客户端无需改动。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 

@@ -168,6 +168,9 @@ class TestModelEntryDefaults:
             GROK_ALIAS,
             GROK46_ALIAS,
         }
+        chat_models = {
+            "gpt-6-astra-chat",
+        }
         embeddings_models = {
             "cohere-embed-v4-document",
             "cohere-embed-v4-query",
@@ -178,6 +181,10 @@ class TestModelEntryDefaults:
         for alias, e in models.items():
             if alias in responses_models:
                 assert e.dialect == "openai-responses", alias
+                assert e.endpoint == "mantle", alias
+                continue
+            if alias in chat_models:
+                assert e.dialect == "openai-chat", alias
                 assert e.endpoint == "mantle", alias
                 continue
             if alias in embeddings_models:
