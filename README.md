@@ -55,6 +55,7 @@
 | `gpt-5.6-sol` | `openai.gpt-5.6-sol` | 1M | 128K* | **`/openai/v1/responses`** |
 | `gpt-5.6-terra` | `openai.gpt-5.6-terra` | 1M | 128K* | **`/openai/v1/responses`** |
 | `gpt-5.6-luna` | `openai.gpt-5.6-luna` | 1M | 128K* | **`/openai/v1/responses`** |
+| `gpt-6-astra` | `openai.gpt-6-astra` | 1.05M | 128K | **`/openai/v1/responses`**（mantle `us-west-2`） |
 | `grok-4.3` | `xai.grok-4.3` | 1M | 128K | **`/openai/v1/responses`** |
 | `grok-4.6` | `xai.grok-4.6` | 500K | 128K | **`/openai/v1/responses`**（mantle `us-west-2`） |
 | `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
@@ -67,6 +68,7 @@
 - GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；GPT-5.6 家族别名：`gpt-5.6-sol` / `gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol`（Terra/Luna 同理）。Grok 必须明确版本：4.3 可用 `grok-4.3` / `grok4.3` / `grok-4-3`，4.6 可用 `grok-4.6` / `grok4.6` / `grok-4-6`；不提供含义不明确的 `grok` / `grok-4`。
 - Grok 4.6 mantle 仅在 `us-west-2` 提供In-Region服务。内置 `grok-4.6` 条目通过通用per-model `region`覆盖自动路由；推荐使用注册alias，而非直接传原始ID（raw ID没有这份区域元数据）。
 - `gpt-5.6-*` 在 Bedrock mantle 上均为 1M 上下文；128K 最大输出字段仍为 advisory，若官方 model card 后续给出不同规格，应同步修正。
+- `gpt-6-astra` 在 Bedrock mantle 上**仅 `us-west-2`（Oregon）** 提供；内置条目通过 per-model `region` 覆盖自动路由（同 Grok 4.6），推荐使用注册 alias 而非原始 ID（raw ID 没有这份区域元数据）。别名：`gpt-6-astra` / `gpt-6astra` / `gpt6-astra` / `openai.gpt-6-astra` / `openai-gpt-6-astra`。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 

@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.8] — 2026-09-09
+
+### 新增
+
+- 接入 OpenAI GPT-6 Astra（Bedrock mantle，Responses API）：模型 `openai.gpt-6-astra`，1.05M 上下文 / 128K 最大输出，`endpoint: mantle` + `protocol: openai-responses`，并 pin `region: us-west-2`（mantle 仅 Oregon 提供）。别名 `gpt-6-astra` / `gpt-6astra` / `gpt6-astra` / `openai.gpt-6-astra` / `openai-gpt-6-astra`。已实测 upstream 返回 HTTP 200；见 README 模型表与 `config.example.yaml`。
+
 ## [0.8.7] — 2026-09-08
 
 ### 变更

@@ -350,6 +350,18 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
+    # ── OpenAI GPT-6 Astra (mantle endpoint, Responses API) ────────────
+    # Live-probed on Bedrock mantle: returns HTTP 200. Mantle serves GPT-6
+    # Astra only from us-west-2 (Oregon), so the model pins its region like
+    # Grok 4.6. Official spec: 1.05M context, 128K max output.
+    "gpt-6-astra": {
+        "bedrock_id": "openai.gpt-6-astra",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+        "region": "us-west-2",
+    },
     # ── xAI Grok (mantle endpoint, Responses API) ─────────────────────
     "grok-4.3": {
         "bedrock_id": "xai.grok-4.3",
@@ -472,6 +484,12 @@ _MODEL_ALIASES: dict[str, str] = {
     "gpt-5-6-luna": "gpt-5.6-luna",
     "openai.gpt-5.6-luna": "gpt-5.6-luna",
     "openai-gpt-5.6-luna": "gpt-5.6-luna",
+    # GPT-6 Astra variations
+    "gpt-6-astra": "gpt-6-astra",
+    "gpt-6astra": "gpt-6-astra",
+    "gpt6-astra": "gpt-6-astra",
+    "openai.gpt-6-astra": "gpt-6-astra",
+    "openai-gpt-6-astra": "gpt-6-astra",
     # Grok variations. Deliberately omit ambiguous unversioned names.
     "grok4.3": "grok-4.3",
     "grok-4-3": "grok-4.3",

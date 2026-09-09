@@ -133,6 +133,17 @@ models:
     endpoint: mantle
     protocol: openai-responses
 
+  # ── OpenAI GPT-6 Astra ──────────────────────────────────
+  # Live-probed on Bedrock mantle (HTTP 200). Mantle serves GPT-6 Astra only
+  # from us-west-2, so this model pins its region (like Grok 4.6 below).
+  gpt-6-astra:
+    bedrock_id: openai.gpt-6-astra
+    context_length: 1050000
+    max_output: 128000
+    endpoint: mantle
+    protocol: openai-responses
+    region: us-west-2
+
   # ── xAI Grok ────────────────────────────────────────────
   # Same mantle + Responses protocol as GPT-5.x. Grok 4.6 mantle is available
   # in-region only from us-west-2, so its model-level region overrides the
