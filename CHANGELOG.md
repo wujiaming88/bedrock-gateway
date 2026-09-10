@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.11] — 2026-09-10
+
+### 变更
+
+- 「Unsupported parameter」自愈加记忆缓存（Plan A）：首次 400 学到的字段教训以「模型 → 字段路径 + 动作」记忆（24h TTL），后续请求在发送前即预剥离/预改名该字段，一次成功，避免每次请求都付一次 400 往返代价。纯内存、进程内，重启即清空；条目按 24h 自动过期，上游日后恢复支持该字段时只会被悲观剥离一个有限窗口。单锁（`threading.Lock`）+ 锁外纯改写，线程安全、无死锁；仅记字段路径与动作，从不记字段值。
+
 ## [0.8.10] — 2026-09-09
 
 ### 修复

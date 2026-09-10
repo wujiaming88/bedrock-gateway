@@ -83,6 +83,7 @@ from .unsupported_param import (
     apply_unsupported_remediation,
     parse_unsupported_param,
 )
+from .unsupported_param_cache import LearnedUnsupportedCache
 from .providers import (
     Dialect,
     Transport,
@@ -91,6 +92,13 @@ from .providers import (
 )
 
 logger = logging.getLogger("bedrock_gateway")
+
+# Per-model memo of fields learned to be unsupported (Class A self-heal). The
+# raw-first strip records a lesson here on the first 400; later requests pre-strip
+# the same field before sending so the first attempt already succeeds. Entries
+# auto-expire after 24h so a field the upstream later grows support for is only
+# pessimistically stripped for a bounded window.
+_LEARNED_UNSUPPORTED = LearnedUnsupportedCache()
 
 # Fallback ModelEntry for aliases that resolve to a raw Bedrock ID with no
 # registered entry (e.g. a pass-through vendor ID). Defaults put it on the
@@ -538,11 +546,34 @@ def _strip_unsupported_400(
             model, unsupported.field_path, unsupported.action,
         )
         return None
+    # Remember the lesson so later requests pre-strip this field before sending,
+    # instead of paying the same 400 round-trip every time. Entries expire (24h).
+    _LEARNED_UNSUPPORTED.record(model, unsupported)
     logger.warning(
         "UNSUPPORTED-PARAM model=%s field=%s action=%s",
         model, unsupported.field_path, unsupported.action,
     )
     return new_body
+
+
+def _prestrip_learned_unsupported(
+    body: dict[str, Any] | None,
+    model: str,
+    strip_unsupported: bool,
+) -> dict[str, Any] | None:
+    """Return ``body`` with previously-learned unsupported fields already removed.
+
+    Applies the per-model lessons the cache has accumulated so far, so the first
+    upstream attempt skips a known-rejected field instead of paying a 400
+    round-trip. Returns None when there is nothing to pre-strip, in which case the
+    caller keeps the original body verbatim. Deliberately quiet: the initial 400
+    already emitted an ``UNSUPPORTED-PARAM`` warning, so a remembered re-application
+    adds no signal worth logging per request.
+    """
+    if not strip_unsupported or body is None or not isinstance(body, dict):
+        return None
+    cleaned, changed = _LEARNED_UNSUPPORTED.strip(model, body)
+    return cleaned if changed else None
 
 
 # Connections should fail fast (DNS/refused/TLS is not something a long read
@@ -1673,6 +1704,9 @@ async def _handle_sync(
         _operation_path(dialect, entry, False, operation), region, entry
     )
     payload = _prepare_request_body(bedrock_body)
+    prestripped = _prestrip_learned_unsupported(payload.log_body, model, strip_unsupported)
+    if prestripped is not None:
+        payload = _prepare_request_body(prestripped)
     last_error: str | None = None
     deadline = _retry_deadline(timeout, max_retries)
     attempt = 0
@@ -2217,6 +2251,9 @@ async def _handle_stream(
         _operation_path(dialect, entry, True, operation), region, entry
     )
     payload = _prepare_request_body(bedrock_body)
+    prestripped = _prestrip_learned_unsupported(payload.log_body, model, strip_unsupported)
+    if prestripped is not None:
+        payload = _prepare_request_body(prestripped)
     msg_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     # Preflight: open the upstream stream and check the status BEFORE we commit

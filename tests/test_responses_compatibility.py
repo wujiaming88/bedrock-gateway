@@ -26,6 +26,7 @@ from bedrock_gateway.config import (
     _DEFAULT_MODELS,
     _parse_models,
 )
+from bedrock_gateway.providers import get_dialect, get_transport
 from bedrock_gateway.responses_compatibility import (
     MANTLE_RESPONSES_PROFILE,
     CompatibilityPolicy,
@@ -38,11 +39,14 @@ from bedrock_gateway.responses_compatibility import (
     responses_compat_policy,
 )
 from bedrock_gateway.server import (
+    _LEARNED_UNSUPPORTED,
     _compat_projection,
+    _handle_stream,
     _open_upstream_stream,
     _prepare_request_body,
     create_app,
 )
+from bedrock_gateway.unsupported_param import UnsupportedParam
 
 VARIANT_400_TEXT = "invalid request body: Invalid 'input': value did not match any expected variant"
 
@@ -891,6 +895,109 @@ class TestUnsupportedParamFallback:
         second = json.loads(inst.stream.call_args_list[1].kwargs["content"])
         assert second["reasoning"] == {"effort": "low"}
         await stack.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Learned-unsupported pre-strip (memoized 400 self-heal)
+# ---------------------------------------------------------------------------
+
+class TestLearnedUnsupportedPrestrip:
+    """A remembered ``Unsupported parameter`` lesson is applied *before* the
+    first upstream attempt, so a later request succeeds in a single call instead
+    of paying the 400 round-trip every time."""
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_prestrips_learned_field(self, mock_cls, client):
+        _LEARNED_UNSUPPORTED.record(
+            "openai.gpt-6-astra",
+            UnsupportedParam("reasoning.summary", "drop", None),
+        )
+        mock_cls.return_value = _sync_inst([_ok_resp(_responses_body("openai.gpt-6-astra"))])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-astra",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "reasoning": {"effort": "low", "summary": "secret"},
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 1  # no 400 retry needed
+        assert _nth_sent(mock_cls, 0)["reasoning"] == {"effort": "low"}
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_learn_then_prestrip_across_requests(self, mock_cls, client):
+        # First request: raw-first → 400 → strip + retry, and the lesson is
+        # recorded in the cache.
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, REASONING_SUMMARY_400),
+            _ok_resp(_responses_body("openai.gpt-6-astra")),
+        ])
+        r1 = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-astra",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "reasoning": {"effort": "low", "summary": "secret"},
+        })
+        assert r1.status_code == 200
+        assert mock_cls.return_value.post.call_count == 2
+
+        # Second request: the same field is now pre-stripped → a single call.
+        mock_cls.return_value = _sync_inst([_ok_resp(_responses_body("openai.gpt-6-astra"))])
+        r2 = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-astra",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "reasoning": {"effort": "low", "summary": "secret2"},
+        })
+        assert r2.status_code == 200
+        assert mock_cls.return_value.post.call_count == 1
+        assert _nth_sent(mock_cls, 0)["reasoning"] == {"effort": "low"}
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_prestrips_learned_rename(self, mock_cls, client):
+        _LEARNED_UNSUPPORTED.record(
+            "openai.gpt-6-astra",
+            UnsupportedParam("max_tokens", "rename", "max_completion_tokens"),
+        )
+        chat_ok = {
+            "id": "chatcmpl_x",
+            "object": "chat.completion",
+            "model": "openai.gpt-6-astra",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "hi"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        }
+        mock_cls.return_value = _sync_inst([_ok_resp(chat_ok)])
+        resp = client.post("/v1/chat/completions", json={
+            "model": "gpt-6-astra-chat",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 10,
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 1
+        sent = _nth_sent(mock_cls, 0)
+        assert "max_tokens" not in sent
+        assert sent["max_completion_tokens"] == 10
+
+    @patch("bedrock_gateway.server._open_upstream_stream", new_callable=AsyncMock)
+    async def test_stream_handler_prestrips_learned_field(self, mock_open):
+        _LEARNED_UNSUPPORTED.record(
+            "openai.gpt-6-astra",
+            UnsupportedParam("reasoning.summary", "drop", None),
+        )
+        mock_open.return_value = (MagicMock(), MagicMock(), None)
+        entry = _parse_models(_DEFAULT_MODELS)["gpt-6-astra"]
+        transport = get_transport(entry)
+        dialect = get_dialect(entry)
+
+        await _handle_stream(
+            transport, dialect, entry, "openai.gpt-6-astra", "us-west-2",
+            {"model": "openai.gpt-6-astra",
+             "input": [{"type": "input_text", "text": "hi"}],
+             "reasoning": {"effort": "low", "summary": "secret"}},
+            _auth(), 1, 0.001,
+            strip_unsupported=True,
+        )
+
+        # The preflight was handed a body with the learned field already gone.
+        payload = mock_open.call_args.args[1]
+        assert payload.log_body["reasoning"] == {"effort": "low"}
 
 
 # ---------------------------------------------------------------------------
