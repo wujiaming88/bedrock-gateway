@@ -293,11 +293,13 @@ models:
 #     max_output: 393216
 #
 # OpenRouter example — OpenAI-compatible aggregator (keys start `sk-or-v1-`).
-# Unlike DeepSeek, OpenRouter uses Bearer auth on ALL three endpoints (its
+# Unlike DeepSeek, OpenRouter uses Bearer auth on ALL its endpoints (its
 # native /messages accepts Bearer, not x-api-key). The `prefix` enables
 # passthrough: any client model `openrouter/<vendor>/<model>` routes straight
 # through with NO named alias — e.g. `openrouter/anthropic/claude-opus-4.6`,
-# `openrouter/openai/gpt-5.5`, `openrouter/google/gemini-2.5-pro`.
+# `openrouter/openai/gpt-5.5`, `openrouter/google/gemini-2.5-pro`. The
+# `openai-audio` route adds speech-to-text: `openrouter/openai/whisper-1` on
+# /v1/audio/transcriptions.
 # upstream_resources:
 #   openrouter:
 #     prefix: openrouter
@@ -317,6 +319,10 @@ models:
 #         auth: bearer
 #         default_headers:
 #           anthropic-version: "2023-06-01"
+#       openai-audio:
+#         base_url: https://openrouter.ai/api/v1
+#         path: /audio/transcriptions
+#         auth: bearer
 #
 # Volcano Engine Ark (火山方舟) example — ByteDance's OpenAI-compatible
 # platform (Doubao/豆包 + hosted DeepSeek/Kimi/GLM). Bearer auth on all three

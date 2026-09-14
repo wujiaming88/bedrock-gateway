@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.12] — 2026-09-14
+
+### 新增
+
+- 语音转文字（STT）：新增 `openai-audio` 方言与 `POST /v1/audio/transcriptions` 端点，透传 OpenAI 兼容的音频转写请求。Phase 1 仅接入 OpenRouter（`openrouter/<vendor>/<model>` 前缀透传，如 `openrouter/openai/whisper-1`），经 `upstream_resources.openrouter.routes.openai-audio` 路由；纯 multipart 透传（`file` + 文本字段仅替换 model），隐私日志只记字段名与文件元数据（文件名/类型/大小），绝不记转写正文或 `prompt` 值。暂不支持 `stream`（返回 400）。Bedrock 无独立 STT 基础模型、火山引擎 ASR 非 OpenAI 兼容协议，均不在本版接入。
+
 ## [0.8.11] — 2026-09-10
 
 ### 变更

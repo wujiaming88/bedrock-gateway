@@ -15,6 +15,7 @@ from ..config import ModelEntry
 from .base import Dialect, Transport
 from .dialect_anthropic import AnthropicMessagesDialect
 from .dialect_anthropic_passthrough import AnthropicPassthroughDialect
+from .dialect_audio import AudioPassthroughDialect
 from .dialect_chat import ChatPassthroughDialect
 from .dialect_embeddings import EmbeddingsPassthroughDialect
 from .dialect_images import ImagesPassthroughDialect
@@ -42,6 +43,7 @@ _DIALECTS: dict[str, Dialect] = {
     ResponsesPassthroughDialect.name: ResponsesPassthroughDialect(),
     ChatPassthroughDialect.name: ChatPassthroughDialect(),
     ImagesPassthroughDialect.name: ImagesPassthroughDialect(),
+    AudioPassthroughDialect.name: AudioPassthroughDialect(),
     EmbeddingsPassthroughDialect.name: EmbeddingsPassthroughDialect(),
 }
 
@@ -73,6 +75,7 @@ __all__ = [
     "ResponsesPassthroughDialect",
     "ChatPassthroughDialect",
     "ImagesPassthroughDialect",
+    "AudioPassthroughDialect",
     "EmbeddingsPassthroughDialect",
     "UnsupportedProtocolError",
     "get_transport",

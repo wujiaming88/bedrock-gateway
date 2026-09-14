@@ -1224,6 +1224,140 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         )
 
     # ------------------------------------------------------------------
+    # POST /v1/audio/transcriptions  (OpenAI Audio API — OpenRouter)
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/audio/transcriptions")
+    async def audio_transcriptions(request: Request) -> Any:
+        media_type, multipart_options, form_request = _multipart_content_type(request)
+        if media_type.lower() != b"multipart/form-data":
+            return _oai_error(
+                415,
+                "/v1/audio/transcriptions requires multipart/form-data.",
+                "invalid_request_error",
+            )
+
+        try:
+            form = await form_request.form()
+        except Exception as exc:
+            return _multipart_parse_error(request, exc, multipart_options)
+
+        raw_model: str | None = None
+        stream = False
+        file_count = 0
+        text_parts: list[tuple[str, str]] = []
+        file_parts: list[tuple[str, tuple[str, bytes, str]]] = []
+        safe_files: list[dict[str, Any]] = []
+
+        try:
+            for field, value in form.multi_items():
+                if isinstance(value, UploadFile):
+                    raw = await value.read()
+                    filename = value.filename or "upload"
+                    part_type = value.content_type or "application/octet-stream"
+                    file_parts.append((field, (filename, raw, part_type)))
+                    safe_files.append({
+                        "field": field,
+                        "filename": filename,
+                        "content_type": part_type,
+                        "size": len(raw),
+                    })
+                    if field == "file":
+                        file_count += 1
+                    continue
+
+                text = str(value)
+                if field == "model":
+                    raw_model = text.strip()
+                    continue
+                if field == "stream":
+                    normalized = text.strip().lower()
+                    if normalized not in {"true", "false"}:
+                        stream = None
+                    else:
+                        stream = normalized == "true"
+                text_parts.append((field, text))
+        finally:
+            await form.close()
+
+        if raw_model:
+            request.state.metrics_info["model"] = raw_model
+        if not raw_model:
+            return _oai_error(400, "model is required", "invalid_request_error")
+        if stream is None:
+            return _oai_error(400, "stream must be true or false", "invalid_request_error")
+        if stream:
+            return _oai_error(
+                400,
+                "/v1/audio/transcriptions does not support streaming.",
+                "invalid_request_error",
+            )
+        if file_count != 1:
+            return _oai_error(
+                400,
+                "Exactly one audio file is required",
+                "invalid_request_error",
+                param="file",
+            )
+
+        entry = registry.resolve_prefixed(raw_model, "openai-audio")
+        if entry is None:
+            entry = registry.get_entry(raw_model)
+            if entry is None:
+                return _oai_error(
+                    400,
+                    f"Model '{raw_model}' is not an audio transcription model; use "
+                    "'openrouter/<vendor>/<model>' (e.g. openrouter/openai/whisper-1).",
+                    "invalid_request_error",
+                    param="model",
+                    code="model_not_found",
+                )
+
+        dialect = get_dialect(entry)
+        transport = get_transport(entry)
+        if dialect.name != "openai-audio":
+            return _oai_error(
+                400,
+                f"Model '{raw_model}' is not available on /v1/audio/transcriptions; "
+                "use /v1/chat/completions or /openai/v1/responses instead.",
+                "invalid_request_error",
+            )
+
+        upstream_id = entry.deployment
+        text_parts = [(name, value) for name, value in text_parts if name != "model"]
+        text_parts.append(("model", upstream_id))
+        multipart_parts: list[tuple[str, tuple[Any, ...]]] = [
+            (name, (None, value)) for name, value in text_parts
+        ]
+        multipart_parts.extend(file_parts)
+        encoded = httpx.Request(
+            "POST", "https://multipart.invalid", files=multipart_parts
+        )
+        body_bytes = encoded.read()
+        upstream_content_type = encoded.headers["Content-Type"]
+        payload = PreparedRequestBody(
+            content=body_bytes,
+            content_type=upstream_content_type,
+            log_body={
+                "model": upstream_id,
+                "operation": "transcriptions",
+                "fields": [name for name, _ in text_parts],
+                "files": safe_files,
+            },
+        )
+
+        logger.info(
+            "[DN] REQ [audio.transcriptions] model=%s -> %s (%s) files=%d",
+            raw_model, upstream_id, entry.transport, file_count,
+        )
+        return await _handle_sync(
+            transport, dialect, entry, upstream_id, config.region,
+            payload, auth, max_retries, retry_base_delay,
+            operation="transcriptions", log_tag="audio.transcriptions",
+            timeout=request_timeout, request=request, health=health,
+        )
+
+    # ------------------------------------------------------------------
     # POST /v1/embeddings  (OpenAI Embeddings API — Cohere / Titan)
     # ------------------------------------------------------------------
 
