@@ -1307,7 +1307,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 return _oai_error(
                     400,
                     f"Model '{raw_model}' is not an audio transcription model; use "
-                    "'openrouter/<vendor>/<model>' (e.g. openrouter/openai/whisper-1).",
+                    "'openrouter/<vendor>/<model>' "
+                    "(e.g. openrouter/openai/whisper-large-v3-turbo).",
                     "invalid_request_error",
                     param="model",
                     code="model_not_found",

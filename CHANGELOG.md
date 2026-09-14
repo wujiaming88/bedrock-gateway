@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.13] — 2026-09-14
+
+### 变更
+
+- 语音转文字默认示例模型由 `openrouter/openai/whisper-1` 改为 OpenRouter 上调用量最大的 `openrouter/openai/whisper-large-v3-turbo`（同步更新端点错误提示、README 与 config.example.yaml 注释）。
+
 ## [0.8.12] — 2026-09-14
 
 ### 新增

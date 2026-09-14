@@ -298,7 +298,7 @@ models:
 # passthrough: any client model `openrouter/<vendor>/<model>` routes straight
 # through with NO named alias — e.g. `openrouter/anthropic/claude-opus-4.6`,
 # `openrouter/openai/gpt-5.5`, `openrouter/google/gemini-2.5-pro`. The
-# `openai-audio` route adds speech-to-text: `openrouter/openai/whisper-1` on
+# `openai-audio` route adds speech-to-text: `openrouter/openai/whisper-large-v3-turbo` on
 # /v1/audio/transcriptions.
 # upstream_resources:
 #   openrouter:

@@ -479,7 +479,7 @@ chmod 600 /opt/bedrock-gateway/.env
 
 调用端点：`/v1/chat/completions` → `/chat/completions`、`/openai/v1/responses` → `/responses`、`/v1/messages` → `/messages`、`/v1/audio/transcriptions` → `/audio/transcriptions`。与 DeepSeek 的区别：OpenRouter 三个端点**全部用 `Authorization: Bearer`**（含原生 `/messages`），所以 `anthropic-passthrough` 的 `auth` 是 `bearer` 而非 `x-api-key`。模型 ID 形如 `anthropic/claude-opus-4.6`、`openai/gpt-5.5`、`google/gemini-2.5-pro`（以 `GET https://openrouter.ai/api/v1/models` 实测为准）。
 
-语音转文字（STT）走同一条 `openai-audio` 路由：`POST /v1/audio/transcriptions`（`multipart/form-data`），`model` 传 `openrouter/<vendor>/<model>`（如 `openrouter/openai/whisper-1`），`file` 传音频文件，可选 `language` / `prompt` / `response_format`（`json` / `verbose_json`）/ `temperature` 等。暂不支持 `stream`。返回 JSON `{"text": "..."}`（`verbose_json` 附带 `language`/`duration`/`segments`）。
+语音转文字（STT）走同一条 `openai-audio` 路由：`POST /v1/audio/transcriptions`（`multipart/form-data`），`model` 传 `openrouter/<vendor>/<model>`（如 `openrouter/openai/whisper-large-v3-turbo`），`file` 传音频文件，可选 `language` / `prompt` / `response_format`（`json` / `verbose_json`）/ `temperature` 等。暂不支持 `stream`。返回 JSON `{"text": "..."}`（`verbose_json` 附带 `language`/`duration`/`segments`）。
 
 ---
 
