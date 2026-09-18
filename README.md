@@ -477,7 +477,7 @@ OPENROUTER_API_KEY=sk-or-v1-...
 chmod 600 /opt/bedrock-gateway/.env
 ```
 
-调用端点：`/v1/chat/completions` → `/chat/completions`、`/openai/v1/responses` → `/responses`、`/v1/messages` → `/messages`、`/v1/audio/transcriptions` → `/audio/transcriptions`。与 DeepSeek 的区别：OpenRouter 三个端点**全部用 `Authorization: Bearer`**（含原生 `/messages`），所以 `anthropic-passthrough` 的 `auth` 是 `bearer` 而非 `x-api-key`。模型 ID 形如 `anthropic/claude-opus-4.6`、`openai/gpt-5.5`、`google/gemini-2.5-pro`（以 `GET https://openrouter.ai/api/v1/models` 实测为准）。
+调用端点：`/v1/chat/completions` → `/chat/completions`、`/openai/v1/responses` → `/responses`、`/v1/messages` → `/messages`、`/v1/audio/transcriptions` → `/audio/transcriptions`。与 DeepSeek 的区别：OpenRouter 三个端点**全部用 `Authorization: Bearer`**（含原生 `/messages`），所以 `anthropic-passthrough` 的 `auth` 是 `bearer` 而非 `x-api-key`。模型 ID 形如 `anthropic/claude-opus-4.6`、`openai/gpt-5.5`、`google/gemini-2.5-pro`（以 `GET https://openrouter.ai/api/v1/models` 实测为准）。已实测的模型：`deepseek/deepseek-v4.1-flash`（走 `openai-chat`，三端点均可）。
 
 语音转文字（STT）走同一条 `openai-audio` 路由：`POST /v1/audio/transcriptions`（`multipart/form-data`），`model` 传 `openrouter/<vendor>/<model>`（如 `openrouter/openai/whisper-large-v3-turbo`），`file` 传音频文件，可选 `language` / `prompt` / `response_format`（`json` / `verbose_json`）/ `temperature` 等。暂不支持 `stream`。返回 JSON `{"text": "..."}`（`verbose_json` 附带 `language`/`duration`/`segments`）。
 
@@ -485,7 +485,7 @@ chmod 600 /opt/bedrock-gateway/.env
 
 ### 通用 HTTP 上游：火山方舟（Ark）
 
-火山方舟（字节跳动，豆包 Doubao）同样走 `upstream_resources`，`prefix` 直通 `ark/<model>`。Chat / Responses 共用 `/api/v3` 根，Anthropic Messages 在 `/api/compatible/v1`；三端点**全部 `Authorization: Bearer`**（与 OpenRouter 一致）。**模型须先在方舟控制台开通**，否则报 404 `ModelNotOpen`。
+火山方舟（字节跳动，豆包 Doubao）同样走 `upstream_resources`，`prefix` 直通 `ark/<model>`。Chat / Responses 共用 `/api/v3` 根，Anthropic Messages 在 `/api/compatible/v1`；三端点**全部 `Authorization: Bearer`**（与 OpenRouter 一致）。**模型须先在方舟控制台开通**，否则报 404 `ModelNotOpen`。图像模型（Seedream）走 `openai-images` 路由 → `/api/v3/images/generations`，图生图通过 `image` 字段传参考图（URL / base64 data URI / 多图数组），**不是** `/images/edits` 端点。
 
 ```yaml
 upstream_resources:
@@ -507,6 +507,10 @@ upstream_resources:
         auth: bearer
         default_headers:
           anthropic-version: "2023-06-01"
+      openai-images:
+        base_url: https://ark.cn-beijing.volces.com/api/v3
+        path: /images/generations
+        auth: bearer
 ```
 
 ```bash
@@ -514,7 +518,7 @@ ARK_API_KEY=...
 chmod 600 /opt/bedrock-gateway/.env
 ```
 
-已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260915`、`deepseek-v4-pro-ga-260813`、`deepseek-v4-1-flash-260910`（走 `openai-responses`，见下）。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。方舟 `openai-responses` 端点也不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后会自动删除该字段并重试，客户端无需改动。
+已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260915`、`deepseek-v4-pro-ga-260813`、`deepseek-v4-1-flash-260910`（走 `openai-responses`，见下）、`doubao-seedream-5-0-pro-260628`（图像，走 `openai-images`）。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。方舟 `openai-responses` 端点也不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后会自动删除该字段并重试，客户端无需改动。
 
 ### 通用 HTTP 上游：阿里云百炼（DashScope）
 

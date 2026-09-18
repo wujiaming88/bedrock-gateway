@@ -350,6 +350,10 @@ models:
 #         auth: bearer
 #         default_headers:
 #           anthropic-version: "2023-06-01"
+#       openai-images:
+#         base_url: https://ark.cn-beijing.volces.com/api/v3
+#         path: /images/generations
+#         auth: bearer
 # models:
 #   doubao-seed-evolving:
 #     upstream_resource: ark
@@ -375,6 +379,10 @@ models:
 #     dialect: openai-responses
 #     context_length: 1000000
 #     max_output: 393216
+#   doubao-seedream-5-0-pro-260628:
+#     upstream_resource: ark
+#     upstream_id: doubao-seedream-5-0-pro-260628
+#     dialect: openai-images
 #
 # Alibaba Cloud Bailian (百炼 / DashScope) example — Alibaba's OpenAI-compatible
 # platform hosting Qwen + third-party models (DeepSeek, Kimi, Zhipu GLM) under
@@ -438,3 +446,9 @@ models:
 #     dialect: openai-chat
 #     context_length: 1000000
 #     max_output: 131072
+#   deepseek/deepseek-v4.1-flash:
+#     upstream_resource: openrouter
+#     upstream_id: deepseek/deepseek-v4.1-flash
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 393216
