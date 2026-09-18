@@ -514,7 +514,7 @@ ARK_API_KEY=...
 chmod 600 /opt/bedrock-gateway/.env
 ```
 
-已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260628`、`deepseek-v4-pro-ga-260813`、`deepseek-v4-1-flash-260910`（走 `openai-responses`，见下）。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。方舟 `openai-responses` 端点也不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后会自动删除该字段并重试，客户端无需改动。
+已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260915`、`deepseek-v4-pro-ga-260813`、`deepseek-v4-1-flash-260910`（走 `openai-responses`，见下）。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。方舟 `openai-responses` 端点也不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后会自动删除该字段并重试，客户端无需改动。
 
 ### 通用 HTTP 上游：阿里云百炼（DashScope）
 

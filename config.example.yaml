@@ -357,9 +357,9 @@ models:
 #     dialect: openai-chat
 #     context_length: 1024000
 #     max_output: 256000
-#   doubao-seed-2-1-pro-260628:
+#   doubao-seed-2-1-pro-260915:
 #     upstream_resource: ark
-#     upstream_id: doubao-seed-2-1-pro-260628
+#     upstream_id: doubao-seed-2-1-pro-260915
 #     dialect: openai-chat
 #     context_length: 256000
 #     max_output: 256000
