@@ -73,8 +73,8 @@ from .model_report import ModelPerformanceReporter
 from .models import ModelRegistry, UnknownModelError
 from .responses_compatibility import (
     CompatibilityPolicy,
-    is_bedrock_mantle_openai_model,
     is_exact_variant_rejection,
+    is_openai_compatible_model,
     project_mantle_input,
     responses_compat_policy,
 )
@@ -527,9 +527,10 @@ def _strip_unsupported_400(
     error_text: str,
     model: str,
 ) -> dict[str, Any] | None:
-    """Strip/rename the exact field an ``Unsupported parameter`` 400 names.
+    """Strip/rename the exact field an unsupported-field 400 names.
 
-    Class A remediation: the upstream declared one field unsupported, so drop (or
+    Class A remediation: the upstream declared one field unsupported (either
+    ``Unsupported parameter: 'X'`` or ``json: unknown field "X"``), so drop (or
     losslessly rename) it and retry. Returns the new body to retry, else None when
     there is nothing parseable or nothing changed. Logs a redacted decision record
     — the field path and action only, never the field's value.
@@ -854,7 +855,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             upstream_body["model"] = upstream_id
             # Class A (Unsupported parameter) remediation is armed for Bedrock
             # mantle chat passthrough too — e.g. `max_tokens` → `max_completion_tokens`.
-            strip_unsupported = is_bedrock_mantle_openai_model(
+            strip_unsupported = is_openai_compatible_model(
                 entry.transport, entry.dialect
             )
             logger.info(
@@ -1016,7 +1017,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         compat = responses_compat_policy(entry.transport, entry.dialect, upstream_id)
         # Class A (Unsupported parameter) remediation, armed for Bedrock mantle
         # Responses too — e.g. `reasoning.summary` on gpt-6-astra.
-        strip_unsupported = is_bedrock_mantle_openai_model(
+        strip_unsupported = is_openai_compatible_model(
             entry.transport, entry.dialect
         )
 

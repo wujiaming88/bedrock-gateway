@@ -369,6 +369,12 @@ models:
 #     dialect: openai-chat
 #     context_length: 1000000
 #     max_output: 393216
+#   deepseek-v4-1-flash-260910:
+#     upstream_resource: ark
+#     upstream_id: deepseek-v4-1-flash-260910
+#     dialect: openai-responses
+#     context_length: 1000000
+#     max_output: 393216
 #
 # Alibaba Cloud Bailian (百炼 / DashScope) example — Alibaba's OpenAI-compatible
 # platform hosting Qwen + third-party models (DeepSeek, Kimi, Zhipu GLM) under

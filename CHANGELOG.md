@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.14] — 2026-09-18
+
+### 新增
+
+- 火山方舟（Ark）`deepseek-v4-1-flash-260910` 接入：走 `upstream_resources.ark.routes.openai-responses`（`https://ark.cn-beijing.volces.com/api/v3/responses`），`dialect: openai-responses`。方舟 `openai-responses` 端点不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后自动删除该字段并重试，客户端无需改动。
+
+### 变更
+
+- 通用「Unsupported parameter」自愈扩展到**通用 HTTP 上游**（Ark 等 Go `encoding/json` 后端）：新增识别 `json: unknown field "X"` 错误签名（仅报叶子键，非全点号路径），删除时按叶子名做深度优先定位（顶层优先）；`X` 同时兼容原始 `resp.text` 里的反斜杠转义形式（JSON 转义）。arming 谓词从 `is_bedrock_mantle_openai_model`（仅 Bedrock mantle）泛化为 `is_openai_compatible_model`（Bedrock mantle + 通用 HTTP），旧名保留为向后兼容别名。Azure 仍排除在外（未见此分歧，且 deployment 名间接使字段路径不可靠）。
+
 ## [0.8.13] — 2026-09-14
 
 ### 变更

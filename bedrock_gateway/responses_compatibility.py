@@ -170,17 +170,22 @@ def is_bedrock_gpt_responses_model(transport: str, dialect: str, model: str) -> 
 is_bedrock_gpt5x_responses_model = is_bedrock_gpt_responses_model
 
 
-def is_bedrock_mantle_openai_model(transport: str, dialect: str) -> bool:
-    """Return True for any Bedrock mantle OpenAI-compatible surface.
+def is_openai_compatible_model(transport: str, dialect: str) -> bool:
+    """Return True for any OpenAI-compatible Chat/Responses surface we self-heal.
 
-    Arms the generic ``Unsupported parameter`` remediation (Class A) for both
-    mantle Responses and mantle Chat. It is safe to arm broadly because the
-    remediation only fires on the exact ``Unsupported parameter: 'X'`` text —
-    a model that never returns it (Azure, generic HTTP, or a future endpoint)
-    is simply never touched. Azure and generic HTTP upstreams are still excluded
-    here, matching the rule that the compatibility gap is observed on mantle.
+    Arms the generic ``Unsupported parameter`` / ``unknown field`` remediation
+    (Class A) for Bedrock mantle and generic HTTP upstreams (deepseek, openrouter,
+    ark, dashscope). It is safe to arm broadly because the remediation only fires
+    on the exact rejection text naming a specific field — a surface that never
+    emits it is simply never touched. Azure remains excluded: its OpenAI surface
+    has not exhibited this divergence, and its deployment-name indirection makes
+    the generic field paths less reliable.
     """
-    return transport == "bedrock" and dialect in ("openai-responses", "openai-chat")
+    return transport in ("bedrock", "http") and dialect in ("openai-responses", "openai-chat")
+
+
+# Backward-compatible alias — historically scoped to Bedrock mantle only.
+is_bedrock_mantle_openai_model = is_openai_compatible_model
 
 
 def responses_compat_policy(
@@ -842,6 +847,7 @@ __all__ = [
     "is_bedrock_gpt_responses_model",
     "is_bedrock_gpt5x_responses_model",
     "is_bedrock_mantle_openai_model",
+    "is_openai_compatible_model",
     "responses_compat_policy",
     "analyze_history",
     "project_mantle_input",
