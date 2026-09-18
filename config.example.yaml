@@ -420,6 +420,12 @@ models:
 #     dialect: openai-chat
 #     context_length: 1000000
 #     max_output: 393216
+#   deepseek-v4.1-flash:
+#     upstream_resource: dashscope
+#     upstream_id: deepseek-v4.1-flash
+#     dialect: openai-chat
+#     context_length: 1000000
+#     max_output: 393216
 #   kimi-k3:
 #     upstream_resource: dashscope
 #     upstream_id: kimi-k3

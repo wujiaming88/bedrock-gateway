@@ -547,7 +547,7 @@ DASHSCOPE_API_KEY=...
 chmod 600 /opt/bedrock-gateway/.env
 ```
 
-已实测的模型：`qwen3.8-max`、`deepseek-v4-pro-0813`、`kimi-k3`、`ZHIPU/GLM-5.3-Flash`。两点平台差异：**Kimi K3 需先在百炼控制台开通**（否则报「product is not activated」）；**GLM-5.3-Flash 仅 Chat 端点可用**——其 Responses 兼容端点返回「输入不能为空」（code 1214，不认标准 `input` 字段），且未上架百炼的 Anthropic 兼容端点（报「model does not exist」）。GLM-5.3-Flash 是「仅思考模式」模型，输出先走 `reasoning_content`。
+已实测的模型：`qwen3.8-max`、`deepseek-v4-pro-0813`、`deepseek-v4.1-flash`、`kimi-k3`、`ZHIPU/GLM-5.3-Flash`。两点平台差异：**Kimi K3 需先在百炼控制台开通**（否则报「product is not activated」）；**GLM-5.3-Flash 仅 Chat 端点可用**——其 Responses 兼容端点返回「输入不能为空」（code 1214，不认标准 `input` 字段），且未上架百炼的 Anthropic 兼容端点（报「model does not exist」）。GLM-5.3-Flash 是「仅思考模式」模型，输出先走 `reasoning_content`。
 
 ---
 
