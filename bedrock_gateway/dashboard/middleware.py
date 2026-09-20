@@ -134,30 +134,61 @@ def _parse_sse_line(line: str) -> tuple[int, int]:
     return int(in_t or 0), int(out_t or 0)
 
 
-def _scan_chunk_usage(chunk: bytes | str) -> tuple[int, int]:
-    """Scan a chunk of SSE bytes/str for any usage info it carries."""
-    if isinstance(chunk, (bytes, bytearray)):
-        text = bytes(chunk).decode("utf-8", errors="ignore")
-    else:
-        text = chunk
-    # Cheap short-circuit: skip JSON parsing unless a usage-bearing marker
-    # appears in this chunk.
-    if (
-        "usage" not in text
-        and "message_start" not in text
-        and "message_delta" not in text
-        and "response.completed" not in text
-    ):
-        return 0, 0
+# Substrings that mark an SSE line as possibly carrying usage. Delta frames
+# (chat output_text deltas, etc.) carry none of these, so they are skipped
+# without a JSON parse.
+_USAGE_MARKERS = ("usage", "message_start", "message_delta", "response.completed")
+
+
+def _scan_lines(lines: list[str]) -> tuple[int, int]:
+    """Return the best ``(input, output)`` usage found across *lines*.
+
+    Only lines carrying a usage marker are parsed; the rest are skipped with
+    a cheap substring check (avoids ``json.loads`` on every delta frame).
+    """
     best_in = 0
     best_out = 0
-    for line in text.splitlines():
+    for line in lines:
+        if not any(marker in line for marker in _USAGE_MARKERS):
+            continue
         i, o = _parse_sse_line(line)
         if i:
             best_in = i
         if o:
             best_out = o
     return best_in, best_out
+
+
+def _split_sse_lines(carry: str, chunk: bytes | str) -> tuple[str, list[str]]:
+    """Append *chunk* to *carry* and return ``(new_carry, complete_lines)``.
+
+    SSE ``data:`` lines can span multiple transport chunks — the Responses
+    ``response.completed`` frame, the only carrier of usage in that dialect,
+    is often tens of KB and gets split by ``aiter_bytes()``. Splitting on
+    newlines and holding back the trailing (possibly partial) line lets the
+    caller reassemble a frame before parsing it.
+    """
+    if isinstance(chunk, (bytes, bytearray)):
+        text = bytes(chunk).decode("utf-8", errors="ignore")
+    else:
+        text = chunk
+    buf = carry + text
+    parts = buf.split("\n")
+    return parts[-1], parts[:-1]
+
+
+def _scan_chunk_usage(chunk: bytes | str) -> tuple[int, int]:
+    """Scan a single chunk of SSE bytes/str for any usage info it carries.
+
+    Split lines are NOT reassembled here — stream consumers must use
+    :func:`_split_sse_lines` + :func:`_scan_lines` instead (see the streaming
+    middleware). Kept for whole-chunk scanning and its existing tests.
+    """
+    if isinstance(chunk, (bytes, bytearray)):
+        text = bytes(chunk).decode("utf-8", errors="ignore")
+    else:
+        text = chunk
+    return _scan_lines(text.splitlines())
 
 
 def _parse_json_usage(body: bytes) -> tuple[int, int]:
@@ -322,6 +353,7 @@ def metrics_middleware_factory(collector: MetricsCollector, health: Any = None):
                 in_t = 0
                 out_t = 0
                 first_chunk_ms: float | None = None
+                carry = ""
                 try:
                     async for chunk in original_iter:
                         # Record TTFT on the first non-empty chunk that
@@ -330,12 +362,22 @@ def metrics_middleware_factory(collector: MetricsCollector, health: Any = None):
                             first_chunk_ms = (
                                 time.perf_counter() - start
                             ) * 1000
-                        ci, co = _scan_chunk_usage(chunk)
+                        # Reassemble SSE lines across chunk boundaries so a
+                        # large terminal frame (e.g. ``response.completed``)
+                        # split by the transport is still parsed for usage.
+                        carry, lines = _split_sse_lines(carry, chunk)
+                        ci, co = _scan_lines(lines)
                         if ci:
                             in_t = ci
                         if co:
                             out_t = co
                         yield chunk
+                    # Flush any final line that had no trailing newline.
+                    ci, co = _scan_lines(carry.split("\n"))
+                    if ci:
+                        in_t = ci
+                    if co:
+                        out_t = co
                 finally:
                     _record(status, in_t, out_t, ttft_ms=first_chunk_ms)
 

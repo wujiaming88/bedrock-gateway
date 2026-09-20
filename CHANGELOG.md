@@ -13,6 +13,10 @@
 
 - 通用「Unsupported parameter」自愈扩展到**通用 HTTP 上游**（Ark 等 Go `encoding/json` 后端）：新增识别 `json: unknown field "X"` 错误签名（仅报叶子键，非全点号路径），删除时按叶子名做深度优先定位（顶层优先）；`X` 同时兼容原始 `resp.text` 里的反斜杠转义形式（JSON 转义）。arming 谓词从 `is_bedrock_mantle_openai_model`（仅 Bedrock mantle）泛化为 `is_openai_compatible_model`（Bedrock mantle + 通用 HTTP），旧名保留为向后兼容别名。Azure 仍排除在外（未见此分歧，且 deployment 名间接使字段路径不可靠）。
 
+### 修复
+
+- 修复指标中间件在流式 Responses 下丢失 usage 的问题：`response.completed` 帧（该方言唯一携带 usage 的帧）的 `data:` 行较长，会被上游分片成多个 chunk，而中间件此前按 chunk 逐行独立解析、不跨 chunk 重组，导致 `json.loads` 对半行 JSON 失败、`completion_tokens` 恒为 0（`gpt-6-astra`、`gpt-5.6-terra/sol` 等流式模型 `out=0 tok/s=0.0`）。现新增 SSE 行级重组（`_split_sse_lines` + `_scan_lines`），跨 chunk 缓冲未完成的行再解析。
+
 ## [0.8.13] — 2026-09-14
 
 ### 变更

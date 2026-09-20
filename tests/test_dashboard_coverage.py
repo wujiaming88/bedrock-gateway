@@ -45,6 +45,8 @@ from bedrock_gateway.dashboard.middleware import (
     _parse_json_usage,
     _parse_sse_line,
     _scan_chunk_usage,
+    _scan_lines,
+    _split_sse_lines,
 )
 from bedrock_gateway.dashboard.security import mask_ip
 from bedrock_gateway.dashboard.storage import (
@@ -743,6 +745,56 @@ class TestScanChunkUsage:
         assert _scan_chunk_usage(chunk) == (10, 20)
 
 
+class TestSplitSseLines:
+    def test_str_chunk_complete_lines(self):
+        carry, lines = _split_sse_lines("", 'data: a\ndata: b\n')
+        assert carry == ""
+        assert lines == ["data: a", "data: b"]
+
+    def test_bytes_chunk_decoded(self):
+        carry, lines = _split_sse_lines("", b'data: a\ndata: b\n')
+        assert carry == ""
+        assert lines == ["data: a", "data: b"]
+
+    def test_partial_tail_held_back(self):
+        carry, lines = _split_sse_lines("", "data: first half")
+        assert carry == "data: first half"
+        assert lines == []
+
+    def test_split_line_reassembled(self):
+        carry, lines = _split_sse_lines("", "data: first half")
+        carry, more = _split_sse_lines(carry, " second half\ndata: next\n")
+        assert carry == ""
+        assert lines == []
+        assert more == ["data: first half second half", "data: next"]
+
+    def test_crlf_trailing_cr_stays_on_line(self):
+        # \r is left attached and removed later by _parse_sse_line's strip().
+        carry, lines = _split_sse_lines("", "data: a\r\ndata: b\r\n")
+        assert carry == ""
+        assert lines == ["data: a\r", "data: b\r"]
+
+
+class TestScanLines:
+    def test_no_marker_skipped(self):
+        lines = ["event: x", 'data: {"type":"response.output_text.delta"}']
+        assert _scan_lines(lines) == (0, 0)
+
+    def test_completed_line_parsed(self):
+        line = (
+            'data: {"type":"response.completed",'
+            '"response":{"usage":{"input_tokens": 10, "output_tokens": 20}}}'
+        )
+        assert _scan_lines([line]) == (10, 20)
+
+    def test_best_across_multiple_lines(self):
+        lines = [
+            'data: {"usage": {"input_tokens": 3}}',
+            'data: {"usage": {"input_tokens": 5, "output_tokens": 7}}',
+        ]
+        assert _scan_lines(lines) == (5, 7)
+
+
 class TestParseJsonUsage:
     def test_invalid_json(self):
         assert _parse_json_usage(b"not json") == (0, 0)
@@ -912,10 +964,101 @@ class TestMiddlewareExceptionPath:
         assert rec["prompt_tokens"] == 1
         assert rec["completion_tokens"] == 2
 
+    def test_stream_split_response_completed_line_still_captured(self):
+        """A Responses ``response.completed`` line split across SSE chunks is
+        reassembled before parsing, so its usage is not lost."""
+        import asyncio
 
-# ---------------------------------------------------------------------------
-# security — disabled gate, empty rate-limiter key, mask_ip edge cases
-# ---------------------------------------------------------------------------
+        from starlette.responses import StreamingResponse
+
+        coll = MetricsCollector()
+        middleware = metrics_middleware_factory(coll)
+
+        completed = (
+            'data: {"type":"response.completed","response":{"id":"r",'
+            '"output":[{"content":[{"text":"' + "x" * 400 + '"}]}],'
+            '"usage":{"input_tokens": 11, "output_tokens": 5, "total_tokens": 16}}}'
+        )
+
+        # Split the terminal frame mid-line, across two chunks.
+        cut = len(completed) // 2
+        parts = [completed[:cut], completed[cut:] + "\n"]
+
+        async def str_gen():
+            for p in parts:
+                yield p
+
+        request = MagicMock()
+        request.url.path = "/openai/v1/responses"
+        request.method = "POST"
+        request.headers = {}
+        request.client = None
+
+        async def _body():
+            return b'{"model": "gpt-6-astra", "input": "hi"}'
+
+        request.body = _body
+        request.state = type("S", (), {})()
+        request.state.metrics_info = {}
+
+        async def call_next(_req):
+            return StreamingResponse(str_gen(), media_type="text/event-stream")
+
+        async def run():
+            resp = await middleware(request, call_next)
+            async for _ in resp.body_iterator:
+                pass
+
+        asyncio.run(run())
+        rec = coll.recent_requests(limit=1)[0]
+        assert rec["prompt_tokens"] == 11
+        assert rec["completion_tokens"] == 5
+
+    def test_stream_usage_flushed_on_trailing_partial_line(self):
+        """A terminal usage line with no trailing newline is flushed and
+        captured after the stream loop ends."""
+        import asyncio
+
+        from starlette.responses import StreamingResponse
+
+        coll = MetricsCollector()
+        middleware = metrics_middleware_factory(coll)
+
+        completed = (
+            'data: {"type":"response.completed","response":{"usage":'
+            '{"input_tokens": 11, "output_tokens": 5}}}'
+        )
+        cut = len(completed) // 2
+
+        async def str_gen():
+            yield completed[:cut]
+            yield completed[cut:]  # no trailing newline
+
+        request = MagicMock()
+        request.url.path = "/openai/v1/responses"
+        request.method = "POST"
+        request.headers = {}
+        request.client = None
+
+        async def _body():
+            return b'{"model": "gpt-6-astra", "input": "hi"}'
+
+        request.body = _body
+        request.state = type("S", (), {})()
+        request.state.metrics_info = {}
+
+        async def call_next(_req):
+            return StreamingResponse(str_gen(), media_type="text/event-stream")
+
+        async def run():
+            resp = await middleware(request, call_next)
+            async for _ in resp.body_iterator:
+                pass
+
+        asyncio.run(run())
+        rec = coll.recent_requests(limit=1)[0]
+        assert rec["prompt_tokens"] == 11
+        assert rec["completion_tokens"] == 5
 
 
 class TestSecurityEdges:
