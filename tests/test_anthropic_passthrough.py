@@ -3,6 +3,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from bedrock_gateway.auth import AuthConfig
@@ -147,3 +148,98 @@ def test_stream_preflight_error_is_preserved(mock_cls, tmp_path):
     assert response.status_code == 503
     assert response.json() == error
     assert response.headers["retry-after"] == "2"
+
+
+def _config_with_retries(tmp_path, max_retries):
+    cfg = _config(tmp_path)
+    cfg.retry = RetryConfig(max_retries=max_retries, base_delay=0)
+    return cfg
+
+
+@patch.dict("os.environ", {"VENDOR_SECRET": "upstream-secret"})
+@patch("bedrock_gateway.server.httpx.AsyncClient")
+def test_sync_connect_timeout_retries_then_200(mock_cls, tmp_path):
+    inst = AsyncMock()
+    inst.post = AsyncMock(side_effect=[httpx.ConnectTimeout("t"), _response()])
+    inst.__aenter__ = AsyncMock(return_value=inst)
+    inst.__aexit__ = AsyncMock(return_value=False)
+    mock_cls.return_value = inst
+    response = TestClient(create_app(_config_with_retries(tmp_path, 2))).post(
+        "/v1/messages", json={"model": "vendor/model-x", "max_tokens": 8}
+    )
+    assert response.status_code == 200
+    assert inst.post.call_count == 2
+
+
+@patch.dict("os.environ", {"VENDOR_SECRET": "upstream-secret"})
+@patch("bedrock_gateway.server.httpx.AsyncClient")
+def test_sync_read_timeout_fails_fast(mock_cls, tmp_path):
+    inst = AsyncMock()
+    inst.post = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+    inst.__aenter__ = AsyncMock(return_value=inst)
+    inst.__aexit__ = AsyncMock(return_value=False)
+    mock_cls.return_value = inst
+    response = TestClient(create_app(_config(tmp_path))).post(
+        "/v1/messages", json={"model": "vendor/model-x", "max_tokens": 8}
+    )
+    assert response.status_code == 504
+    assert inst.post.call_count == 1
+
+
+@patch.dict("os.environ", {"VENDOR_SECRET": "upstream-secret"})
+@patch("bedrock_gateway.server.httpx.AsyncClient")
+def test_stream_connect_timeout_retries_then_200(mock_cls, tmp_path):
+    timeout_ctx = AsyncMock()
+    timeout_ctx.__aenter__ = AsyncMock(side_effect=httpx.ConnectTimeout("t"))
+    timeout_ctx.__aexit__ = AsyncMock(return_value=False)
+    inst_timeout = AsyncMock()
+    inst_timeout.stream = MagicMock(return_value=timeout_ctx)
+    inst_timeout.__aenter__ = AsyncMock(return_value=inst_timeout)
+    inst_timeout.__aexit__ = AsyncMock(return_value=False)
+
+    frames = [b'event: message_stop\ndata: {"type":"message_stop"}\n\n']
+
+    async def aiter_bytes():
+        for frame in frames:
+            yield frame
+
+    upstream = MagicMock()
+    upstream.status_code = 200
+    upstream.headers = {"content-type": "text/event-stream"}
+    upstream.aiter_bytes = aiter_bytes
+    ok_ctx = AsyncMock()
+    ok_ctx.__aenter__ = AsyncMock(return_value=upstream)
+    ok_ctx.__aexit__ = AsyncMock(return_value=False)
+    inst_ok = AsyncMock()
+    inst_ok.stream = MagicMock(return_value=ok_ctx)
+    inst_ok.__aenter__ = AsyncMock(return_value=inst_ok)
+    inst_ok.__aexit__ = AsyncMock(return_value=False)
+
+    mock_cls.side_effect = [inst_timeout, inst_ok]
+    client = TestClient(create_app(_config_with_retries(tmp_path, 2)))
+    with client.stream("POST", "/v1/messages", json={
+        "model": "vendor/model-x", "stream": True, "max_tokens": 8,
+        "messages": [{"role": "user", "content": "hi"}],
+    }) as response:
+        text = response.read().decode()
+    assert response.status_code == 200
+    assert "message_stop" in text
+    assert mock_cls.call_count == 2
+
+
+@patch.dict("os.environ", {"VENDOR_SECRET": "upstream-secret"})
+@patch("bedrock_gateway.server.httpx.AsyncClient")
+def test_stream_read_timeout_fails_fast(mock_cls, tmp_path):
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    inst = AsyncMock()
+    inst.stream = MagicMock(return_value=ctx)
+    inst.__aenter__ = AsyncMock(return_value=inst)
+    inst.__aexit__ = AsyncMock(return_value=False)
+    mock_cls.return_value = inst
+    response = TestClient(create_app(_config(tmp_path))).post(
+        "/v1/messages", json={"model": "vendor/model-x", "stream": True, "max_tokens": 8}
+    )
+    assert response.status_code == 504
+    assert mock_cls.call_count == 1

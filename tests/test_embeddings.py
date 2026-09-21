@@ -1126,7 +1126,9 @@ class TestEmbeddingsFanout:
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
-    def test_timeout_retry_then_success(self, mock_sleep, mock_client_cls, emb_client):
+    def test_connect_timeout_retry_then_success(
+        self, mock_sleep, mock_client_cls, emb_client
+    ):
         mock_200 = MagicMock()
         mock_200.status_code = 200
         mock_200.text = ""
@@ -1134,7 +1136,7 @@ class TestEmbeddingsFanout:
 
         mock_instance = AsyncMock()
         mock_instance.post = AsyncMock(
-            side_effect=[httpx.TimeoutException("slow"), mock_200]
+            side_effect=[httpx.ConnectTimeout("slow"), mock_200]
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=False)
@@ -1145,6 +1147,24 @@ class TestEmbeddingsFanout:
         )
         assert resp.status_code == 200
         assert mock_instance.post.call_count == 2
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
+    def test_read_timeout_fails_fast(self, mock_sleep, mock_client_cls, emb_client):
+        # A read timeout means the upstream accepted the connection but did not
+        # respond in time — retrying would reset the model's in-flight work, so
+        # it must fail fast (single attempt) rather than re-send.
+        instance = AsyncMock()
+        instance.post = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+        instance.__aenter__ = AsyncMock(return_value=instance)
+        instance.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = instance
+        resp = emb_client.post(
+            "/v1/embeddings",
+            json={"model": "cohere-embed-v4-document", "input": "hi"},
+        )
+        assert resp.status_code == 502
+        assert instance.post.call_count == 1
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_final_timeout_is_502(self, mock_client_cls, emb_client):

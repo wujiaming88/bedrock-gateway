@@ -22,6 +22,7 @@ from bedrock_gateway.config import (
     StorageConfig,
 )
 from bedrock_gateway.server import (
+    _is_retryable_timeout,
     _note_retry,
     _note_timeout,
     _track_upstream,
@@ -198,6 +199,144 @@ class TestMetricsHelpers:
 
         _note_timeout(_Req)
         assert _Req.state.metrics_info == {"timeout": True}
+
+
+# ---------------------------------------------------------------------------
+# Retry gate — only ConnectTimeout retries; read/write/pool timeouts fail fast
+# ---------------------------------------------------------------------------
+
+
+class TestRetryableTimeoutGate:
+    def test_is_retryable_timeout_connect_only(self):
+        # A connect timeout is a transient TCP/TLS condition worth re-sending;
+        # everything else fires after the connection is up and must fail fast.
+        assert _is_retryable_timeout(httpx.ConnectTimeout("t")) is True
+        assert _is_retryable_timeout(httpx.ReadTimeout("t")) is False
+        assert _is_retryable_timeout(httpx.WriteTimeout("t")) is False
+        assert _is_retryable_timeout(httpx.PoolTimeout("t")) is False
+        assert _is_retryable_timeout(httpx.TimeoutException("t")) is False
+
+    @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_connect_timeout_retries_then_200(
+        self, mock_cls, mock_sleep, client: TestClient
+    ):
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "stop_reason": "end_turn",
+        }
+        inst = _mk_mock_client_post_side_effect(httpx.ConnectTimeout("t"), ok)
+        mock_cls.return_value = inst
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 200
+        assert inst.post.call_count == 2
+
+    @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_read_timeout_fails_fast(
+        self, mock_cls, mock_sleep, client: TestClient
+    ):
+        inst = AsyncMock()
+        inst.post = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+        inst.__aenter__ = AsyncMock(return_value=inst)
+        inst.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.return_value = inst
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 502
+        assert inst.post.call_count == 1
+
+    @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_stream_connect_timeout_retries_then_200(
+        self, mock_cls, mock_sleep, client: TestClient
+    ):
+        timeout_ctx = AsyncMock()
+        timeout_ctx.__aenter__ = AsyncMock(side_effect=httpx.ConnectTimeout("t"))
+        timeout_ctx.__aexit__ = AsyncMock(return_value=False)
+        inst_timeout = AsyncMock()
+        inst_timeout.stream = MagicMock(return_value=timeout_ctx)
+        inst_timeout.__aenter__ = AsyncMock(return_value=inst_timeout)
+        inst_timeout.__aexit__ = AsyncMock(return_value=False)
+
+        events = [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 3}}},
+            {"type": "content_block_delta",
+             "delta": {"type": "text_delta", "text": "hi"}},
+            {"type": "message_delta",
+             "delta": {"stop_reason": "end_turn"},
+             "usage": {"output_tokens": 1, "input_tokens": 3}},
+        ]
+        inst_ok = _make_stream_ctx(events, status=200)
+
+        mock_cls.side_effect = [inst_timeout, inst_ok]
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+        assert resp.status_code == 200
+        assert "[DONE]" in resp.text
+        assert "hi" in resp.text
+        assert mock_cls.call_count == 2
+
+    @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_stream_read_timeout_fails_fast_read_message(
+        self, mock_cls, mock_sleep, client: TestClient
+    ):
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        inst = AsyncMock()
+        inst.stream = MagicMock(return_value=ctx)
+        inst.__aenter__ = AsyncMock(return_value=inst)
+        inst.__aexit__ = AsyncMock(return_value=False)
+        mock_cls.return_value = inst
+
+        resp = client.post("/v1/chat/completions", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        })
+        assert resp.status_code == 504
+        assert "read timeout" in resp.json()["error"]["message"].lower()
+        assert mock_cls.call_count == 1
+
+    @patch("bedrock_gateway.server.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_messages_sync_connect_timeout_retries_then_200(
+        self, mock_cls, mock_sleep, client: TestClient
+    ):
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.json.return_value = {
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        inst = _mk_mock_client_post_side_effect(httpx.ConnectTimeout("t"), ok)
+        mock_cls.return_value = inst
+
+        resp = client.post("/v1/messages", json={
+            "model": "test-model",
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 200
+        assert resp.json()["type"] == "message"
+        assert inst.post.call_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.15] — 2026-09-21
+
+### 修复
+
+- 超时重试只认**连接超时**：`httpx.ConnectTimeout`（TCP/TLS 建连阶段，请求尚未到达上游）才重试；`ReadTimeout`/`WriteTimeout`/`PoolTimeout`（连接已建立但迟迟等不到首字节，即慢模型长上下文预填充或上游过载）一律**快速失败**，不再重发。此前重发会重置模型正在进行的推理、按重试次数重复计费，对「最终会出结果的慢模型」尤其有害（`gpt-6-astra`/`gpt-5.6-*` 等长上下文模型 32% 的失败即源于此）。流式预检（`_open_upstream_stream`）超时日志与错误信息同步区分 `Upstream connect timeout` / `Upstream read timeout`，不再把所有超时都误报为「连接超时」。
+
 ## [0.8.14] — 2026-09-18
 
 ### 新增

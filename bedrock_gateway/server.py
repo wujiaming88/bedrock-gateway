@@ -294,6 +294,23 @@ def _note_timeout(request: Request | None) -> None:
         pass
 
 
+def _is_retryable_timeout(exc: httpx.TimeoutException) -> bool:
+    """True only for timeouts worth re-sending to the upstream.
+
+    A :class:`httpx.ConnectTimeout` fires while establishing the TCP/TLS
+    connection — the request never reached the upstream, so a retry gets a
+    genuinely fresh chance.
+
+    A :class:`httpx.ReadTimeout` (and its write/pool siblings) fires *after*
+    the connection is open but before the first byte arrives — the model is
+    busy prefilling a long context, or the endpoint is overloaded. Re-sending
+    that request resets the model's in-flight reasoning, so a slow model that
+    will *eventually* answer has its work thrown away and re-charged. Those
+    must fail fast instead of retrying.
+    """
+    return isinstance(exc, httpx.ConnectTimeout)
+
+
 def _log_upstream_error(status_code: int, fmt: str, *args: Any) -> None:
     """Log a non-2xx upstream response at the level matching its severity.
 
@@ -1713,9 +1730,13 @@ async def _handle_raw_passthrough(
                     response = await client.post(
                         url, headers=headers, content=payload.content
                     )
-            except httpx.TimeoutException:
+            except httpx.TimeoutException as exc:
                 _note_timeout(request)
-                if attempt < max_retries - 1 and time.monotonic() < deadline:
+                if (
+                    _is_retryable_timeout(exc)
+                    and attempt < max_retries - 1
+                    and time.monotonic() < deadline
+                ):
                     _note_retry(request)
                     await asyncio.sleep(retry_base_delay * (2**attempt))
                     continue
@@ -1757,10 +1778,14 @@ async def _handle_raw_passthrough(
             response = await stack.enter_async_context(
                 client.stream("POST", url, headers=headers, content=payload.content)
             )
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             await stack.aclose()
             _note_timeout(request)
-            if attempt < max_retries - 1 and time.monotonic() < deadline:
+            if (
+                _is_retryable_timeout(exc)
+                and attempt < max_retries - 1
+                and time.monotonic() < deadline
+            ):
                 _note_retry(request)
                 await asyncio.sleep(retry_base_delay * (2**attempt))
                 continue
@@ -1962,16 +1987,20 @@ async def _handle_sync(
                 resp.status_code, error["message"], error["type"]
             )
 
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             last_error = "Request timeout"
+            retryable = _is_retryable_timeout(exc)
             logger.warning(
-                "[UP] TIMEOUT model=%s attempt=%d/%d",
+                "[UP] TIMEOUT model=%s attempt=%d/%d retryable=%s",
                 model,
                 attempt + 1,
                 max_retries,
+                retryable,
             )
-            _note_retry(request)
             _note_timeout(request)
+            if not retryable:
+                break
+            _note_retry(request)
             await asyncio.sleep(retry_base_delay * (2**attempt))
             attempt += 1
 
@@ -2046,10 +2075,14 @@ async def _embeddings_attempt(
                 timeout=_httpx_timeout(timeout)
             ) as client:
                 resp = await client.post(url, headers=headers, content=payload.content)
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             last_error = "Upstream request timeout"
             _note_timeout(request)
-            if attempt < max_retries - 1 and time.monotonic() < deadline:
+            if (
+                _is_retryable_timeout(exc)
+                and attempt < max_retries - 1
+                and time.monotonic() < deadline
+            ):
                 _note_retry(request)
                 await asyncio.sleep(retry_base_delay * (2 ** attempt))
                 continue
@@ -2242,14 +2275,20 @@ async def _open_upstream_stream(
             resp = await stack.enter_async_context(
                 client.stream("POST", url, headers=headers, content=payload.content)
             )
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             await stack.aclose()
             _note_timeout(request)
-            last_status, last_message = 504, "Upstream connect timeout"
-            logger.warning(
-                "[UP] STREAM-OPEN timeout [%s] attempt=%d/%d",
-                log_tag, attempt + 1, max_retries,
+            is_connect = _is_retryable_timeout(exc)
+            last_status, last_message = 504, (
+                "Upstream connect timeout" if is_connect else "Upstream read timeout"
             )
+            logger.warning(
+                "[UP] STREAM-OPEN timeout [%s] attempt=%d/%d kind=%s",
+                log_tag, attempt + 1, max_retries,
+                "connect" if is_connect else "read",
+            )
+            if not is_connect:
+                break
             if attempt < max_retries - 1:
                 _note_retry(request)
                 await asyncio.sleep(retry_base_delay * (2**attempt))
@@ -2519,16 +2558,20 @@ async def _handle_messages_sync(
                 ),
             )
 
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             last_error = "Request timeout"
+            retryable = _is_retryable_timeout(exc)
             logger.warning(
-                "[UP] TIMEOUT [messages] model=%s attempt=%d/%d",
+                "[UP] TIMEOUT [messages] model=%s attempt=%d/%d retryable=%s",
                 model,
                 attempt + 1,
                 max_retries,
+                retryable,
             )
-            _note_retry(request)
             _note_timeout(request)
+            if not retryable:
+                break
+            _note_retry(request)
             await asyncio.sleep(retry_base_delay * (2**attempt))
 
         except Exception as exc:
