@@ -373,6 +373,46 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "dialect": "openai-chat",
         "region": "us-west-2",
     },
+    # ── OpenAI GPT-6 Sol / Luna (mantle endpoint, Responses API) ───────
+    # Live-probed on Bedrock mantle: both return HTTP 200 from us-east-1
+    # (N. Virginia). Unlike GPT-6 Astra (us-west-2 only), mantle serves GPT-6
+    # Sol and Luna from us-east-1, so they pin that region like Astra does.
+    # Official spec: 1.05M context, 128K max output (advisory, same as Astra).
+    "gpt-6-sol": {
+        "bedrock_id": "openai.gpt-6-sol",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+        "region": "us-east-1",
+    },
+    "gpt-6-luna": {
+        "bedrock_id": "openai.gpt-6-luna",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+        "region": "us-east-1",
+    },
+    # Chat-completions twins (same upstream, openai-chat dialect). Like
+    # gpt-6-astra-chat, the upstream rejects `max_tokens`; the gateway
+    # auto-renames it to `max_completion_tokens` on that 400.
+    "gpt-6-sol-chat": {
+        "bedrock_id": "openai.gpt-6-sol",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "dialect": "openai-chat",
+        "region": "us-east-1",
+    },
+    "gpt-6-luna-chat": {
+        "bedrock_id": "openai.gpt-6-luna",
+        "context_length": 1_050_000,
+        "max_output": 128_000,
+        "endpoint": "mantle",
+        "dialect": "openai-chat",
+        "region": "us-east-1",
+    },
     # ── xAI Grok (mantle endpoint, Responses API) ─────────────────────
     "grok-4.3": {
         "bedrock_id": "xai.grok-4.3",
@@ -501,6 +541,17 @@ _MODEL_ALIASES: dict[str, str] = {
     "gpt6-astra": "gpt-6-astra",
     "openai.gpt-6-astra": "gpt-6-astra",
     "openai-gpt-6-astra": "gpt-6-astra",
+    # GPT-6 Sol / Luna variations
+    "gpt-6-sol": "gpt-6-sol",
+    "gpt-6sol": "gpt-6-sol",
+    "gpt6-sol": "gpt-6-sol",
+    "openai.gpt-6-sol": "gpt-6-sol",
+    "openai-gpt-6-sol": "gpt-6-sol",
+    "gpt-6-luna": "gpt-6-luna",
+    "gpt-6luna": "gpt-6-luna",
+    "gpt6-luna": "gpt-6-luna",
+    "openai.gpt-6-luna": "gpt-6-luna",
+    "openai-gpt-6-luna": "gpt-6-luna",
     # Grok variations. Deliberately omit ambiguous unversioned names.
     "grok4.3": "grok-4.3",
     "grok-4-3": "grok-4.3",

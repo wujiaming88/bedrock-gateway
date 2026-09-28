@@ -165,11 +165,15 @@ class TestModelEntryDefaults:
             "gpt-5.6-terra",
             "gpt-5.6-luna",
             "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
             GROK_ALIAS,
             GROK46_ALIAS,
         }
         chat_models = {
             "gpt-6-astra-chat",
+            "gpt-6-sol-chat",
+            "gpt-6-luna-chat",
         }
         embeddings_models = {
             "cohere-embed-v4-document",

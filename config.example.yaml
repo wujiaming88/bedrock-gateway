@@ -154,6 +154,39 @@ models:
     dialect: openai-chat
     region: us-west-2
 
+  # ── OpenAI GPT-6 Sol / Luna ─────────────────────────────
+  # Live-probed on Bedrock mantle (HTTP 200). Unlike GPT-6 Astra (us-west-2
+  # only), mantle serves GPT-6 Sol and Luna from us-east-1, so they pin that
+  # region. Same Responses + Chat twins as Astra.
+  gpt-6-sol:
+    bedrock_id: openai.gpt-6-sol
+    context_length: 1050000
+    max_output: 128000
+    endpoint: mantle
+    protocol: openai-responses
+    region: us-east-1
+  gpt-6-luna:
+    bedrock_id: openai.gpt-6-luna
+    context_length: 1050000
+    max_output: 128000
+    endpoint: mantle
+    protocol: openai-responses
+    region: us-east-1
+  gpt-6-sol-chat:
+    bedrock_id: openai.gpt-6-sol
+    context_length: 1050000
+    max_output: 128000
+    endpoint: mantle
+    dialect: openai-chat
+    region: us-east-1
+  gpt-6-luna-chat:
+    bedrock_id: openai.gpt-6-luna
+    context_length: 1050000
+    max_output: 128000
+    endpoint: mantle
+    dialect: openai-chat
+    region: us-east-1
+
   # ── xAI Grok ────────────────────────────────────────────
   # Same mantle + Responses protocol as GPT-5.x. Grok 4.6 mantle is available
   # in-region only from us-west-2, so its model-level region overrides the

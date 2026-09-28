@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.16] — 2026-09-28
+
+### 新增
+
+- 接入 OpenAI GPT-6 Sol / GPT-6 Luna（Bedrock mantle，Responses API + Chat 变体）：模型 `openai.gpt-6-sol` 与 `openai.gpt-6-luna`，1.05M 上下文 / 128K 最大输出，`endpoint: mantle` + `protocol: openai-responses`，并 pin `region: us-east-1`（与 `gpt-6-astra` 的 `us-west-2` 相反，mantle 仅 N. Virginia 提供这两个模型）。各配一个 Chat Completions 别名（`gpt-6-sol-chat` / `gpt-6-luna-chat`，`dialect: openai-chat`，上游拒绝 `max_tokens` 时自动改名 `max_completion_tokens`）。别名 `gpt-6-sol` / `gpt-6sol` / `gpt6-sol` / `openai.gpt-6-sol` / `openai-gpt-6-sol`（Luna 同理）。已实测 upstream 返回 HTTP 200；见 README 模型表与 `config.example.yaml`。
+
 ## [0.8.15] — 2026-09-21
 
 ### 修复
