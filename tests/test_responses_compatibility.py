@@ -119,14 +119,18 @@ class TestIsExactVariantRejection:
 # Encrypted-reasoning rejection + self-heal (cross-model replay)
 # ---------------------------------------------------------------------------
 
-ENCRYPTED_REASONING_400_TEXT = (
-    "invalid request body: invalid encrypted reasoning shape in input item"
-)
+ENCRYPTED_REASONING_400_TEXT = "invalid encrypted reasoning"
 
 
 class TestIsEncryptedReasoningRejection:
     def test_exact_400_matches(self):
+        # The upstream message is the bare phrase — NOT "...reasoning shape"
+        # (the word "shape" in the REQ-SHAPE log is the log's own next-field
+        # label). This is the regression test for that misread.
         assert is_encrypted_reasoning_rejection(400, ENCRYPTED_REASONING_400_TEXT)
+        assert is_encrypted_reasoning_rejection(
+            400, "invalid request body: invalid encrypted reasoning in input item"
+        )
 
     def test_non_400_never_matches(self):
         assert not is_encrypted_reasoning_rejection(401, ENCRYPTED_REASONING_400_TEXT)
@@ -140,7 +144,7 @@ class TestIsEncryptedReasoningRejection:
 
     def test_case_insensitive(self):
         assert is_encrypted_reasoning_rejection(
-            400, "INVALID ENCRYPTED REASONING SHAPE"
+            400, "INVALID ENCRYPTED REASONING"
         )
 
 
@@ -184,6 +188,25 @@ class TestStripEncryptedReasoning:
         assert out["input"] == [
             {"type": "reasoning",
              "summary": [{"type": "summary_text", "text": "visible"}]},
+        ]
+
+    def test_keeps_content_item_when_summary_empty(self):
+        # The real gpt-6 reasoning item carries a `content` (reasoning_text) array
+        # alongside the opaque blob and an empty summary. The raw request's only
+        # rejection was about `encrypted_content`, so `content` must be preserved.
+        body = {
+            "model": "openai.gpt-6-sol",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": [],
+                 "content": [{"type": "reasoning_text", "text": "visible"}]},
+            ],
+        }
+        out, changed = strip_encrypted_reasoning(body)
+        assert changed is True
+        assert out["input"] == [
+            {"type": "reasoning", "summary": [],
+             "content": [{"type": "reasoning_text", "text": "visible"}]},
         ]
 
     def test_mixed_history_preserves_non_reasoning_items(self):

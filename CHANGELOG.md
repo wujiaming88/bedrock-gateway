@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.18] — 2026-09-28
+
+### 修复
+
+- 修正 0.8.17 加密推理自愈的两个缺陷，使其真正生效：① **错误签名写错了**——上游实际返回的是裸短语 `invalid encrypted reasoning`，而 0.8.17 把 REQ-SHAPE 日志里自愈的 ``shape=`` 字段标签误当成错误内容的一部分，签成了 `invalid encrypted reasoning shape`，导致永不匹配、自愈从不触发；现已改为认裸短语。② **剥离时误删了带 `content` 的推理项**——gpt-6 的 reasoning 项同时带 `content`（`reasoning_text` 块）、`encrypted_content`（不透明块）和空 `summary`，0.8.17 只按 `summary` 非空才保留，会整体删掉这类项、连带丢掉可见的 `content` 推理文本；现改为：剥离 `encrypted_content` 后，只要仍有非空 `content` 或非空明文 `summary` 就保留，仅纯不透明壳才删除。
+
 ## [0.8.17] — 2026-09-28
 
 ### 修复

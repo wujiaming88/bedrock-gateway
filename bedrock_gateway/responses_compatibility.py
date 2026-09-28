@@ -90,8 +90,11 @@ class MantleResponsesProfile:
     # Encrypted-reasoning rejection signatures. These trigger the encrypted-
     # reasoning self-heal (strip opaque blobs minted by a *different* model)
     # — distinct from the exact-variant projection and never eligible for it.
+    # The upstream message is the bare phrase ``invalid encrypted reasoning``
+    # (the word ``shape`` that shows up in our REQ-SHAPE log is the *log's own*
+    # next-field label, not part of the error).
     encrypted_reasoning_signatures: tuple[str, ...] = (
-        "invalid encrypted reasoning shape",
+        "invalid encrypted reasoning",
     )
     # Relationship-error signatures. These must NEVER trigger a fallback — they
     # are a post-deserialization failure class whose text differs.
@@ -878,10 +881,11 @@ def strip_encrypted_reasoning(body: dict[str, Any]) -> tuple[dict[str, Any], boo
     """Strip ``encrypted_content`` from reasoning items, copy-on-write.
 
     Cross-model replay of Bedrock's per-model encrypted reasoning (an opaque blob
-    minted by the previous model) is rejected with ``invalid encrypted reasoning
-    shape``. Remove the blob from every ``reasoning`` item in ``input`` so the
-    request becomes replayable: an item that still carries a non-empty plaintext
-    ``summary`` is kept summary-only; an item left with no visible summary is
+    minted by the previous model) is rejected with ``invalid encrypted reasoning``.
+    Remove the blob from every ``reasoning`` item in ``input`` so the request
+    becomes replayable: an item that still carries visible reasoning — a non-empty
+    ``content`` array (``reasoning_text`` blocks) or a non-empty plaintext
+    ``summary`` — is kept with the blob stripped; an item left with neither is
     dropped entirely (its reasoning is unrecoverable cross-model). Returns
     ``(body_copy, changed)``; the input is never mutated.
     """
@@ -910,13 +914,22 @@ def _strip_reasoning_encrypted(item: dict[str, Any]) -> tuple[Any, bool]:
         return item, False
     new_item = dict(item)
     new_item.pop("encrypted_content", None)
-    # Keep the item only when a non-empty plaintext summary survives. An empty
-    # list is not a summary — the point of encrypted reasoning is that the
-    # plaintext summary is absent — so an opaque-only item must be dropped.
-    summary = new_item.get("summary")
-    if summary and _valid_reasoning_summary(summary):
+    # Keep the item only when visible reasoning survives. The raw request's only
+    # rejection was ``invalid encrypted reasoning`` — i.e. the ``content`` blocks
+    # themselves were accepted — so preserve a non-empty ``content`` array (or a
+    # non-empty plaintext summary). Drop only an opaque-only shell.
+    if _has_visible_reasoning(new_item):
         return new_item, True
     return _DROP, True
+
+
+def _has_visible_reasoning(item: dict[str, Any]) -> bool:
+    """Return whether a reasoning item has any replayable (non-opaque) content."""
+    content = item.get("content")
+    if isinstance(content, list) and content:
+        return True
+    summary = item.get("summary")
+    return bool(summary) and _valid_reasoning_summary(summary)
 
 
 __all__ = [
