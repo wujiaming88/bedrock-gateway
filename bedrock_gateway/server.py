@@ -62,21 +62,30 @@ from .embeddings import (
     render_openai,
     resolve_profile,
 )
+from .logging_config import configure_logging
 from .messages_to_responses import (
     AnthropicStreamAdapter,
     responses_error_to_anthropic,
     to_anthropic_response,
     to_responses_request,
 )
-from .logging_config import configure_logging
 from .model_report import ModelPerformanceReporter
 from .models import ModelRegistry, UnknownModelError
+from .providers import (
+    Dialect,
+    Transport,
+    get_dialect,
+    get_transport,
+)
 from .responses_compatibility import (
     CompatibilityPolicy,
+    is_encrypted_reasoning_rejection,
+    is_encrypted_reasoning_replayable_surface,
     is_exact_variant_rejection,
     is_openai_compatible_model,
     project_mantle_input,
     responses_compat_policy,
+    strip_encrypted_reasoning,
 )
 from .unsupported_param import (
     MAX_UNSUPPORTED_STRIPS,
@@ -84,12 +93,6 @@ from .unsupported_param import (
     parse_unsupported_param,
 )
 from .unsupported_param_cache import LearnedUnsupportedCache
-from .providers import (
-    Dialect,
-    Transport,
-    get_dialect,
-    get_transport,
-)
 
 logger = logging.getLogger("bedrock_gateway")
 
@@ -537,6 +540,34 @@ def _compat_projection(
     if result.safe_to_retry and result.changed:
         return result.body
     return None
+
+
+def _strip_encrypted_reasoning_400(
+    body: dict[str, Any] | None,
+    model: str,
+) -> dict[str, Any] | None:
+    """Strip encrypted reasoning for an ``invalid encrypted reasoning shape`` 400.
+
+    The caller has already validated ``is_encrypted_reasoning_rejection``. Drops
+    every reasoning item's ``encrypted_content`` (minted by a different model) and
+    retries once; items with no surviving plaintext summary are removed. Returns
+    the new body when something changed, else None. Logs a redacted decision
+    record — counts only, never the opaque blob or summary text.
+    """
+    if body is None or not isinstance(body, dict):
+        return None
+    new_body, changed = strip_encrypted_reasoning(body)
+    if not changed:
+        logger.warning(
+            "ENCRYPTED-REASONING model=%s noop",
+            model,
+        )
+        return None
+    logger.warning(
+        "ENCRYPTED-REASONING model=%s stripped cross-model opaque reasoning",
+        model,
+    )
+    return new_body
 
 
 def _strip_unsupported_400(
@@ -1037,6 +1068,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         strip_unsupported = is_openai_compatible_model(
             entry.transport, entry.dialect
         )
+        # Encrypted-reasoning self-heal, armed for Bedrock mantle Responses only:
+        # a downstream model switch replays a per-model opaque blob the new model
+        # rejects with `invalid encrypted reasoning shape`.
+        strip_encrypted_reasoning = is_encrypted_reasoning_replayable_surface(
+            entry.transport, entry.dialect
+        )
 
         logger.info(
             "[DN] REQ [responses] model=%s -> %s (%s) stream=%s",
@@ -1050,6 +1087,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 timeout=request_timeout, request=request, health=health,
                 compat=compat,
                 strip_unsupported=strip_unsupported,
+                strip_encrypted_reasoning=strip_encrypted_reasoning,
             )
         return await _handle_sync(
             transport, dialect, entry, upstream_id, config.region,
@@ -1057,6 +1095,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             timeout=request_timeout, request=request, health=health,
             compat=compat,
             strip_unsupported=strip_unsupported,
+            strip_encrypted_reasoning=strip_encrypted_reasoning,
         )
 
     # ------------------------------------------------------------------
@@ -1860,6 +1899,7 @@ async def _handle_sync(
     health: HealthMonitor | None = None,
     compat: CompatibilityPolicy | None = None,
     strip_unsupported: bool = False,
+    strip_encrypted_reasoning: bool = False,
 ) -> dict | JSONResponse:
     url = transport.build_url(
         _operation_path(dialect, entry, False, operation), region, entry
@@ -1873,6 +1913,7 @@ async def _handle_sync(
     attempt = 0
     compat_attempted = False
     unsupported_attempts = 0
+    encrypted_reasoning_attempted = False
 
     while True:
         if attempt >= max_retries:
@@ -1967,6 +2008,24 @@ async def _handle_sync(
                     payload = _prepare_request_body(projected_body)
                     continue
                 # unsafe / no-change projection → fall through to the original 400
+
+            # One-time encrypted-reasoning self-heal: a cross-model replay 400 on
+            # a Bedrock mantle Responses request. Strip the opaque blobs and retry
+            # once (hard-capped), losing only unrecoverable cross-model reasoning.
+            if (
+                strip_encrypted_reasoning
+                and not encrypted_reasoning_attempted
+                and resp.status_code == 400
+                and is_encrypted_reasoning_rejection(400, resp.text)
+            ):
+                encrypted_reasoning_attempted = True
+                stripped_body = _strip_encrypted_reasoning_400(
+                    payload.log_body, model
+                )
+                if stripped_body is not None and time.monotonic() < deadline:
+                    payload = _prepare_request_body(stripped_body)
+                    continue
+                # no-change strip → fall through to the original 400
 
             error = parse_bedrock_error(resp.status_code, resp.text)
             _log_upstream_error(
@@ -2223,6 +2282,7 @@ async def _open_upstream_stream(
     timeout: float = 300.0,
     compat: CompatibilityPolicy | None = None,
     strip_unsupported: bool = False,
+    strip_encrypted_reasoning: bool = False,
 ) -> tuple[Any, AsyncExitStack | None, dict | None]:
     """Open the Bedrock streaming connection and inspect the HTTP status
     *before* any bytes are handed to the client.
@@ -2246,6 +2306,7 @@ async def _open_upstream_stream(
     attempt = 0
     compat_attempted = False
     unsupported_attempts = 0
+    encrypted_reasoning_attempted = False
     model = str(log_tag)
     if isinstance(payload.log_body, dict) and payload.log_body.get("model"):
         model = str(payload.log_body["model"])
@@ -2368,6 +2429,21 @@ async def _open_upstream_stream(
                 continue
             # unsafe / no-change projection → fall through to the original error
 
+        # One-time encrypted-reasoning self-heal: a cross-model replay 400, before
+        # any client SSE byte is emitted, on a Bedrock mantle Responses request.
+        if (
+            strip_encrypted_reasoning
+            and not encrypted_reasoning_attempted
+            and status == 400
+            and is_encrypted_reasoning_rejection(400, err_body)
+        ):
+            encrypted_reasoning_attempted = True
+            stripped_body = _strip_encrypted_reasoning_400(payload.log_body, model)
+            if stripped_body is not None and time.monotonic() < deadline:
+                payload = _prepare_request_body(stripped_body)
+                continue
+            # no-change strip → fall through to the original error
+
         # Deterministic, non-retryable failure → surface as real HTTP error.
         error = parse_bedrock_error(status, err_body)
         _log_upstream_error(
@@ -2421,6 +2497,7 @@ async def _handle_stream(
     health: HealthMonitor | None = None,
     compat: CompatibilityPolicy | None = None,
     strip_unsupported: bool = False,
+    strip_encrypted_reasoning: bool = False,
 ) -> JSONResponse | StreamingResponse:
     url = transport.build_url(
         _operation_path(dialect, entry, True, operation), region, entry
@@ -2440,6 +2517,7 @@ async def _handle_stream(
         timeout=timeout,
         compat=compat,
         strip_unsupported=strip_unsupported,
+        strip_encrypted_reasoning=strip_encrypted_reasoning,
     )
     if err is not None:
         return _oai_error(err["status"], err["message"], err["type"])

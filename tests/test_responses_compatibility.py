@@ -18,25 +18,28 @@ from fastapi.testclient import TestClient
 
 from bedrock_gateway.auth import AuthProvider
 from bedrock_gateway.config import (
+    _DEFAULT_MODELS,
     AuthConfig,
     AzureResource,
     GatewayConfig,
     RetryConfig,
     ServerConfig,
-    _DEFAULT_MODELS,
     _parse_models,
 )
 from bedrock_gateway.providers import get_dialect, get_transport
 from bedrock_gateway.responses_compatibility import (
     MANTLE_RESPONSES_PROFILE,
+    PROFILE_VERSION,
     CompatibilityPolicy,
     ProjectionResult,
-    PROFILE_VERSION,
     analyze_history,
     is_bedrock_gpt5x_responses_model,
+    is_encrypted_reasoning_rejection,
+    is_encrypted_reasoning_replayable_surface,
     is_exact_variant_rejection,
     project_mantle_input,
     responses_compat_policy,
+    strip_encrypted_reasoning,
 )
 from bedrock_gateway.server import (
     _LEARNED_UNSUPPORTED,
@@ -110,6 +113,120 @@ class TestIsExactVariantRejection:
         assert is_exact_variant_rejection(
             400, "INVALID 'INPUT': VALUE DID NOT MATCH ANY EXPECTED VARIANT"
         )
+
+
+# ---------------------------------------------------------------------------
+# Encrypted-reasoning rejection + self-heal (cross-model replay)
+# ---------------------------------------------------------------------------
+
+ENCRYPTED_REASONING_400_TEXT = (
+    "invalid request body: invalid encrypted reasoning shape in input item"
+)
+
+
+class TestIsEncryptedReasoningRejection:
+    def test_exact_400_matches(self):
+        assert is_encrypted_reasoning_rejection(400, ENCRYPTED_REASONING_400_TEXT)
+
+    def test_non_400_never_matches(self):
+        assert not is_encrypted_reasoning_rejection(401, ENCRYPTED_REASONING_400_TEXT)
+        assert not is_encrypted_reasoning_rejection(500, ENCRYPTED_REASONING_400_TEXT)
+
+    def test_empty_or_unrelated_text(self):
+        assert not is_encrypted_reasoning_rejection(400, None)
+        assert not is_encrypted_reasoning_rejection(400, "context length exceeded")
+        assert not is_encrypted_reasoning_rejection(400, "invalid api key")
+        assert not is_encrypted_reasoning_rejection(400, VARIANT_400_TEXT)
+
+    def test_case_insensitive(self):
+        assert is_encrypted_reasoning_rejection(
+            400, "INVALID ENCRYPTED REASONING SHAPE"
+        )
+
+
+class TestEncryptedReasoningSurface:
+    def test_bedrock_responses_armed(self):
+        assert is_encrypted_reasoning_replayable_surface("bedrock", "openai-responses")
+
+    @pytest.mark.parametrize("transport,dialect", [
+        ("azure", "openai-responses"),
+        ("http", "openai-responses"),
+        ("bedrock", "openai-chat"),
+        ("bedrock", "anthropic"),
+    ])
+    def test_not_armed(self, transport, dialect):
+        assert not is_encrypted_reasoning_replayable_surface(transport, dialect)
+
+
+class TestStripEncryptedReasoning:
+    def test_strips_opaque_only_item(self):
+        body = {
+            "model": "openai.gpt-6-sol",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+            ],
+        }
+        out, changed = strip_encrypted_reasoning(body)
+        assert changed is True
+        assert out["input"] == []  # opaque-only item dropped entirely
+
+    def test_keeps_plaintext_summary_item(self):
+        body = {
+            "model": "openai.gpt-6-sol",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": [{"type": "summary_text", "text": "visible"}]},
+            ],
+        }
+        out, changed = strip_encrypted_reasoning(body)
+        assert changed is True
+        assert out["input"] == [
+            {"type": "reasoning",
+             "summary": [{"type": "summary_text", "text": "visible"}]},
+        ]
+
+    def test_mixed_history_preserves_non_reasoning_items(self):
+        body = {
+            "model": "openai.gpt-6-sol",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+                {"type": "reasoning",
+                 "summary": [{"type": "summary_text", "text": "kept"}]},
+            ],
+        }
+        out, changed = strip_encrypted_reasoning(body)
+        assert changed is True
+        assert out["input"][0]["type"] == "message"
+        assert out["input"][1] == {
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "kept"}],
+        }
+        assert len(out["input"]) == 2  # opaque-only reasoning dropped
+
+    def test_no_reasoning_items_unchanged(self):
+        body = {"model": "openai.gpt-6-sol", "input": [{"type": "input_text", "text": "hi"}]}
+        out, changed = strip_encrypted_reasoning(body)
+        assert changed is False
+        assert out == body
+
+    def test_non_list_input_unchanged(self):
+        body = {"model": "openai.gpt-6-sol", "input": "hi"}
+        out, changed = strip_encrypted_reasoning(body)
+        assert changed is False
+
+    def test_copy_on_write(self):
+        body = {
+            "model": "openai.gpt-6-sol",
+            "input": [{"type": "reasoning", "encrypted_content": "rsn_secret",
+                       "summary": []}],
+        }
+        original = copy.deepcopy(body)
+        strip_encrypted_reasoning(body)
+        assert body == original  # input never mutated
 
 
 # ---------------------------------------------------------------------------
@@ -894,6 +1011,91 @@ class TestUnsupportedParamFallback:
         assert inst.stream.call_count == 2
         second = json.loads(inst.stream.call_args_list[1].kwargs["content"])
         assert second["reasoning"] == {"effort": "low"}
+        await stack.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Encrypted-reasoning self-heal fallback (cross-model replay)
+# ---------------------------------------------------------------------------
+
+class TestEncryptedReasoningFallback:
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_strips_encrypted_reasoning(self, mock_cls, client):
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, ENCRYPTED_REASONING_400_TEXT),
+            _ok_resp(_responses_body("openai.gpt-6-sol")),
+        ])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-sol",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+            ],
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 2
+        # raw-first: the opaque blob went out on the first attempt…
+        assert _nth_sent(mock_cls, 0)["input"][1]["encrypted_content"] == "rsn_secret"
+        # …and the reasoning item was dropped on the retry.
+        second = _nth_sent(mock_cls, 1)
+        assert [i["type"] for i in second["input"]] == ["message"]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_second_400_is_terminal(self, mock_cls, client):
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, ENCRYPTED_REASONING_400_TEXT),
+            _err_resp(400, ENCRYPTED_REASONING_400_TEXT),
+        ])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-sol",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+            ],
+        })
+        assert resp.status_code == 400
+        assert mock_cls.return_value.post.call_count == 2  # no recursion
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_no_fallback_on_other_errors(self, mock_cls, client):
+        mock_cls.return_value = _sync_inst([_err_resp(400, VARIANT_400_TEXT)])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-sol",
+            "input": [
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+            ],
+        })
+        assert resp.status_code == 400
+        assert mock_cls.return_value.post.call_count == 1
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    async def test_stream_strips_encrypted_reasoning(self, mock_cls):
+        inst = _stream_inst([
+            _stream_resp(400, ENCRYPTED_REASONING_400_TEXT),
+            _stream_resp(200),
+        ])
+        mock_cls.return_value = inst
+        payload = _prepare_request_body({
+            "model": "openai.gpt-6-sol",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+            ],
+        })
+        resp, stack, err = await _open_upstream_stream(
+            "https://example/openai/v1/responses", payload, _auth(), 1, 0.001,
+            request=None, health=None, log_tag="t", timeout=30.0,
+            strip_encrypted_reasoning=True,
+        )
+        assert err is None and resp is not None
+        assert inst.stream.call_count == 2
+        second = json.loads(inst.stream.call_args_list[1].kwargs["content"])
+        assert [i["type"] for i in second["input"]] == ["message"]
         await stack.aclose()
 
 

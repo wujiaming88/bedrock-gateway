@@ -87,6 +87,12 @@ class MantleResponsesProfile:
     exact_variant_signatures: tuple[str, ...] = (
         "invalid 'input': value did not match any expected variant",
     )
+    # Encrypted-reasoning rejection signatures. These trigger the encrypted-
+    # reasoning self-heal (strip opaque blobs minted by a *different* model)
+    # — distinct from the exact-variant projection and never eligible for it.
+    encrypted_reasoning_signatures: tuple[str, ...] = (
+        "invalid encrypted reasoning shape",
+    )
     # Relationship-error signatures. These must NEVER trigger a fallback — they
     # are a post-deserialization failure class whose text differs.
     relationship_signatures: tuple[str, ...] = (
@@ -148,6 +154,33 @@ def is_exact_variant_rejection(status: int, error_text: str | None) -> bool:
     if any(sig in text for sig in profile.relationship_signatures):
         return False
     return any(sig in text for sig in profile.exact_variant_signatures)
+
+
+def is_encrypted_reasoning_rejection(status: int, error_text: str | None) -> bool:
+    """Return True iff this is a mantle encrypted-reasoning 400.
+
+    Only HTTP 400 carrying a declared encrypted-reasoning signature qualifies.
+    This is the cross-model replay failure: an ``encrypted_content`` blob minted
+    by one model is replayed to another, which cannot decrypt it.
+    """
+    if status != 400 or not error_text:
+        return False
+    text = error_text.lower()
+    return any(
+        sig in text
+        for sig in MANTLE_RESPONSES_PROFILE.encrypted_reasoning_signatures
+    )
+
+
+def is_encrypted_reasoning_replayable_surface(transport: str, dialect: str) -> bool:
+    """Return True for the surface that can hit encrypted-reasoning replay.
+
+    Bedrock mints its encrypted reasoning blobs (``rsn_``/``smry_``) per model,
+    so a client that switches models downstream replays a blob the new model
+    cannot decrypt. Only the Bedrock mantle Responses surface produces these
+    blobs — Azure and generic HTTP upstreams mint their own (or none).
+    """
+    return transport == "bedrock" and dialect == "openai-responses"
 
 
 def is_bedrock_gpt_responses_model(transport: str, dialect: str, model: str) -> bool:
@@ -837,6 +870,55 @@ def _merge_tools(existing: Any, lifted: list[Any]) -> list[Any]:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# Encrypted-reasoning self-heal
+# ---------------------------------------------------------------------------
+
+def strip_encrypted_reasoning(body: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Strip ``encrypted_content`` from reasoning items, copy-on-write.
+
+    Cross-model replay of Bedrock's per-model encrypted reasoning (an opaque blob
+    minted by the previous model) is rejected with ``invalid encrypted reasoning
+    shape``. Remove the blob from every ``reasoning`` item in ``input`` so the
+    request becomes replayable: an item that still carries a non-empty plaintext
+    ``summary`` is kept summary-only; an item left with no visible summary is
+    dropped entirely (its reasoning is unrecoverable cross-model). Returns
+    ``(body_copy, changed)``; the input is never mutated.
+    """
+    out = dict(body)
+    changed = False
+    input_value = out.get("input")
+    if not isinstance(input_value, list):
+        return out, changed
+    new_input: list[Any] = []
+    for item in input_value:
+        if isinstance(item, dict) and item.get("type") == "reasoning":
+            new_item, item_changed = _strip_reasoning_encrypted(item)
+            changed = changed or item_changed
+            if new_item is _DROP:
+                continue
+            new_input.append(new_item)
+        else:
+            new_input.append(item)
+    out["input"] = new_input
+    return out, changed
+
+
+def _strip_reasoning_encrypted(item: dict[str, Any]) -> tuple[Any, bool]:
+    """Remove ``encrypted_content`` from one reasoning item; drop if now empty."""
+    if "encrypted_content" not in item:
+        return item, False
+    new_item = dict(item)
+    new_item.pop("encrypted_content", None)
+    # Keep the item only when a non-empty plaintext summary survives. An empty
+    # list is not a summary — the point of encrypted reasoning is that the
+    # plaintext summary is absent — so an opaque-only item must be dropped.
+    summary = new_item.get("summary")
+    if summary and _valid_reasoning_summary(summary):
+        return new_item, True
+    return _DROP, True
+
+
 __all__ = [
     "PROFILE_VERSION",
     "MantleResponsesProfile",
@@ -844,6 +926,8 @@ __all__ = [
     "CompatibilityPolicy",
     "ProjectionResult",
     "is_exact_variant_rejection",
+    "is_encrypted_reasoning_rejection",
+    "is_encrypted_reasoning_replayable_surface",
     "is_bedrock_gpt_responses_model",
     "is_bedrock_gpt5x_responses_model",
     "is_bedrock_mantle_openai_model",
@@ -851,5 +935,6 @@ __all__ = [
     "responses_compat_policy",
     "analyze_history",
     "project_mantle_input",
+    "strip_encrypted_reasoning",
     "normalize_bedrock_gpt5x_responses_request",
 ]

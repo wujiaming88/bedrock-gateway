@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.17] — 2026-09-28
+
+### 修复
+
+- 修复下游**切换模型后**出现 `invalid encrypted reasoning shape` 400 的问题：Bedrock 的加密推理（`encrypted_content` 不透明块，`rsn_`/`smry_` 前缀）按模型铸造，跨模型重放时新模型无法解密即拒绝。网关此前对该签名无自愈，原样透传导致请求失败。现新增一次性自愈（仅 Bedrock mantle Responses 面）：收到该 400 后剥离所有 `reasoning` 项里的 `encrypted_content`，保留仍有非空明文 `summary` 的项、其余（纯不透明项）整体删除，重试一次；同模型对话不受影响（同模型重放本就不会 400，不触发自愈）。代价仅是那一轮丢失不可恢复的跨模型推理上下文。
+
 ## [0.8.16] — 2026-09-28
 
 ### 新增
