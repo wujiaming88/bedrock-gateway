@@ -2,9 +2,10 @@
 OpenAI Chat Completions dialect — verbatim passthrough.
 
 For upstreams that already speak the OpenAI Chat Completions wire format
-(Azure OpenAI, and any Bedrock mantle model exposed via ``/v1/chat/completions``).
-The client body is forwarded untouched except the model id (swapped by the
-server before dispatch); the response and its SSE stream are re-emitted verbatim.
+(Azure OpenAI, and any Bedrock model — mantle or runtime — exposed via
+``/v1/chat/completions``). The client body is forwarded untouched except the
+model id (swapped by the server before dispatch); the response and its SSE
+stream are re-emitted verbatim.
 
 Contrast with :class:`AnthropicMessagesDialect`, which *converts* OpenAI Chat
 into Anthropic Messages. This dialect does no conversion — upstream already
@@ -24,14 +25,14 @@ if TYPE_CHECKING:
 
 
 class ChatPassthroughDialect(Dialect):
-    """OpenAI Chat Completions, verbatim passthrough (Azure / mantle chat)."""
+    """OpenAI Chat Completions, verbatim passthrough (Azure / Bedrock chat)."""
 
     name = "openai-chat"
 
     def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
         # Bare operation, relative to the OpenAI-compat API root. The transport
-        # owns the root prefix (Bedrock mantle adds ``/openai/v1``; Azure's base
-        # already ends in it) — the dialect stays cloud-agnostic.
+        # owns the root prefix (Bedrock adds ``/openai/v1`` for OpenAI dialects;
+        # Azure's base already ends in it) — the dialect stays cloud-agnostic.
         return "/chat/completions"
 
     def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:

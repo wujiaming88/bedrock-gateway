@@ -181,6 +181,13 @@ class TestModelEntryDefaults:
             "cohere-embed-v4",
             "titan-embed-text-v2",
         }
+        # Cross-region inference profiles (Grok 4.7 / Kimi K3) are the one
+        # exception to "OpenAI dialect ⇒ mantle": they ride the runtime host
+        # with an OpenAI dialect. Assert the exact (dialect, endpoint) pair.
+        runtime_openai_models = {
+            "grok-4.7": ("openai-responses", "runtime"),
+            "kimi-k3": ("openai-responses", "runtime"),
+        }
         models = _parse_models(_DEFAULT_MODELS)
         for alias, e in models.items():
             if alias in responses_models:
@@ -195,6 +202,12 @@ class TestModelEntryDefaults:
                 assert e.dialect == "openai-embeddings", alias
                 assert e.transport == "bedrock", alias
                 assert e.endpoint == "runtime", alias
+                continue
+            if alias in runtime_openai_models:
+                dialect, endpoint = runtime_openai_models[alias]
+                assert e.dialect == dialect, alias
+                assert e.endpoint == endpoint, alias
+                assert e.transport == "bedrock", alias
                 continue
             assert e.dialect == "anthropic", alias
             assert e.transport == "bedrock", alias

@@ -34,7 +34,11 @@ that reintroduces the N×M coupling this design removed.
 Boundary rule for URLs: a dialect's `operation_path` returns the **bare
 operation** (`/responses`, `/chat/completions`, `/images/generations`) — never a cloud-specific
 prefix. The **transport** owns the API root: `BedrockTransport` adds
-`/openai/v1` for the mantle endpoint; `AzureTransport` uses whatever the
+`/openai/v1` for the OpenAI dialects (`openai-responses` / `openai-chat` /
+`openai-images`), on **both** the mantle and runtime hosts (Grok 4.7 / Kimi K3
+are runtime-hosted cross-region profiles that still speak the OpenAI API);
+native dialects (`anthropic`, `openai-embeddings`) carry their full
+`/model/{id}/...` path and take no root. `AzureTransport` uses whatever the
 resource `base_url` already ends in. If you find yourself checking
 `entry.transport` inside a dialect, the prefix belongs in the transport instead.
 

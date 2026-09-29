@@ -1,9 +1,10 @@
 """
-OpenAI Responses (on Bedrock ``mantle``) provider — passthrough.
+OpenAI Responses (Bedrock ``mantle`` or ``runtime``) provider — passthrough.
 
-GPT-5.5 on Bedrock is only reachable via the ``bedrock-mantle`` endpoint's
-OpenAI Responses API (``/openai/v1/responses``). The client already speaks
-the native Responses dialect, so this provider is almost an identity map:
+GPT-5.5 on Bedrock is reachable via the ``bedrock-mantle`` endpoint's OpenAI
+Responses API (``/openai/v1/responses``); Grok 4.7 and Kimi K3 reach the same
+wire format via ``bedrock-runtime`` cross-region profiles. The client already
+speaks the native Responses dialect, so this provider is almost an identity map:
 
   * ``render_sync`` returns the upstream JSON verbatim (only ensuring ``model``
     reflects the client-facing alias), and reads ``usage`` for the access log.
@@ -37,8 +38,8 @@ class ResponsesPassthroughDialect(Dialect):
 
     def operation_path(self, entry: "ModelEntry", stream: bool) -> str:
         # Bare operation, relative to the OpenAI-compat API root. The transport
-        # owns the root prefix (Bedrock mantle adds ``/openai/v1``; Azure's base
-        # already ends in it) — the dialect stays cloud-agnostic.
+        # owns the root prefix (Bedrock adds ``/openai/v1`` for OpenAI dialects;
+        # Azure's base already ends in it) — the dialect stays cloud-agnostic.
         return "/responses"
 
     def build_request(self, client_body: dict, entry: "ModelEntry") -> dict:

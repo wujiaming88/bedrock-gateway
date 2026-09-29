@@ -21,19 +21,31 @@ if TYPE_CHECKING:
     from ..config import ModelEntry
 
 
-class BedrockTransport(Transport):
-    """AWS Bedrock. Host + API root depend on the ``endpoint`` hint:
+# OpenAI-compatible dialects whose bare operation (``/responses``, …) lives
+# under the ``/openai/v1`` API root. That root is served by BOTH the mantle
+# host and the runtime host (xAI Grok / Moonshot Kimi cross-region models are
+# exposed via bedrock-runtime's OpenAI-compatible API), so the root is keyed off
+# the *dialect*, not the endpoint hint. Native dialects (``anthropic``,
+# ``openai-embeddings``) carry their full ``/model/...`` path and take no root.
+_OPENAI_ROOT_DIALECTS = frozenset(
+    {"openai-responses", "openai-chat", "openai-images"}
+)
 
-      * ``mantle`` → ``bedrock-mantle.{region}.api.aws`` serving the
-        OpenAI-compatible API under ``/openai/v1`` (Responses / Chat dialects).
-      * ``runtime`` (default) → ``bedrock-runtime.{region}.amazonaws.com`` with
-        Bedrock's native ``/model/{id}/...`` paths (Anthropic dialect, whose
-        ``operation_path`` already carries the full native path).
+
+class BedrockTransport(Transport):
+    """AWS Bedrock. Host comes from the ``endpoint`` hint:
+
+      * ``mantle`` → ``bedrock-mantle.{region}.api.aws`` (OpenAI dialects only)
+      * ``runtime`` (default) → ``bedrock-runtime.{region}.amazonaws.com``, which
+        serves BOTH the native ``/model/{id}/...`` path (Anthropic / embeddings
+        dialects) and the OpenAI-compatible ``/openai/v1`` root (Responses / Chat
+        for xAI and Moonshot cross-region models).
 
     ``operation_path`` from OpenAI-compat dialects is a bare operation
-    (``/responses``); this transport prepends the ``/openai/v1`` root. The
-    Anthropic dialect returns its full native path, which is used as-is.
-    Auth is the gateway global (SigV4 / Bearer), so ``auth_headers`` is None.
+    (``/responses``); this transport prepends the ``/openai/v1`` root for those
+    dialects. The Anthropic / embeddings dialects return their full native path,
+    which is used as-is. Auth is the gateway global (SigV4 / Bearer), so
+    ``auth_headers`` is None.
     """
 
     name = "bedrock"
@@ -43,16 +55,14 @@ class BedrockTransport(Transport):
     ) -> str:
         effective_region = entry.region or region
         if entry.endpoint == "mantle":
+            host = f"https://bedrock-mantle.{effective_region}.api.aws"
+        else:
+            host = f"https://bedrock-runtime.{effective_region}.amazonaws.com"
+        if entry.dialect in _OPENAI_ROOT_DIALECTS:
             # OpenAI-compatible surface: dialect gives a bare op, we add the root.
-            return (
-                f"https://bedrock-mantle.{effective_region}.api.aws/openai/v1"
-                + operation_path
-            )
-        # runtime: native Bedrock path, already complete from the dialect.
-        return (
-            f"https://bedrock-runtime.{effective_region}.amazonaws.com"
-            + operation_path
-        )
+            return host + "/openai/v1" + operation_path
+        # native Bedrock path, already complete from the dialect.
+        return host + operation_path
 
 
 class HttpTransport(Transport):

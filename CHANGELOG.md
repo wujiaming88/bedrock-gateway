@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.20] — 2026-09-29
+
+### 新增
+
+- 接入 xAI Grok 4.7 与 Moonshot AI Kimi K3（Bedrock 跨区域推理配置文件，Geo-US / Global，不支持 in-region）：模型 ID `us.xai.grok-4.7`（500K 上下文 / 128K 输出，`endpoint: runtime` + `openai-responses`）与 `us.moonshotai.kimi-k3`（1M 上下文 / 128K 输出，`endpoint: runtime` + `openai-responses`，默认走 Responses）。这是首个「runtime 端点 + OpenAI 方言」组合，`BedrockTransport` 现将 `/openai/v1` 根按 **方言** 判定（`openai-responses` / `openai-chat` / `openai-images`）而非按端点 hint 判定，因此 mantle 与 runtime 两个主机在 OpenAI 方言下都正确前置 `/openai/v1`，原生方言（`anthropic` / `openai-embeddings`）仍走完整 `/model/{id}/...` 路径不受影响。别名：`grok-4.7` / `grok4.7` / `grok-4-7`；`kimi-k3` / `moonshotai.kimi-k3` / `moonshotai-kimi-k3`。已实测 upstream 返回 HTTP 200；见 README 模型表与 `config.example.yaml`。
+
 ## [0.8.19] — 2026-09-29
 
 ### 变更

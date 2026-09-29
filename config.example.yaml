@@ -215,6 +215,22 @@ models:
     endpoint: mantle
     protocol: openai-responses
     region: us-west-2
+  # Grok 4.7 / Kimi K3 are cross-region inference profiles (Geo-US / Global):
+  # in-region is unsupported, so they ride `endpoint: runtime` with the
+  # OpenAI-compatible /openai/v1 root and a mandatory `us.` model-id prefix.
+  # Both default to the Responses API.
+  grok-4.7:
+    bedrock_id: us.xai.grok-4.7
+    context_length: 500000
+    max_output: 131072
+    endpoint: runtime
+    protocol: openai-responses
+  kimi-k3:
+    bedrock_id: us.moonshotai.kimi-k3
+    context_length: 1000000
+    max_output: 131072
+    endpoint: runtime
+    protocol: openai-responses
 
   # ── OpenAI-compatible Embeddings on Bedrock runtime ──────
   # Same /v1/embeddings endpoint, different adapter profiles. Cohere separates

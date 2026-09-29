@@ -446,6 +446,25 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "protocol": "openai-responses",
         "region": "us-west-2",
     },
+    # Grok 4.7 and Kimi K3 are Bedrock *cross-region* inference profiles
+    # (Geo-US / Global) — in-region is not supported — so they route through
+    # ``endpoint: runtime`` with the OpenAI-compatible ``/openai/v1`` root. The
+    # ``us.`` model-id prefix is mandatory for these inference profiles.
+    "grok-4.7": {
+        "bedrock_id": "us.xai.grok-4.7",
+        "context_length": 500_000,
+        "max_output": 131_072,
+        "endpoint": "runtime",
+        "protocol": "openai-responses",
+    },
+    # ── Moonshot AI (Bedrock runtime, Responses API) ──────────────────
+    "kimi-k3": {
+        "bedrock_id": "us.moonshotai.kimi-k3",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "endpoint": "runtime",
+        "protocol": "openai-responses",
+    },
     # ── Embeddings (Bedrock runtime, native invoke) ────────────────────
     # Cohere embed v4 is a *single* Bedrock model exposed under three gateway
     # aliases. ``-document`` / ``-query`` fix the task by model name (standard
@@ -576,6 +595,13 @@ _MODEL_ALIASES: dict[str, str] = {
     "grok-4-6": "grok-4.6",
     "xai.grok-4.6": "grok-4.6",
     "xai-grok-4.6": "grok-4.6",
+    "grok4.7": "grok-4.7",
+    "grok-4-7": "grok-4.7",
+    "xai.grok-4.7": "grok-4.7",
+    "xai-grok-4.7": "grok-4.7",
+    # Moonshot AI Kimi K3 variations
+    "moonshotai.kimi-k3": "kimi-k3",
+    "moonshotai-kimi-k3": "kimi-k3",
     # Cohere embed v4 (document + query + dynamic profiles)
     # The raw Bedrock id keeps resolving to the fixed document alias so raw-id
     # passthrough never silently becomes the dynamic (input_type-required)
