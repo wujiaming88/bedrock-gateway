@@ -20,6 +20,7 @@ from bedrock_gateway.unsupported_param import (
     UnsupportedParam,
     apply_unsupported_remediation,
     parse_unsupported_param,
+    strip_unsupported_tool,
 )
 
 REASONING_SUMMARY_400 = (
@@ -41,6 +42,15 @@ ARK_VERBOSITY_400_ESCAPED = (
     r'{"error":{"code":"InvalidParameter","message":"json: unknown field \"verbosity\"'
     r' Request id: 021789705923845cb4471f0f910e4739f2e6b993dd0a535411e1c",'
     r'"param":"","type":"BadRequest"}}'
+)
+# Live Grok 4.7 / Kimi K3 rejection of the Responses `web_search` server tool
+# (2026-09-29). The named string is a `body["tools"]` entry type, not a field.
+WEB_SEARCH_TOOL_400 = (
+    "Tool type 'web_search' is not supported for model `xai.grok-4.7`."
+)
+# The same class, with the model/`this model` wording varied and lowercased.
+WEB_SEARCH_TOOL_400_LOWERCASE = (
+    "tool type 'web_search' is not supported for this model"
 )
 
 
@@ -111,6 +121,86 @@ class TestParseUnsupportedParam:
         assert u is not None
         assert u.field_path == "max_tokens"
         assert u.action == "rename"
+
+    def test_tool_type_is_drop_kind_tool(self):
+        u = parse_unsupported_param(WEB_SEARCH_TOOL_400)
+        assert u is not None
+        assert u.kind == "tool"
+        assert u.field_path == "web_search"
+        assert u.action == "drop"
+        assert u.rename_to is None
+
+    def test_tool_type_lowercase_wording_is_drop(self):
+        u = parse_unsupported_param(WEB_SEARCH_TOOL_400_LOWERCASE)
+        assert u is not None
+        assert u.kind == "tool"
+        assert u.field_path == "web_search"
+        assert u.action == "drop"
+
+    def test_field_kind_defaults_to_field(self):
+        # Backward compatibility: a field parsed without an explicit kind still
+        # carries ``kind == "field"``.
+        u = parse_unsupported_param(REASONING_SUMMARY_400)
+        assert u is not None
+        assert u.kind == "field"
+
+
+# ---------------------------------------------------------------------------
+# strip_unsupported_tool
+# ---------------------------------------------------------------------------
+
+class TestStripUnsupportedTool:
+    def test_removes_matching_tool_preserving_others(self):
+        body = {
+            "model": "xai.grok-4.7",
+            "tools": [
+                {"type": "web_search", "external_web_access": True},
+                {"type": "function", "name": "lookup"},
+                {"type": "web_search", "external_web_access": False},
+            ],
+        }
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert changed
+        assert new["tools"] == [{"type": "function", "name": "lookup"}]
+        # copy-on-write: original list untouched
+        assert len(body["tools"]) == 3
+
+    def test_no_matching_tool_no_change(self):
+        body = {"tools": [{"type": "function", "name": "lookup"}]}
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert not changed
+        assert new is body
+
+    def test_empty_tools_list_no_change(self):
+        body = {"tools": []}
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert not changed
+        assert new is body
+
+    def test_missing_tools_key_no_change(self):
+        body = {"input": "hi"}
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert not changed
+        assert new is body
+
+    def test_tools_not_a_list_no_change(self):
+        body = {"tools": "not-a-list"}
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert not changed
+        assert new is body
+
+    def test_non_dict_tool_entries_preserved(self):
+        # A malformed (non-dict) entry is not a match but must be preserved.
+        body = {"tools": ["oops", {"type": "web_search"}]}
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert changed
+        assert new["tools"] == ["oops"]
+
+    def test_all_tools_removed_leaves_empty_list(self):
+        body = {"tools": [{"type": "web_search"}]}
+        new, changed = strip_unsupported_tool(body, "web_search")
+        assert changed
+        assert new["tools"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +302,22 @@ class TestApplyUnsupportedRemediation:
         assert "c" not in new["a"]["b"]
         # original untouched at every level
         assert body["a"]["b"] == {"c": 1, "d": 2}
+
+    def test_tool_kind_dispatches_to_tool_strip(self):
+        body = {
+            "tools": [
+                {"type": "web_search"},
+                {"type": "function", "name": "lookup"},
+            ],
+        }
+        u = UnsupportedParam(
+            field_path="web_search", action="drop", rename_to=None, kind="tool"
+        )
+        new, changed = apply_unsupported_remediation(body, u)
+        assert changed
+        assert new["tools"] == [{"type": "function", "name": "lookup"}]
+        # copy-on-write: original untouched
+        assert len(body["tools"]) == 2
 
 
 # ---------------------------------------------------------------------------

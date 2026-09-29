@@ -575,13 +575,14 @@ def _strip_unsupported_400(
     error_text: str,
     model: str,
 ) -> dict[str, Any] | None:
-    """Strip/rename the exact field an unsupported-field 400 names.
+    """Strip/rename the exact field/tool an unsupported-* 400 names.
 
-    Class A remediation: the upstream declared one field unsupported (either
-    ``Unsupported parameter: 'X'`` or ``json: unknown field "X"``), so drop (or
-    losslessly rename) it and retry. Returns the new body to retry, else None when
-    there is nothing parseable or nothing changed. Logs a redacted decision record
-    — the field path and action only, never the field's value.
+    Class A remediation: the upstream declared one field or tool unsupported
+    (``Unsupported parameter: 'X'``, ``json: unknown field "X"``, or ``Tool type
+    'X' is not supported``), so drop (or losslessly rename) it and retry. Returns
+    the new body to retry, else None when there is nothing parseable or nothing
+    changed. Logs a redacted decision record — the kind, field/tool path and
+    action only, never the field's value.
     """
     if body is None or not isinstance(body, dict):
         return None
@@ -591,16 +592,17 @@ def _strip_unsupported_400(
     new_body, changed = apply_unsupported_remediation(body, unsupported)
     if not changed:
         logger.warning(
-            "UNSUPPORTED-PARAM model=%s field=%s action=%s noop",
-            model, unsupported.field_path, unsupported.action,
+            "UNSUPPORTED-PARAM model=%s kind=%s field=%s action=%s noop",
+            model, unsupported.kind, unsupported.field_path, unsupported.action,
         )
         return None
-    # Remember the lesson so later requests pre-strip this field before sending,
-    # instead of paying the same 400 round-trip every time. Entries expire (24h).
+    # Remember the lesson so later requests pre-strip this field/tool before
+    # sending, instead of paying the same 400 round-trip every time. Entries
+    # expire (24h).
     _LEARNED_UNSUPPORTED.record(model, unsupported)
     logger.warning(
-        "UNSUPPORTED-PARAM model=%s field=%s action=%s",
-        model, unsupported.field_path, unsupported.action,
+        "UNSUPPORTED-PARAM model=%s kind=%s field=%s action=%s",
+        model, unsupported.kind, unsupported.field_path, unsupported.action,
     )
     return new_body
 
@@ -1993,10 +1995,11 @@ async def _handle_sync(
                 attempt += 1
                 continue
 
-            # Class A fallback: the upstream named one field it does not support.
-            # Strip/rename it and retry, bounded, so a chain of unsupported fields
-            # converges instead of looping. Armed only for Bedrock mantle OpenAI
-            # surface (Responses + Chat); the exact field is parsed from the 400.
+            # Class A fallback: the upstream named one field/tool it does not
+            # support. Strip/rename it and retry, bounded, so a chain of
+            # unsupported fields/tools converges instead of looping. Armed only
+            # for the OpenAI-compatible surface (Responses + Chat); the exact
+            # field/tool is parsed from the 400.
             if (
                 strip_unsupported
                 and unsupported_attempts < MAX_UNSUPPORTED_STRIPS
@@ -2424,10 +2427,10 @@ async def _open_upstream_stream(
             attempt += 1
             continue
 
-        # Class A fallback: the upstream named one field it does not support.
+        # Class A fallback: the upstream named one field/tool it does not support.
         # Strip/rename it and retry, bounded, before any client SSE byte is
-        # emitted. Armed only for Bedrock mantle OpenAI surface (Responses +
-        # Chat); the exact field is parsed from the 400 body.
+        # emitted. Armed only for the OpenAI-compatible surface (Responses +
+        # Chat); the exact field/tool is parsed from the 400 body.
         if (
             strip_unsupported
             and unsupported_attempts < MAX_UNSUPPORTED_STRIPS

@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.21] — 2026-09-29
+
+### 修复
+
+- 修复 Grok 4.7 / Kimi K3 拒绝 Responses `web_search` 工具的问题：上游返回 `Tool type 'web_search' is not supported for model ...`，这是一类**新的** 400 签名（点名的不是字段、而是 `body["tools"]` 里的工具类型），既有 Class A 自愈（只认 `Unsupported parameter: 'X'` / `json: unknown field "X"`）不识别、原样透传失败。现将 Class A 通用化为按 `kind` 分派：`"field"` 照旧删/改字段，`"tool"` 删除所有 `{"type": X}` 工具项——raw-first 不变（首次仍逐字透传，仅真 400 后重试一次删除）、有界（`MAX_UNSUPPORTED_STRIPS=3`）、且被学习缓存记忆（后续请求预剥离，不再每次吃 400）。Anthropic Messages 路径不受影响（`/v1/messages` 的 `web_search_20250305` 仍原样报错）。
+
 ## [0.8.20] — 2026-09-29
 
 ### 新增

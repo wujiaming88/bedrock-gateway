@@ -945,6 +945,9 @@ REASONING_SUMMARY_400 = (
     "'openai.gpt-6-astra' model."
 )
 MAX_TOKENS_400 = "Unsupported parameter: 'max_tokens' is not supported with this model."
+WEB_SEARCH_TOOL_400 = (
+    "Tool type 'web_search' is not supported for model `xai.grok-4.7`."
+)
 
 
 class TestUnsupportedParamFallback:
@@ -1034,6 +1037,60 @@ class TestUnsupportedParamFallback:
         assert inst.stream.call_count == 2
         second = json.loads(inst.stream.call_args_list[1].kwargs["content"])
         assert second["reasoning"] == {"effort": "low"}
+        await stack.aclose()
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_strips_web_search_tool(self, mock_cls, client):
+        # Grok 4.7 rejects the Responses `web_search` server tool with a distinct
+        # tool-type signature (not `Unsupported parameter`). The named string is a
+        # `body["tools"]` entry, so the web_search tool is dropped while sibling
+        # function tools survive.
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, WEB_SEARCH_TOOL_400),
+            _ok_resp(_responses_body("xai.grok-4.7")),
+        ])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "grok-4.7",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "tools": [
+                {"type": "web_search", "external_web_access": True},
+                {"type": "function", "name": "lookup"},
+            ],
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 2
+        # raw-first: the web_search tool went out on the first attempt…
+        assert [t["type"] for t in _nth_sent(mock_cls, 0)["tools"]] == [
+            "web_search", "function",
+        ]
+        # …and only the web_search tool was dropped on the retry.
+        second = _nth_sent(mock_cls, 1)
+        assert [t["type"] for t in second["tools"]] == ["function"]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    async def test_stream_strips_web_search_tool(self, mock_cls):
+        inst = _stream_inst([
+            _stream_resp(400, WEB_SEARCH_TOOL_400),
+            _stream_resp(200),
+        ])
+        mock_cls.return_value = inst
+        payload = _prepare_request_body({
+            "model": "us.xai.grok-4.7",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "tools": [
+                {"type": "web_search", "external_web_access": True},
+                {"type": "function", "name": "lookup"},
+            ],
+        })
+        resp, stack, err = await _open_upstream_stream(
+            "https://example/openai/v1/responses", payload, _auth(), 1, 0.001,
+            request=None, health=None, log_tag="t", timeout=30.0,
+            strip_unsupported=True,
+        )
+        assert err is None and resp is not None
+        assert inst.stream.call_count == 2
+        second = json.loads(inst.stream.call_args_list[1].kwargs["content"])
+        assert [t["type"] for t in second["tools"]] == ["function"]
         await stack.aclose()
 
 
@@ -1223,6 +1280,30 @@ class TestLearnedUnsupportedPrestrip:
         # The preflight was handed a body with the learned field already gone.
         payload = mock_open.call_args.args[1]
         assert payload.log_body["reasoning"] == {"effort": "low"}
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_prestrips_learned_tool(self, mock_cls, client):
+        # A learned tool-type lesson is applied before the first attempt, so the
+        # web_search tool is dropped and the request succeeds in a single call.
+        # The cache is keyed by the *upstream* model id (bedrock_id), which for
+        # grok-4.7 is ``us.xai.grok-4.7``.
+        _LEARNED_UNSUPPORTED.record(
+            "us.xai.grok-4.7",
+            UnsupportedParam("web_search", "drop", None, kind="tool"),
+        )
+        mock_cls.return_value = _sync_inst([_ok_resp(_responses_body("xai.grok-4.7"))])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "grok-4.7",
+            "input": [{"type": "input_text", "text": "hi"}],
+            "tools": [
+                {"type": "web_search", "external_web_access": True},
+                {"type": "function", "name": "lookup"},
+            ],
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 1
+        sent = _nth_sent(mock_cls, 0)
+        assert [t["type"] for t in sent["tools"]] == ["function"]
 
 
 # ---------------------------------------------------------------------------

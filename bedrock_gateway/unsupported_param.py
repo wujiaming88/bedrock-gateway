@@ -1,5 +1,5 @@
 """
-Pure, generic remediation for upstream "unsupported field" 400s.
+Pure, generic remediation for upstream "unsupported field/tool" 400s.
 
 This is the single source of truth for **Class A** divergence: a model's
 OpenAI-compatible validator rejects a whole field it does not implement, naming
@@ -23,10 +23,18 @@ it precisely in the error text. Two upstream signatures are recognised:
   Here the error names just the leaf, not its parent, so remediation must locate
   the key by a depth-first search rather than a fixed dotted path.
 
-Because the upstream names the exact field it rejects, removing (or, for a small
-lossless rename table, renaming) that field is inherently safe: the request was
-already going to 400, and a field the model does not implement cannot carry
-semantics for it. This module is deliberately **pure** — no I/O, no mutable
+* Tool-type rejection — the model names a tool *type* it does not implement, e.g. ::
+
+      Tool type 'web_search' is not supported for model `xai.grok-4.7`.
+
+  (Grok 4.7 / Kimi K3 reject the Responses ``web_search`` server tool this way.)
+  Here the named thing is an entry in ``body["tools"]``, not a field, so
+  remediation drops every ``{"type": "web_search"}`` tool rather than a field.
+
+Because the upstream names the exact field/tool it rejects, removing (or, for a
+small lossless rename table, renaming) that field is inherently safe: the request
+was already going to 400, and a field/tool the model does not implement cannot
+carry semantics for it. This module is deliberately **pure** — no I/O, no mutable
 global state, no logging of request values — mirroring
 :mod:`responses_compatibility` (which handles **Class B**, ``Invalid 'input'``
 shape divergence).
@@ -57,45 +65,65 @@ _UNSUPPORTED_PARAM_RE = re.compile(r"Unsupported parameter:\s*'([^']+)'", re.IGN
 # backslash-escaped (raw ``resp.text``); accept both.
 _UNKNOWN_FIELD_RE = re.compile(r'json:\s*unknown field\s+\\?"([^"\\]+)\\?"', re.IGNORECASE)
 
+# Tool-type rejection (Grok / Kimi K3 Responses): ``Tool type 'web_search' is not
+# supported for model ...``. The named string is a ``body["tools"]`` entry type,
+# not a field. Matches regardless of the surrounding model/`this model` wording.
+_UNSUPPORTED_TOOL_RE = re.compile(r"tool type\s+'([^']+)'\s+is not supported", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class UnsupportedParam:
-    """A single field the upstream named as unsupported.
+    """A single thing the upstream named as unsupported.
 
-    ``field_path`` is the path into the request body — either the full dotted
-    path (``reasoning.summary``, from Bedrock mantle) or a bare leaf key
-    (``summary``, from Go's ``unknown field`` error). ``action`` is ``"drop"``
-    or ``"rename"``; ``rename_to`` is the replacement leaf key for a rename,
-    else ``None``.
+    ``kind`` discriminates the remediation shape:
+
+    * ``"field"`` — a field the validator rejects. ``field_path`` is the path
+      into the request body — either the full dotted path (``reasoning.summary``,
+      from Bedrock mantle) or a bare leaf key (``summary``, from Go's ``unknown
+      field`` error). ``action`` is ``"drop"`` or ``"rename"``; ``rename_to`` is
+      the replacement leaf key for a rename, else ``None``.
+    * ``"tool"`` — a tool *type* the model rejects (``Tool type 'web_search' is
+      not supported``). ``field_path`` carries the tool type; ``action`` is
+      always ``"drop"`` and ``rename_to`` is ``None``. Remediation removes every
+      ``{"type": tool_type}`` entry from ``body["tools"]``.
     """
 
     field_path: str
     action: str
     rename_to: str | None
+    kind: str = "field"
 
 
 def parse_unsupported_param(error_text: str | None) -> UnsupportedParam | None:
-    """Parse an upstream 400 for the field it declared unsupported.
+    """Parse an upstream 400 for the field/tool it declared unsupported.
 
-    Recognises the Bedrock mantle ``Unsupported parameter: 'X'`` signature and
-    the generic-HTTP ``json: unknown field "X"`` signature, choosing ``rename``
-    when ``X`` is in :data:`_RENAMES` and ``drop`` otherwise. Returns ``None``
-    for anything else — non-400 text, the ``Invalid 'input'`` variant rejection,
-    relationship errors, or no match — so callers only ever act on a precisely
-    named field.
+    Recognises the Bedrock mantle ``Unsupported parameter: 'X'`` signature, the
+    generic-HTTP ``json: unknown field "X"`` signature, and the tool-type
+    ``Tool type 'X' is not supported`` signature, choosing ``rename`` when a
+    field ``X`` is in :data:`_RENAMES` and ``drop`` otherwise (a tool type is
+    always ``drop``). Returns ``None`` for anything else — non-400 text, the
+    ``Invalid 'input'`` variant rejection, relationship errors, or no match — so
+    callers only ever act on a precisely named field/tool.
     """
     if not error_text:
         return None
     match = _UNSUPPORTED_PARAM_RE.search(error_text)
     if match is None:
         match = _UNKNOWN_FIELD_RE.search(error_text)
-    if match is None:
-        return None
-    field_path = match.group(1)
-    rename_to = _RENAMES.get(field_path)
-    if rename_to is not None:
-        return UnsupportedParam(field_path=field_path, action="rename", rename_to=rename_to)
-    return UnsupportedParam(field_path=field_path, action="drop", rename_to=None)
+    if match is not None:
+        field_path = match.group(1)
+        rename_to = _RENAMES.get(field_path)
+        if rename_to is not None:
+            return UnsupportedParam(
+                field_path=field_path, action="rename", rename_to=rename_to
+            )
+        return UnsupportedParam(field_path=field_path, action="drop", rename_to=None)
+    tool_match = _UNSUPPORTED_TOOL_RE.search(error_text)
+    if tool_match is not None:
+        return UnsupportedParam(
+            field_path=tool_match.group(1), action="drop", rename_to=None, kind="tool"
+        )
+    return None
 
 
 def _mutate_leaf(node: dict, leaf: str, action: str, rename_to: str | None) -> None:
@@ -156,26 +184,53 @@ def _apply_leaf(
     return body, False
 
 
-def apply_unsupported_remediation(
-    body: dict, unsupported: UnsupportedParam
-) -> tuple[dict, bool]:
-    """Drop or rename the named field in a copy of ``body``.
+def strip_unsupported_tool(body: dict, tool_type: str) -> tuple[dict, bool]:
+    """Remove every ``{"type": tool_type}`` entry from ``body["tools"]``.
 
-    Copy-on-write, so the original body is never mutated. A dotted
-    ``field_path`` (``reasoning.summary``) is resolved exactly; a bare leaf key
-    (``summary``) is located by a depth-first search, which is how generic-HTTP
-    ``unknown field`` errors arrive. ``drop`` removes the terminal key; ``rename``
-    moves its value to ``rename_to`` — unless ``rename_to`` is already present,
-    in which case the source key is dropped instead (the client already expressed
-    the intent in the newer name, and overwriting it would silently discard the
-    client's value).
-
-    Returns ``(new_body, changed)``. ``changed`` is ``False`` when the field is
-    not present anywhere, meaning there is nothing safe to strip; the caller must
-    then surface the original error unchanged.
+    Copy-on-write, so the original body is never mutated. Returns ``(new_body,
+    changed)``; ``changed`` is ``False`` when there is no matching tool (nothing
+    safe to strip), leaving the caller to surface the original error unchanged.
     """
     if not isinstance(body, dict):
         return body, False
+    tools = body.get("tools")
+    if not isinstance(tools, list):
+        return body, False
+    kept = [
+        tool
+        for tool in tools
+        if not (isinstance(tool, dict) and tool.get("type") == tool_type)
+    ]
+    if len(kept) == len(tools):
+        return body, False
+    out = dict(body)
+    out["tools"] = kept
+    return out, True
+
+
+def apply_unsupported_remediation(
+    body: dict, unsupported: UnsupportedParam
+) -> tuple[dict, bool]:
+    """Drop or rename the named field/tool in a copy of ``body``.
+
+    Copy-on-write, so the original body is never mutated. A ``"tool"`` kind drops
+    every matching ``body["tools"]`` entry (see :func:`strip_unsupported_tool`);
+    a ``"field"`` kind drops/renames a field. For fields, a dotted ``field_path``
+    (``reasoning.summary``) is resolved exactly; a bare leaf key (``summary``) is
+    located by a depth-first search, which is how generic-HTTP ``unknown field``
+    errors arrive. ``drop`` removes the terminal key; ``rename`` moves its value
+    to ``rename_to`` — unless ``rename_to`` is already present, in which case the
+    source key is dropped instead (the client already expressed the intent in the
+    newer name, and overwriting it would silently discard the client's value).
+
+    Returns ``(new_body, changed)``. ``changed`` is ``False`` when the field/tool
+    is not present anywhere, meaning there is nothing safe to strip; the caller
+    must then surface the original error unchanged.
+    """
+    if not isinstance(body, dict):
+        return body, False
+    if unsupported.kind == "tool":
+        return strip_unsupported_tool(body, unsupported.field_path)
     parts = unsupported.field_path.split(".")
     if len(parts) == 1:
         return _apply_leaf(
@@ -189,4 +244,5 @@ __all__ = [
     "UnsupportedParam",
     "parse_unsupported_param",
     "apply_unsupported_remediation",
+    "strip_unsupported_tool",
 ]
