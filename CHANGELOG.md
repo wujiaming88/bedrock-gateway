@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.19] — 2026-09-29
+
+### 变更
+
+- 全局单次上游尝试超时默认由 `120s` 提高到 `300s`（`retry.timeout`，env `BEDROCK_TIMEOUT`）。新增 per-model `timeout` 覆盖：内置 dense mantle 模型（`gpt-5.5` / `gpt-5.6-*` / `gpt-6-*`）pin `600s`——其预填充随上下文超线性增长（512K≈120s、1M≈280s TTFT），MoE「flash」模型（Grok 等）保持全局默认；自定义模型可在 `models:` 条目里设 `timeout:`，`None` 则继承全局默认。见 README 与 `config.example.yaml`。
+
+### 修复
+
+- 修正重试次数上报偏多：读超时（`ReadTimeout`/`WriteTimeout`/`PoolTimeout`）快速失败路径此前把实际只发 1 次的请求误报为 `max_retries`（如「all 3 attempts exhausted」实际仅 1 次），现按真实上游请求数上报（`1 of N attempts` / `N of N attempts`）。
+
 ## [0.8.18] — 2026-09-28
 
 ### 修复

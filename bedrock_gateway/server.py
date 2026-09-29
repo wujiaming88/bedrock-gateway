@@ -648,6 +648,18 @@ def _retry_deadline(timeout: float, max_retries: int) -> float:
     return time.monotonic() + timeout * _RETRY_BUDGET_FACTOR * max(1, max_retries)
 
 
+def _entry_timeout(entry: ModelEntry | None, default: float) -> float:
+    """Per-model per-attempt timeout override, else the gateway-wide default.
+
+    ``ModelEntry.timeout`` is a model-level knob for upstreams whose prefill
+    scales super-linearly with context (dense mantle models); ``None`` inherits
+    the gateway-wide ``retry.timeout``.
+    """
+    if entry is not None and entry.timeout is not None:
+        return entry.timeout
+    return default
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -1757,6 +1769,7 @@ async def _handle_raw_passthrough(
         headers[key] = value
     headers["Content-Type"] = payload.content_type
 
+    timeout = _entry_timeout(entry, timeout)
     retryable = {429, 503, 529}
     deadline = _retry_deadline(timeout, max_retries)
 
@@ -1908,9 +1921,11 @@ async def _handle_sync(
     prestripped = _prestrip_learned_unsupported(payload.log_body, model, strip_unsupported)
     if prestripped is not None:
         payload = _prepare_request_body(prestripped)
+    timeout = _entry_timeout(entry, timeout)
     last_error: str | None = None
     deadline = _retry_deadline(timeout, max_retries)
     attempt = 0
+    attempts_made = 0
     compat_attempted = False
     unsupported_attempts = 0
     encrypted_reasoning_attempted = False
@@ -1926,6 +1941,7 @@ async def _handle_sync(
                 attempt + 1, max_retries,
             )
             break
+        attempts_made += 1
         try:
             # Transport-specific headers (e.g. Azure api-key) override the
             # gateway's global auth; None → use the global SigV4/Bearer path.
@@ -2068,12 +2084,16 @@ async def _handle_sync(
             return _oai_error(500, str(exc))
 
     logger.error(
-        "[UP] FAILED model=%s all %d retries exhausted: %s",
+        "[UP] FAILED model=%s attempts=%d/%d: %s",
         model,
+        attempts_made,
         max_retries,
         last_error,
     )
-    return _oai_error(502, f"All {max_retries} retries failed: {last_error}")
+    return _oai_error(
+        502,
+        f"Upstream failed after {attempts_made} of {max_retries} attempts: {last_error}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2121,6 +2141,7 @@ async def _embeddings_attempt(
     enforces all-or-nothing across the fan-out.
     """
     last_error: str | None = None
+    attempts_made = 0
     for attempt in range(max_retries):
         if attempt > 0 and time.monotonic() >= deadline:
             logger.warning(
@@ -2128,6 +2149,7 @@ async def _embeddings_attempt(
                 model, index, attempt + 1, max_retries,
             )
             break
+        attempts_made += 1
         try:
             headers = _payload_headers(transport, entry, auth, url, payload)
             async with _track_upstream(health), httpx.AsyncClient(
@@ -2188,7 +2210,8 @@ async def _embeddings_attempt(
 
     raise _EmbeddingsUpstreamError(
         502,
-        f"All {max_retries} retries failed: {last_error or 'upstream unavailable'}",
+        f"Upstream failed after {attempts_made} of {max_retries} attempts: "
+        f"{last_error or 'upstream unavailable'}",
     )
 
 
@@ -2218,6 +2241,7 @@ async def _handle_embeddings(
     """
     url = transport.build_url(dialect.operation_path(entry, False), region, entry)
     payloads = [_prepare_request_body(body) for body in native_bodies]
+    timeout = _entry_timeout(entry, timeout)
     deadline = _retry_deadline(timeout, max_retries)
     semaphore = asyncio.Semaphore(_EMBEDDINGS_MAX_CONCURRENCY)
 
@@ -2304,6 +2328,7 @@ async def _open_upstream_stream(
     last_message = "upstream unavailable"
     deadline = _retry_deadline(timeout, max_retries)
     attempt = 0
+    attempts_made = 0
     compat_attempted = False
     unsupported_attempts = 0
     encrypted_reasoning_attempted = False
@@ -2319,6 +2344,7 @@ async def _open_upstream_stream(
                 log_tag, attempt + 1, max_retries,
             )
             break
+        attempts_made += 1
         stack = AsyncExitStack()
         # Transport-specific headers (Azure api-key) override the global auth.
         headers = extra_headers or auth.get_headers(
@@ -2465,13 +2491,16 @@ async def _open_upstream_stream(
         }
 
     logger.error(
-        "[UP] STREAM-OPEN failed [%s] all %d attempts exhausted: %s",
-        log_tag, max_retries, last_message,
+        "[UP] STREAM-OPEN failed [%s] attempts=%d/%d: %s",
+        log_tag, attempts_made, max_retries, last_message,
     )
     return None, None, {
         "status": last_status,
         "type": parse_bedrock_error(last_status, "")["type"],
-        "message": f"All {max_retries} attempts failed: {last_message}",
+        "message": (
+            f"Upstream failed after {attempts_made} of {max_retries} attempts: "
+            f"{last_message}"
+        ),
     }
 
 
@@ -2506,6 +2535,7 @@ async def _handle_stream(
     prestripped = _prestrip_learned_unsupported(payload.log_body, model, strip_unsupported)
     if prestripped is not None:
         payload = _prepare_request_body(prestripped)
+    timeout = _entry_timeout(entry, timeout)
     msg_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     # Preflight: open the upstream stream and check the status BEFORE we commit
@@ -2565,6 +2595,7 @@ async def _handle_messages_sync(
     body_bytes = json.dumps(bedrock_body).encode()
     last_error: str | None = None
     deadline = _retry_deadline(timeout, max_retries)
+    attempts_made = 0
 
     for attempt in range(max_retries):
         if attempt > 0 and time.monotonic() >= deadline:  # P3: total budget
@@ -2573,6 +2604,7 @@ async def _handle_messages_sync(
                 model, attempt + 1, max_retries,
             )
             break
+        attempts_made += 1
         try:
             headers = auth.get_headers(method="POST", url=url, body=body_bytes)
             started = time.monotonic()
@@ -2660,15 +2692,18 @@ async def _handle_messages_sync(
             )
 
     logger.error(
-        "[UP] FAILED [messages] model=%s all %d retries exhausted: %s",
+        "[UP] FAILED [messages] model=%s attempts=%d/%d: %s",
         model,
+        attempts_made,
         max_retries,
         last_error,
     )
     return JSONResponse(
         status_code=502,
         content=format_anthropic_error(
-            502, f"All {max_retries} retries failed: {last_error}"
+            502,
+            f"Upstream failed after {attempts_made} of {max_retries} attempts: "
+            f"{last_error}",
         ),
     )
 
@@ -2929,6 +2964,7 @@ async def _handle_messages_via_responses_stream(
     url = transport.build_url(dialect.operation_path(entry, True), region, entry)
     body_bytes = json.dumps(responses_body).encode()
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    timeout = _entry_timeout(entry, timeout)
 
     # Same pre-stream preflight as every streaming path: a failure before any
     # bytes flow is returned as a real HTTP error (Anthropic-shaped here).

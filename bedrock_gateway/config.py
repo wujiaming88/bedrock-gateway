@@ -238,6 +238,11 @@ class ModelEntry:
     bedrock_id: str
     context_length: int = 200000
     max_output: int = 64000
+    # Per-model override of the gateway-wide ``retry.timeout`` (seconds per
+    # upstream attempt). ``None`` → inherit the global default. Dense mantle
+    # models raise this because their prefill scales super-linearly with
+    # context and can exceed 120–300s near 1M tokens.
+    timeout: float | None = None
     endpoint: str = "runtime"     # transport hint: "runtime" | "mantle"
     region: str = ""               # Bedrock region override; empty inherits global
     protocol: str = "anthropic"   # LEGACY — mapped to transport/dialect
@@ -322,6 +327,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         # when a client omits max_tokens), not enforced by the gateway.
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
@@ -333,6 +339,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-5.6-sol",
         "context_length": 1_000_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
@@ -340,6 +347,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-5.6-terra",
         "context_length": 1_000_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
@@ -347,6 +355,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-5.6-luna",
         "context_length": 1_000_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
     },
@@ -358,6 +367,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-6-astra",
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
         "region": "us-west-2",
@@ -369,6 +379,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-6-astra",
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "dialect": "openai-chat",
         "region": "us-west-2",
@@ -382,6 +393,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-6-sol",
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
         "region": "us-east-1",
@@ -390,6 +402,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-6-luna",
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "protocol": "openai-responses",
         "region": "us-east-1",
@@ -401,6 +414,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-6-sol",
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "dialect": "openai-chat",
         "region": "us-east-1",
@@ -409,6 +423,7 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "bedrock_id": "openai.gpt-6-luna",
         "context_length": 1_050_000,
         "max_output": 128_000,
+        "timeout": 600,
         "endpoint": "mantle",
         "dialect": "openai-chat",
         "region": "us-east-1",
@@ -654,6 +669,7 @@ def _build_entry(
     endpoint = info.get("endpoint", "runtime")
     protocol = info.get("protocol", "anthropic")
     transport, dialect = _resolve_axes(info, protocol)
+    timeout_raw = info.get("timeout")
     entry = ModelEntry(
         bedrock_id=info.get("bedrock_id", name),
         context_length=int(info.get("context_length", 200_000)),
@@ -664,6 +680,7 @@ def _build_entry(
         transport=transport,
         dialect=dialect,
         embedding_profile=str(info.get("embedding_profile", "")),
+        timeout=float(timeout_raw) if timeout_raw is not None else None,
     )
     if entry.dialect == "openai-embeddings" and not entry.embedding_profile:
         raise ValueError(

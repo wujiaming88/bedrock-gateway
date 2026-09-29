@@ -76,6 +76,7 @@
 - `gpt-6-astra` 在 Bedrock mantle 上**仅 `us-west-2`（Oregon）** 提供；内置条目通过 per-model `region` 覆盖自动路由（同 Grok 4.6），推荐使用注册 alias 而非原始 ID（raw ID 没有这份区域元数据）。别名：`gpt-6-astra` / `gpt-6astra` / `gpt6-astra` / `openai.gpt-6-astra` / `openai-gpt-6-astra`。
 - `gpt-6-astra-chat` 是同一模型的 Chat Completions 别名（`openai-chat` 透传）。该上游 **拒绝 `max_tokens`**，网关在收到该 400 后会自动把 `max_tokens` 改名为 `max_completion_tokens` 并重试，因此标准 OpenAI chat 客户端无需改动。
 - `gpt-6-sol` / `gpt-6-luna` 在 Bedrock mantle 上**仅 `us-east-1`（N. Virginia）** 提供（与 `gpt-6-astra` 的 `us-west-2` 相反）；内置条目通过 per-model `region` 覆盖自动路由，推荐使用注册 alias 而非原始 ID。别名各为 `gpt-6-sol` / `gpt-6sol` / `gpt6-sol` / `openai.gpt-6-sol` / `openai-gpt-6-sol`（Luna 同理）。Chat 变体 `gpt-6-sol-chat` / `gpt-6-luna-chat` 与 `gpt-6-astra-chat` 一样，在收到上游 400 后自动把 `max_tokens` 改名为 `max_completion_tokens`。
+- **超时**：网关全局单次上游尝试超时默认 `300s`（`retry.timeout`，env `BEDROCK_TIMEOUT`）。密集（dense）mantle 模型（`gpt-5.5` / `gpt-5.6-*` / `gpt-6-*`）预填充随上下文超线性增长，内置条目已通过 per-model `timeout: 600` 覆盖为 `600s`；自定义模型可在其 `models:` 条目里设 `timeout:` 单独覆盖（`None` 则继承全局默认）。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 
@@ -259,6 +260,7 @@ logging:
 retry:
   max_retries: 3                          # 总尝试次数
   base_delay: 1.0                         # 秒；实际延迟 = base_delay * 2^attempt
+  timeout: 300                            # 单次上游尝试超时（秒）；慢模型可提高
 
 dashboard:
   enabled: true                           # false 则完全不挂载 dashboard 路由
@@ -309,6 +311,7 @@ dashboard:
 | `BEDROCK_LOG_LEVEL` | `info` | `server.log_level` |
 | `BEDROCK_AUTH_MODE` | `bearer_token` | `auth.mode` |
 | `BEDROCK_MAX_RETRIES` | `3` | `retry.max_retries` |
+| `BEDROCK_TIMEOUT` | `300` | `retry.timeout` |
 
 ---
 
@@ -874,6 +877,7 @@ logging:
 retry:
   max_retries: 3
   base_delay: 1.0
+  timeout: 300
 dashboard:
   enabled: true
   api_key: ${BEDROCK_DASHBOARD_KEY}

@@ -254,6 +254,41 @@ class TestModelParsing:
         assert set(cfg.models) == {"only-model"}
         assert "claude-haiku" not in cfg.models
 
+    def test_custom_model_timeout_override(self, tmp_path: Path):
+        """A per-model ``timeout`` overrides the gateway-wide retry.timeout."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "models:\n"
+            "  slow-model:\n"
+            "    bedrock_id: us.x.slow\n"
+            "    timeout: 600\n"
+        )
+        cfg = load_config(config_file)
+        assert cfg.models["slow-model"].timeout == 600.0
+
+    def test_model_timeout_defaults_to_none(self, tmp_path: Path):
+        """Omitting ``timeout`` leaves it None (inherit the global default)."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "models:\n"
+            "  fast-model:\n"
+            "    bedrock_id: us.x.fast\n"
+        )
+        cfg = load_config(config_file)
+        assert cfg.models["fast-model"].timeout is None
+
+    def test_dense_default_models_pin_600s_timeout(self, tmp_path: Path):
+        """Dense mantle models pin 600s; MoE/flash models keep the global default."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("models: {}\n")
+        cfg = load_config(config_file)
+        assert cfg.models["gpt-5.6-sol"].timeout == 600.0
+        assert cfg.models["gpt-5.5"].timeout == 600.0
+        assert cfg.models["gpt-6-astra"].timeout == 600.0
+        # MoE and non-mantle models stay at the gateway-wide default (None here).
+        assert cfg.models["grok-4.3"].timeout is None
+        assert cfg.models["claude-haiku"].timeout is None
+
 
 class TestAuthConfig:
     """AuthConfig post-init env fallback."""

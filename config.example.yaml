@@ -44,7 +44,8 @@ retry:
   max_retries: 3
   base_delay: 1.0   # seconds, exponential backoff: delay * 2^attempt
   timeout: 300      # seconds per upstream attempt (connect + read); raise for
-                    # slow reasoning models, lower to fail fast. Env: BEDROCK_TIMEOUT
+                    # slow reasoning models, lower to fail fast. Env: BEDROCK_TIMEOUT.
+                    # Per-model override: set `timeout:` on a model entry below.
 
 # ─── Dashboard ────────────────────────────────────────────
 # Observability UI at /dashboard/ and the /api/metrics/* JSON API.
@@ -107,6 +108,7 @@ models:
     bedrock_id: openai.gpt-5.5
     context_length: 1050000       # OpenAI official spec (Bedrock card lists 272K)
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle              # runtime (default) | mantle
     protocol: openai-responses    # anthropic (default) | openai-responses
 
@@ -118,18 +120,21 @@ models:
     bedrock_id: openai.gpt-5.6-sol
     context_length: 1000000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     protocol: openai-responses
   gpt-5.6-terra:
     bedrock_id: openai.gpt-5.6-terra
     context_length: 1000000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     protocol: openai-responses
   gpt-5.6-luna:
     bedrock_id: openai.gpt-5.6-luna
     context_length: 1000000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     protocol: openai-responses
 
@@ -140,6 +145,7 @@ models:
     bedrock_id: openai.gpt-6-astra
     context_length: 1050000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     protocol: openai-responses
     region: us-west-2
@@ -150,6 +156,7 @@ models:
     bedrock_id: openai.gpt-6-astra
     context_length: 1050000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     dialect: openai-chat
     region: us-west-2
@@ -162,6 +169,7 @@ models:
     bedrock_id: openai.gpt-6-sol
     context_length: 1050000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     protocol: openai-responses
     region: us-east-1
@@ -169,6 +177,7 @@ models:
     bedrock_id: openai.gpt-6-luna
     context_length: 1050000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     protocol: openai-responses
     region: us-east-1
@@ -176,6 +185,7 @@ models:
     bedrock_id: openai.gpt-6-sol
     context_length: 1050000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     dialect: openai-chat
     region: us-east-1
@@ -183,6 +193,7 @@ models:
     bedrock_id: openai.gpt-6-luna
     context_length: 1050000
     max_output: 128000
+    timeout: 600      # dense prefill scales super-linearly with context
     endpoint: mantle
     dialect: openai-chat
     region: us-east-1

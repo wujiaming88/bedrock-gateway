@@ -22,6 +22,7 @@ from bedrock_gateway.config import (
     StorageConfig,
 )
 from bedrock_gateway.server import (
+    _entry_timeout,
     _is_retryable_timeout,
     _note_retry,
     _note_timeout,
@@ -339,6 +340,58 @@ class TestRetryableTimeoutGate:
         assert inst.post.call_count == 2
 
 
+class TestPerModelTimeout:
+    """Per-model ``timeout`` override: helper + upstream httpx wiring."""
+
+    def test_entry_timeout_override_wins(self):
+        entry = ModelEntry(bedrock_id="us.x.slow", timeout=600.0)
+        assert _entry_timeout(entry, 300.0) == 600.0
+
+    def test_entry_timeout_inherits_default(self):
+        assert _entry_timeout(ModelEntry(bedrock_id="us.x.fast"), 300.0) == 300.0
+        assert _entry_timeout(None, 300.0) == 300.0
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_model_timeout_flows_to_upstream(self, mock_cls):
+        resp_mock = MagicMock()
+        resp_mock.status_code = 200
+        resp_mock.json.return_value = {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "stop_reason": "end_turn",
+        }
+        mock_cls.return_value = _mk_mock_client_post(resp_mock)
+
+        cfg = GatewayConfig(
+            auth=AuthConfig(mode="bearer_token", bearer_token="test-token"),
+            region="us-east-1",
+            server=ServerConfig(host="127.0.0.1", port=4000, log_level="warning"),
+            retry=RetryConfig(max_retries=2, base_delay=0.001, timeout=300.0),
+            dashboard=DashboardConfig(
+                enabled=False, require_auth=False, api_key=None, localhost_only=False,
+                rate_limit=60, max_request_log=20,
+                storage=StorageConfig(enabled=False, path="/tmp/x.db", retain_days=7),
+            ),
+            models={
+                "slow-model": ModelEntry(
+                    bedrock_id="us.x.slow",
+                    context_length=100000,
+                    max_output=4096,
+                    timeout=600.0,
+                ),
+            },
+        )
+        client = TestClient(create_app(cfg))
+        resp = client.post("/v1/chat/completions", json={
+            "model": "slow-model",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert resp.status_code == 200
+        timeout_kw = mock_cls.call_args.kwargs["timeout"]
+        assert timeout_kw.read == 600.0
+        assert timeout_kw.connect == 10.0  # _CONNECT_TIMEOUT, not scaled down
+
+
 # ---------------------------------------------------------------------------
 # /v1/chat/completions — branches not covered by test_api.py
 # ---------------------------------------------------------------------------
@@ -502,7 +555,9 @@ class TestChatCompletionsTimeouts:
             "messages": [{"role": "user", "content": "hi"}],
         })
         assert resp.status_code == 502
-        assert "retries failed" in resp.json()["error"]["message"]
+        # Read timeouts are non-retryable → fail fast after 1 attempt, not
+        # max_retries. The message must report the real count, not the budget.
+        assert "1 of 2 attempts" in resp.json()["error"]["message"]
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_generic_exception_returns_500(self, mock_cls, client: TestClient):
@@ -729,7 +784,8 @@ class TestMessagesMetadataAndOthers:
         assert resp.status_code == 502
         data = resp.json()
         assert data["type"] == "error"
-        assert "retries failed" in data["error"]["message"]
+        # Read timeout → fail fast after 1 attempt, not max_retries.
+        assert "1 of 2 attempts" in data["error"]["message"]
 
     @patch("bedrock_gateway.server.httpx.AsyncClient")
     def test_messages_sync_generic_exception_returns_500(
@@ -1025,7 +1081,8 @@ class TestMessagesStreamAllRetriesExhausted:
         assert resp.status_code == 429
         data = resp.json()
         assert data["type"] == "error"
-        assert "attempts failed" in data["error"]["message"]
+        # 429 exhausts the full retry budget → all max_retries attempts made.
+        assert "2 of 2 attempts" in data["error"]["message"]
 
 
 class TestChatStreamAllRetriesExhausted:
@@ -1042,7 +1099,8 @@ class TestChatStreamAllRetriesExhausted:
             "stream": True,
         })
         assert resp.status_code == 429
-        assert "attempts failed" in resp.json()["error"]["message"]
+        # 429 exhausts the full retry budget → all max_retries attempts made.
+        assert "2 of 2 attempts" in resp.json()["error"]["message"]
 
 
 class TestCreateAppStorageFailure:

@@ -509,7 +509,8 @@ class TestMessagesSyncErrors:
         assert resp.status_code == 502
         data = resp.json()
         assert data["type"] == "error"
-        assert "retries failed" in data["error"]["message"]
+        # 429 exhausts the full retry budget → all max_retries attempts made.
+        assert "2 of 2 attempts" in data["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
