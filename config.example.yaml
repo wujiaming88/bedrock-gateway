@@ -198,6 +198,28 @@ models:
     dialect: openai-chat
     region: us-east-1
 
+  # ── OpenAI GPT-6.1 Sol ──────────────────────────────────
+  # Live-probed on Bedrock mantle (HTTP 200). Served from us-east-1 like GPT-6
+  # Sol / Luna. Official model card: 1M context, 131,072 max output. The Chat
+  # twin rejects `max_tokens`; the gateway auto-renames it to
+  # `max_completion_tokens` on that 400, so standard OpenAI chat clients work.
+  gpt-6.1-sol:
+    bedrock_id: openai.gpt-6.1-sol
+    context_length: 1000000
+    max_output: 131072
+    timeout: 600      # dense prefill scales super-linearly with context
+    endpoint: mantle
+    protocol: openai-responses
+    region: us-east-1
+  gpt-6.1-sol-chat:
+    bedrock_id: openai.gpt-6.1-sol
+    context_length: 1000000
+    max_output: 131072
+    timeout: 600      # dense prefill scales super-linearly with context
+    endpoint: mantle
+    dialect: openai-chat
+    region: us-east-1
+
   # ── xAI Grok ────────────────────────────────────────────
   # Same mantle + Responses protocol as GPT-5.x. Grok 4.6 mantle is available
   # in-region only from us-west-2, so its model-level region overrides the

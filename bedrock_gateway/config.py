@@ -428,6 +428,30 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "dialect": "openai-chat",
         "region": "us-east-1",
     },
+    # ── OpenAI GPT-6.1 Sol (mantle endpoint, Responses + Chat) ─────────
+    # Live-probed on Bedrock mantle: Responses and Chat Completions both
+    # return HTTP 200 from us-east-1 (N. Virginia) — same region as GPT-6
+    # Sol / Luna. Official model card: 1M context, 131,072 max output. The
+    # Chat twin rejects `max_tokens` (auto-renamed to `max_completion_tokens`
+    # by the gateway on that 400), exactly like the GPT-6 twins.
+    "gpt-6.1-sol": {
+        "bedrock_id": "openai.gpt-6.1-sol",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "timeout": 600,
+        "endpoint": "mantle",
+        "protocol": "openai-responses",
+        "region": "us-east-1",
+    },
+    "gpt-6.1-sol-chat": {
+        "bedrock_id": "openai.gpt-6.1-sol",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "timeout": 600,
+        "endpoint": "mantle",
+        "dialect": "openai-chat",
+        "region": "us-east-1",
+    },
     # ── xAI Grok (mantle endpoint, Responses API) ─────────────────────
     "grok-4.3": {
         "bedrock_id": "xai.grok-4.3",
@@ -586,6 +610,12 @@ _MODEL_ALIASES: dict[str, str] = {
     "gpt6-luna": "gpt-6-luna",
     "openai.gpt-6-luna": "gpt-6-luna",
     "openai-gpt-6-luna": "gpt-6-luna",
+    # GPT-6.1 Sol variations
+    "gpt-6.1-sol": "gpt-6.1-sol",
+    "gpt-6-1-sol": "gpt-6.1-sol",
+    "gpt6.1-sol": "gpt-6.1-sol",
+    "openai.gpt-6.1-sol": "gpt-6.1-sol",
+    "openai-gpt-6.1-sol": "gpt-6.1-sol",
     # Grok variations. Deliberately omit ambiguous unversioned names.
     "grok4.3": "grok-4.3",
     "grok-4-3": "grok-4.3",

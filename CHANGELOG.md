@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.22] — 2026-09-30
+
+### 新增
+
+- 接入 OpenAI GPT-6.1 Sol（Bedrock mantle，`us-east-1` / N. Virginia）：模型 ID `openai.gpt-6.1-sol`，官方 model card 规格 1M 上下文 / 131,072 最大输出。与 GPT-6 Sol / Luna 同构，提供 Responses（`gpt-6.1-sol`，`endpoint: mantle` + `openai-responses`）与 Chat Completions（`gpt-6.1-sol-chat`，`openai-chat`）两个别名；Chat 上游同样**拒绝 `max_tokens`**，网关在收到该 400 后自动改名为 `max_completion_tokens` 并重试（沿用既有 Class A 自愈）。已实测 mantle 上 Responses 与 Chat 均返回 HTTP 200。别名：`gpt-6.1-sol` / `gpt-6-1-sol` / `gpt6.1-sol` / `openai.gpt-6.1-sol` / `openai-gpt-6.1-sol`。见 README 模型表与 `config.example.yaml`。
+
 ## [0.8.21] — 2026-09-29
 
 ### 修复
