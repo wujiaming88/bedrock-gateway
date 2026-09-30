@@ -88,13 +88,15 @@ class MantleResponsesProfile:
         "invalid 'input': value did not match any expected variant",
     )
     # Encrypted-reasoning rejection signatures. These trigger the encrypted-
-    # reasoning self-heal (strip opaque blobs minted by a *different* model)
-    # — distinct from the exact-variant projection and never eligible for it.
-    # The upstream message is the bare phrase ``invalid encrypted reasoning``
-    # (the word ``shape`` that shows up in our REQ-SHAPE log is the *log's own*
-    # next-field label, not part of the error).
+    # reasoning self-heal (strip opaque blobs minted by a *different* model or
+    # region) — distinct from the exact-variant projection and never eligible
+    # for it. The first upstream message is the bare phrase ``invalid encrypted
+    # reasoning`` (the word ``shape`` that shows up in our REQ-SHAPE log is the
+    # *log's own* next-field label, not part of the error); the second is a
+    # cross-region replay of the same blob class.
     encrypted_reasoning_signatures: tuple[str, ...] = (
         "invalid encrypted reasoning",
+        "encrypted content cannot be used in a different region",
     )
     # Relationship-error signatures. These must NEVER trigger a fallback — they
     # are a post-deserialization failure class whose text differs.

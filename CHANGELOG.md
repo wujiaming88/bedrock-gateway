@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.23] — 2026-09-30
+
+### 修复
+
+- 修复跨**区域**重放加密推理 400 无自愈的问题：Bedrock 的 `encrypted_content` 不透明块（`rsn_`/`smry_` 前缀）除了按模型铸造，也按**区域**铸造——把某区域铸造的块重放到另一区域（例如 gpt-5.6-sol 在 `us-east-1`、而块来自 `us-west-2`）会被上游以 `Encrypted content cannot be used in a different region from the one that created it.` 拒绝。这与 0.8.17 的跨模型 `invalid encrypted reasoning` 同类，但签名不同，此前 `encrypted_reasoning_signatures` 只认跨模型短语、原样透传导致失败。现把该区域短语加入签名表，复用同一条一次性自愈（剥离所有 `reasoning` 项的 `encrypted_content`，保留仍有可见 `content` 或明文 `summary` 的项，重试一次）；仅 Bedrock mantle Responses 面触发，可见内容 100% 保留，代价仅是丢失跨区域不可恢复的推理上下文。
+
 ## [0.8.22] — 2026-09-30
 
 ### 新增

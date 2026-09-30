@@ -120,6 +120,10 @@ class TestIsExactVariantRejection:
 # ---------------------------------------------------------------------------
 
 ENCRYPTED_REASONING_400_TEXT = "invalid encrypted reasoning"
+ENCRYPTED_REGION_400_TEXT = (
+    "Encrypted content cannot be used in a different region "
+    "from the one that created it."
+)
 
 
 class TestIsEncryptedReasoningRejection:
@@ -146,6 +150,17 @@ class TestIsEncryptedReasoningRejection:
         assert is_encrypted_reasoning_rejection(
             400, "INVALID ENCRYPTED REASONING"
         )
+
+    def test_region_mismatch_matches(self):
+        # Cross-region replay of an encrypted blob is the same class of failure
+        # as cross-model replay, but carries its own message — and must arm the
+        # self-heal too.
+        assert is_encrypted_reasoning_rejection(400, ENCRYPTED_REGION_400_TEXT)
+        assert is_encrypted_reasoning_rejection(400, ENCRYPTED_REGION_400_TEXT.upper())
+
+    def test_region_mismatch_non_400_never_matches(self):
+        assert not is_encrypted_reasoning_rejection(401, ENCRYPTED_REGION_400_TEXT)
+        assert not is_encrypted_reasoning_rejection(500, ENCRYPTED_REGION_400_TEXT)
 
 
 class TestEncryptedReasoningSurface:
@@ -1119,6 +1134,26 @@ class TestEncryptedReasoningFallback:
         # raw-first: the opaque blob went out on the first attempt…
         assert _nth_sent(mock_cls, 0)["input"][1]["encrypted_content"] == "rsn_secret"
         # …and the reasoning item was dropped on the retry.
+        second = _nth_sent(mock_cls, 1)
+        assert [i["type"] for i in second["input"]] == ["message"]
+
+    @patch("bedrock_gateway.server.httpx.AsyncClient")
+    def test_sync_strips_encrypted_reasoning_on_region_mismatch(self, mock_cls, client):
+        mock_cls.return_value = _sync_inst([
+            _err_resp(400, ENCRYPTED_REGION_400_TEXT),
+            _ok_resp(_responses_body("openai.gpt-6-sol")),
+        ])
+        resp = client.post("/openai/v1/responses", json={
+            "model": "gpt-6-sol",
+            "input": [
+                {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "hi"}]},
+                {"type": "reasoning", "encrypted_content": "rsn_secret",
+                 "summary": []},
+            ],
+        })
+        assert resp.status_code == 200
+        assert mock_cls.return_value.post.call_count == 2
         second = _nth_sent(mock_cls, 1)
         assert [i["type"] for i in second["input"]] == ["message"]
 
