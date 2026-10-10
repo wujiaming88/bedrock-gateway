@@ -2,7 +2,7 @@
 
 **The unified lane for AI traffic.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](#)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![版本](https://img.shields.io/badge/version-0.8.24-e25822)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2e5aa8)](LICENSE)
 
@@ -71,7 +71,7 @@ MuxLane 的核心是两条正交的轴：
 | 轴 | 成员 | 职责 |
 |---|---|---|
 | **Transport** | `BedrockTransport`（SigV4 / Bearer）、`AzureTransport`（api-key）、`http`（通用 `upstream_resources`） | 构建上游 URL + 返回鉴权头 |
-| **Dialect** | `anthropic`、`openai-responses`、`openai-chat`、`openai-images`、`openai-embeddings`、`anthropic-passthrough` | 决定请求 / 响应 / 流式形态 |
+| **Dialect** | `anthropic`、`openai-responses`、`openai-chat`、`openai-images`、`openai-audio`、`openai-embeddings`、`anthropic-passthrough` | 决定请求 / 响应 / 流式形态 |
 
 一个模型 = 一个 `(transport, dialect)` 组合（来自 `ModelEntry`）。**加一个云 = 加一个 Transport；加一种线上协议 = 加一个 Dialect**，二者互不耦合。
 
@@ -98,7 +98,7 @@ bedrock-gateway
 
 ```bash
 curl http://127.0.0.1:4000/health
-# {"status":"ok","version":"0.4.2","auth_mode":"bearer_token","region":"us-east-1","models":7}
+# {"status":"ok","version":"0.8.24","auth_mode":"bearer_token","region":"us-east-1","models":27}
 ```
 
 发一条 Claude 请求：
@@ -140,15 +140,15 @@ curl http://127.0.0.1:4000/v1/messages \
 | `kimi-k3` | `us.moonshotai.kimi-k3` | 1M | 128K | **`/openai/v1/responses`**（runtime 跨区域推理） |
 | `glm-5.3` | `us.zai.glm-5.3` | 1M | 128K | **`/openai/v1/responses`**（runtime 跨区域推理） |
 | `glm-5.3-chat` | `us.zai.glm-5.3` | 1M | 128K | **`/v1/chat/completions`**（runtime 跨区域推理） |
-| `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
-| `cohere-embed-v4-query` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
-| `cohere-embed-v4` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`**（需 `input_type`） |
-| `titan-embed-text-v2` | `amazon.titan-embed-text-v2:0` | 8K | 1024维默认 | **`/v1/embeddings`** |
+| `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024 维默认 | **`/v1/embeddings`** |
+| `cohere-embed-v4-query` | `cohere.embed-v4:0` | 128K | 1024 维默认 | **`/v1/embeddings`** |
+| `cohere-embed-v4` | `cohere.embed-v4:0` | 128K | 1024 维默认 | **`/v1/embeddings`**（需 `input_type`） |
+| `titan-embed-text-v2` | `amazon.titan-embed-text-v2:0` | 8K | 1024 维默认 | **`/v1/embeddings`** |
 | Azure 模型（自配） | Azure deployment | — | — | 按 dialect：Responses → `/openai/v1/responses`；Chat → `/v1/chat/completions` |
 
 - Claude 系别名有大量常见变体自动解析：Opus 的点号与连字符写法均可（`claude-opus-4.7` ＝ `claude-opus-4-7`，4.8 / 4.6 同理），以及 Anthropic SDK 默认模型名、带日期的官方名（如 `claude-opus-4-7-20250428`）。裸 `claude-sonnet` 解析到当前最新的 Sonnet（4.6）。
 - GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；GPT-5.6 家族别名：`gpt-5.6-sol` / `gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol`（Terra/Luna 同理）。Grok 必须明确版本：4.3 可用 `grok-4.3` / `grok4.3` / `grok-4-3`，4.6 可用 `grok-4.6` / `grok4.6` / `grok-4-6`，4.7 可用 `grok-4.7` / `grok4.7` / `grok-4-7`；不提供含义不明确的 `grok` / `grok-4`。
-- Grok 4.6 mantle 仅在 `us-west-2` 提供In-Region服务。内置 `grok-4.6` 条目通过通用per-model `region`覆盖自动路由；推荐使用注册alias，而非直接传原始ID（raw ID没有这份区域元数据）。
+- Grok 4.6 mantle 仅在 `us-west-2` 提供 in-region 服务。内置 `grok-4.6` 条目通过通用 per-model `region` 覆盖自动路由；推荐使用注册 alias，而非直接传原始 ID（raw ID 没有这份区域元数据）。
 - **Grok 4.7 与 Kimi K3 是 Bedrock 跨区域推理配置文件（Geo-US / Global），不支持 in-region**，因此走 `endpoint: runtime` + OpenAI 兼容 `/openai/v1` 根（而非 mantle），模型 ID 必须带 `us.` 前缀（`us.xai.grok-4.7` / `us.moonshotai.kimi-k3`）。两者均默认走 Responses API。Kimi K3 别名：`moonshotai.kimi-k3` / `moonshotai-kimi-k3`。
 - **GLM 5.3（Z.AI）同为 Bedrock 跨区域推理配置文件（Geo-US / Global），不支持 in-region**，走 `endpoint: runtime`，模型 ID 带 `us.` 前缀（`us.zai.glm-5.3`）。与 Grok/Kimi 不同的是其 model card 同时开放 Responses 与 Chat Completions 两种 API（且 Chat 直接接受 `max_tokens`），因此除 Responses 主别名 `glm-5.3` 外另提供 Chat 变体 `glm-5.3-chat`。别名：`glm-5.3` / `glm5.3` / `glm-5-3` / `zai.glm-5.3` / `zai-glm-5.3`，card 上的 `us.zai.glm-5.3` 与 `global.zai.glm-5.3` 亦归一化到 Geo-US 配置文件。规格 1M 上下文 / 128K 最大输出。
 - `gpt-5.6-*` 在 Bedrock mantle 上均为 1M 上下文；128K 最大输出字段仍为 advisory，若官方 model card 后续给出不同规格，应同步修正。
@@ -206,7 +206,7 @@ python3 -m venv /opt/bedrock-gateway
 网关以常规包形式装在 venv 的 `site-packages` 里，更新 = **安装包及依赖 + 重启进程**。生产更新请指定已发布 tag；不要跳过依赖安装，否则旧环境可能缺少新版本增加的运行时依赖。
 
 ```bash
-TARGET_VERSION=v0.4.14
+TARGET_VERSION=v0.8.24
 
 # 1) 记录当前版本（便于回滚核对）
 curl -fsS http://127.0.0.1:4000/health
@@ -252,7 +252,7 @@ curl -fsS http://127.0.0.1:4000/health
 回滚也必须同步目标版本的依赖，并在重启前完成相同预检：
 
 ```bash
-TARGET_VERSION=v0.4.13
+TARGET_VERSION=v0.8.23
 /opt/bedrock-gateway/bin/python -m pip install --upgrade --force-reinstall \
   "git+https://github.com/wujiaming88/bedrock-gateway.git@${TARGET_VERSION}"
 /opt/bedrock-gateway/bin/python -m pip check
@@ -634,7 +634,7 @@ chmod 600 /opt/bedrock-gateway/.env
 POST /v1/embeddings
 ```
 
-使用OpenAI SDK：
+使用 OpenAI SDK：
 
 ```python
 from openai import OpenAI
@@ -664,7 +664,7 @@ fallback = client.embeddings.create(
 
 ```
 
-OpenClaw非对称配置（其openai-compatible provider会把query/document角色写为wire字段`input_type`）：
+OpenClaw 非对称配置（其 openai-compatible provider 会把 query/document 角色写为 wire 字段 `input_type`）：
 
 ```json5
 {
@@ -680,7 +680,7 @@ OpenClaw非对称配置（其openai-compatible provider会把query/document角�
 }
 ```
 
-如需用OpenAI SDK调用动态profile，必须通过SDK的扩展body机制，而非标准方法参数：
+如需用 OpenAI SDK 调用动态 profile，必须通过 SDK 的扩展 body 机制，而非标准方法参数：
 
 ```python
 client.embeddings.create(
@@ -691,7 +691,7 @@ client.embeddings.create(
 )
 ```
 
-协议支持：string/string[]、`encoding_format=float|base64`、`dimensions`、`user`。Cohere单批最多96条；Titan数组使用受控fan-out。当前两种Bedrock模型不接受OpenAI token-ID数组，收到int[]/int[][]时返回标准400。
+协议支持：string/string[]、`encoding_format=float|base64`、`dimensions`、`user`。Cohere 单批最多 96 条；Titan 数组使用受控 fan-out。当前两种 Bedrock 模型不接受 OpenAI token-ID 数组，收到 int[]/int[][] 时返回标准 400。
 
 任务空间（`input_type`）：`cohere-embed-v4-document` / `cohere-embed-v4-query` 是**固定** alias，任务由模型名决定，不接受 `input_type`（保持标准 OpenAI）。裸 `cohere-embed-v4` 是**动态** profile，必须携带 `input_type`（`document` | `query` | `classification` | `clustering`），网关会映射到 Cohere 原生 `search_document` / `search_query` / `classification` / `clustering`。Titan 为对称模型，不接受任何 `input_type`。Cohere上游不返回token usage，因此稳定返回0；Titan使用真实`inputTextTokenCount`聚合。
 
