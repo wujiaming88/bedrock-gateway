@@ -975,6 +975,16 @@ server {
 }
 ```
 
+### Tailscale 内网 HTTPS（无域名 / 多客户端场景）
+
+无域名、客户端分布在公网时，可用 [Tailscale](https://tailscale.com)（WireGuard 零信任 mesh VPN）让网关只暴露在 tailnet 内网 443（Let's-Encrypt 自动证书），公网零暴露面：
+
+```
+客户端 ──HTTPS──▶ https://bedrock-gateway.<tailnet>.ts.net ──▶ tailscaled:443 ──proxy──▶ 127.0.0.1:4000
+```
+
+相比 Nginx，它不需要域名和公网证书，适合自有机器（≤100 台）接入。完整服务器/客户端配置，以及**阿里云 ECS 内网 DNS（100.100.2.x）与 Tailscale CGNAT（100.64.0.0/10）网段冲突**等踩坑记录见 [docs/tailscale-https.md](docs/tailscale-https.md)。
+
 ---
 
 ## 监控面板 Dashboard
