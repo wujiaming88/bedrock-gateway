@@ -14,6 +14,7 @@
 ## 目录
 
 - [为什么用它](#为什么用它)
+- [架构](#架构)
 - [支持的模型与端点](#支持的模型与端点)
 - [快速开始](#快速开始)
 - [安装与更新](#安装与更新)
@@ -37,6 +38,19 @@
 - **凭据集中托管**：客户端只持有一个网关 API key，云厂商凭据不下发到调用方。
 - **多上游方言**：Claude 走 Messages / Chat Completions（转换），OpenAI / Azure 走 Responses / Chat Completions（透传），由 Transport × Dialect 两轴统一编排。
 - **自带可观测性**：内置 dashboard，按模型 / 状态 / 时间维度展示请求量与延迟。
+
+---
+
+## 架构
+
+MuxLane 的核心是两条正交的轴：
+
+- **Transport**（在哪里鉴权）—— 构建上游 URL 并返回鉴权头：`BedrockTransport`（SigV4 / Bearer）、`AzureTransport`（api-key）、`http`（通用 `upstream_resources`）。
+- **Dialect**（怎么说）—— 决定请求 / 响应 / 流式的线上形态：`anthropic`、`openai-responses`、`openai-chat`、`openai-images`、`openai-embeddings`、`anthropic-passthrough`。
+
+一个模型 = 一个 `(transport, dialect)` 组合（来自 `ModelEntry`）。**加一个云 = 加一个 Transport；加一种线上协议 = 加一个 Dialect**，二者互不耦合。
+
+完整架构图（交互式，可缩放，悬停节点可查看源码出处）：**[docs/architecture.html](docs/architecture.html)**
 
 ---
 
