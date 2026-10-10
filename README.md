@@ -18,6 +18,11 @@ flowchart LR
     GW --> B["AWS Bedrock<br/>Claude / GPT-5.x / Grok / Embeddings"]
     GW --> A["Azure OpenAI<br/>Responses / Chat / Images"]
     GW --> U["通用 HTTP 上游<br/>DeepSeek / OpenRouter / Ark / 百炼"]
+
+    classDef ext fill:#f5f5f5,stroke:#4f5d75,color:#2d3142;
+    classDef focal fill:#f1e7e4,stroke:#bf4520,stroke-width:2px,color:#2d3142;
+    class C1,C2,B,A,U ext;
+    class GW focal;
 ```
 
 [English](README.en.md) · [更新日志](CHANGELOG.md)
