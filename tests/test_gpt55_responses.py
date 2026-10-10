@@ -183,12 +183,14 @@ class TestModelEntryDefaults:
             "cohere-embed-v4",
             "titan-embed-text-v2",
         }
-        # Cross-region inference profiles (Grok 4.7 / Kimi K3) are the one
-        # exception to "OpenAI dialect ⇒ mantle": they ride the runtime host
+        # Cross-region inference profiles (Grok 4.7 / Kimi K3 / GLM 5.3) are the
+        # one exception to "OpenAI dialect ⇒ mantle": they ride the runtime host
         # with an OpenAI dialect. Assert the exact (dialect, endpoint) pair.
         runtime_openai_models = {
             "grok-4.7": ("openai-responses", "runtime"),
             "kimi-k3": ("openai-responses", "runtime"),
+            "glm-5.3": ("openai-responses", "runtime"),
+            "glm-5.3-chat": ("openai-chat", "runtime"),
         }
         models = _parse_models(_DEFAULT_MODELS)
         for alias, e in models.items():

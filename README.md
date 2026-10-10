@@ -67,6 +67,8 @@
 | `grok-4.6` | `xai.grok-4.6` | 500K | 128K | **`/openai/v1/responses`**（mantle `us-west-2`） |
 | `grok-4.7` | `us.xai.grok-4.7` | 500K | 128K | **`/openai/v1/responses`**（runtime 跨区域推理） |
 | `kimi-k3` | `us.moonshotai.kimi-k3` | 1M | 128K | **`/openai/v1/responses`**（runtime 跨区域推理） |
+| `glm-5.3` | `us.zai.glm-5.3` | 1M | 128K | **`/openai/v1/responses`**（runtime 跨区域推理） |
+| `glm-5.3-chat` | `us.zai.glm-5.3` | 1M | 128K | **`/v1/chat/completions`**（runtime 跨区域推理） |
 | `cohere-embed-v4-document` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
 | `cohere-embed-v4-query` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`** |
 | `cohere-embed-v4` | `cohere.embed-v4:0` | 128K | 1024维默认 | **`/v1/embeddings`**（需 `input_type`） |
@@ -77,6 +79,7 @@
 - GPT-5.5 别名：`gpt-5.5` / `gpt-55` / `gpt5.5` / `gpt-5-5`；GPT-5.6 家族别名：`gpt-5.6-sol` / `gpt-56-sol` / `gpt5.6-sol` / `gpt-5-6-sol`（Terra/Luna 同理）。Grok 必须明确版本：4.3 可用 `grok-4.3` / `grok4.3` / `grok-4-3`，4.6 可用 `grok-4.6` / `grok4.6` / `grok-4-6`，4.7 可用 `grok-4.7` / `grok4.7` / `grok-4-7`；不提供含义不明确的 `grok` / `grok-4`。
 - Grok 4.6 mantle 仅在 `us-west-2` 提供In-Region服务。内置 `grok-4.6` 条目通过通用per-model `region`覆盖自动路由；推荐使用注册alias，而非直接传原始ID（raw ID没有这份区域元数据）。
 - **Grok 4.7 与 Kimi K3 是 Bedrock 跨区域推理配置文件（Geo-US / Global），不支持 in-region**，因此走 `endpoint: runtime` + OpenAI 兼容 `/openai/v1` 根（而非 mantle），模型 ID 必须带 `us.` 前缀（`us.xai.grok-4.7` / `us.moonshotai.kimi-k3`）。两者均默认走 Responses API。Kimi K3 别名：`moonshotai.kimi-k3` / `moonshotai-kimi-k3`。
+- **GLM 5.3（Z.AI）同为 Bedrock 跨区域推理配置文件（Geo-US / Global），不支持 in-region**，走 `endpoint: runtime`，模型 ID 带 `us.` 前缀（`us.zai.glm-5.3`）。与 Grok/Kimi 不同的是其 model card 同时开放 Responses 与 Chat Completions 两种 API（且 Chat 直接接受 `max_tokens`），因此除 Responses 主别名 `glm-5.3` 外另提供 Chat 变体 `glm-5.3-chat`。别名：`glm-5.3` / `glm5.3` / `glm-5-3` / `zai.glm-5.3` / `zai-glm-5.3`，card 上的 `us.zai.glm-5.3` 与 `global.zai.glm-5.3` 亦归一化到 Geo-US 配置文件。规格 1M 上下文 / 128K 最大输出。
 - `gpt-5.6-*` 在 Bedrock mantle 上均为 1M 上下文；128K 最大输出字段仍为 advisory，若官方 model card 后续给出不同规格，应同步修正。
 - `gpt-6-astra` 在 Bedrock mantle 上**仅 `us-west-2`（Oregon）** 提供；内置条目通过 per-model `region` 覆盖自动路由（同 Grok 4.6），推荐使用注册 alias 而非原始 ID（raw ID 没有这份区域元数据）。别名：`gpt-6-astra` / `gpt-6astra` / `gpt6-astra` / `openai.gpt-6-astra` / `openai-gpt-6-astra`。
 - `gpt-6-astra-chat` 是同一模型的 Chat Completions 别名（`openai-chat` 透传）。该上游 **拒绝 `max_tokens`**，网关在收到该 400 后会自动把 `max_tokens` 改名为 `max_completion_tokens` 并重试，因此标准 OpenAI chat 客户端无需改动。

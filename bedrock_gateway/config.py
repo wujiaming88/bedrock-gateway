@@ -489,6 +489,27 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "runtime",
         "protocol": "openai-responses",
     },
+    # ── Z.AI GLM 5.3 (Bedrock runtime, cross-region, Responses + Chat) ──
+    # Same class as Grok 4.7 / Kimi K3: a Bedrock *cross-region* inference
+    # profile (Geo-US / Global), in-region unsupported, so it rides ``endpoint:
+    # runtime`` with the OpenAI-compatible ``/openai/v1`` root and the
+    # mandatory ``us.`` inference-profile id. Unlike Grok/Kimi, its card exposes
+    # BOTH the Responses and Chat Completions APIs (Chat also accepts
+    # ``max_tokens`` directly), so a ``-chat`` variant is provided too.
+    "glm-5.3": {
+        "bedrock_id": "us.zai.glm-5.3",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "endpoint": "runtime",
+        "protocol": "openai-responses",
+    },
+    "glm-5.3-chat": {
+        "bedrock_id": "us.zai.glm-5.3",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "endpoint": "runtime",
+        "dialect": "openai-chat",
+    },
     # ── Embeddings (Bedrock runtime, native invoke) ────────────────────
     # Cohere embed v4 is a *single* Bedrock model exposed under three gateway
     # aliases. ``-document`` / ``-query`` fix the task by model name (standard
@@ -632,6 +653,14 @@ _MODEL_ALIASES: dict[str, str] = {
     # Moonshot AI Kimi K3 variations
     "moonshotai.kimi-k3": "kimi-k3",
     "moonshotai-kimi-k3": "kimi-k3",
+    # Z.AI GLM 5.3 variations. The card's geo/global inference IDs normalize
+    # to the geo-US profile (same model, ``us.zai.glm-5.3``).
+    "glm5.3": "glm-5.3",
+    "glm-5-3": "glm-5.3",
+    "zai.glm-5.3": "glm-5.3",
+    "zai-glm-5.3": "glm-5.3",
+    "us.zai.glm-5.3": "glm-5.3",
+    "global.zai.glm-5.3": "glm-5.3",
     # Cohere embed v4 (document + query + dynamic profiles)
     # The raw Bedrock id keeps resolving to the fixed document alias so raw-id
     # passthrough never silently becomes the dynamic (input_type-required)

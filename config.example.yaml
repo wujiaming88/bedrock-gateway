@@ -253,6 +253,21 @@ models:
     max_output: 131072
     endpoint: runtime
     protocol: openai-responses
+  # Z.AI GLM 5.3 — same cross-region class as Grok 4.7 / Kimi K3 (Geo-US /
+  # Global, in-region unsupported), but the card exposes BOTH Responses and
+  # Chat Completions, so a -chat variant is provided alongside the primary.
+  glm-5.3:
+    bedrock_id: us.zai.glm-5.3
+    context_length: 1000000
+    max_output: 131072
+    endpoint: runtime
+    protocol: openai-responses
+  glm-5.3-chat:
+    bedrock_id: us.zai.glm-5.3
+    context_length: 1000000
+    max_output: 131072
+    endpoint: runtime
+    dialect: openai-chat
 
   # ── OpenAI-compatible Embeddings on Bedrock runtime ──────
   # Same /v1/embeddings endpoint, different adapter profiles. Cohere separates

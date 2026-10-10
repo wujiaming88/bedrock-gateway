@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.24] — 2026-10-10
+
+### 新增
+
+- 接入 Z.AI **GLM 5.3**（Bedrock runtime 跨区域推理配置文件，Geo-US / Global，不支持 in-region）：模型 ID `us.zai.glm-5.3`，1M 上下文 / 128K 最大输出，Mixture-of-Experts（744B 总参 / ~40B 每 token 激活），支持可选 reasoning effort、function calling、结构化 JSON 输出与流式推理。与 Grok 4.7 / Kimi K3 同构（`endpoint: runtime` + OpenAI 兼容 `/openai/v1` 根），但其 model card 同时开放 **Responses 与 Chat Completions** 两种 API（且 Chat 直接接受 `max_tokens`，无需改名），故提供两个别名：`glm-5.3`（`openai-responses`）与 `glm-5.3-chat`（`openai-chat`）。别名：`glm5.3` / `glm-5-3` / `zai.glm-5.3` / `zai-glm-5.3`；card 上的 `us.zai.glm-5.3` 与 `global.zai.glm-5.3` 亦归一化到 Geo-US 配置文件。已实测上游 Responses 与 Chat 均返回 HTTP 200。见 README 模型表与 `config.example.yaml`。
+
 ## [0.8.23] — 2026-09-30
 
 ### 修复
