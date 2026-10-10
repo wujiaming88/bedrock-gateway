@@ -2,10 +2,23 @@
 
 **The unified lane for AI traffic.**
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)](#)
+[![版本](https://img.shields.io/badge/version-0.8.24-e25822)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2e5aa8)](LICENSE)
+
 > 原项目名 Bedrock Gateway。整个 `0.x` 保留 `bedrock-gateway` CLI、`bedrock_gateway` Python import、systemd unit、部署目录、日志与环境变量兼容；新命令推荐使用 `muxlane`。
 
 把发往 **OpenAI / Anthropic** 的 API 请求转发到 **AWS Bedrock** 与 **Azure OpenAI**。
 任何兼容 OpenAI 或 Anthropic SDK 的客户端，都可以**不改一行业务代码**接入多云模型 —— 只需把 `base_url` 指向本网关。
+
+```mermaid
+flowchart LR
+    C1["OpenAI SDK"] --> GW["MuxLane 网关<br/>路由 · 鉴权 · 转换<br/>FastAPI + httpx · :4000"]
+    C2["Anthropic SDK<br/>Claude Code"] --> GW
+    GW --> B["AWS Bedrock<br/>Claude / GPT-5.x / Grok / Embeddings"]
+    GW --> A["Azure OpenAI<br/>Responses / Chat / Images"]
+    GW --> U["通用 HTTP 上游<br/>DeepSeek / OpenRouter / Ark / 百炼"]
+```
 
 [English](README.en.md) · [更新日志](CHANGELOG.md)
 
@@ -15,11 +28,12 @@
 
 - [为什么用它](#为什么用它)
 - [架构](#架构)
-- [支持的模型与端点](#支持的模型与端点)
 - [快速开始](#快速开始)
+- [支持的模型与端点](#支持的模型与端点)
 - [安装与更新](#安装与更新)
 - [配置](#配置)
 - [多云与 Azure](#多云与-azure)
+- [Embeddings](#embeddings)
 - [使用](#使用)
 - [Claude Code 接入任意模型](#claude-code-接入任意模型)
 - [部署（生产）](#部署生产)
@@ -27,6 +41,7 @@
 - [日志与可观测性](#日志与可观测性)
 - [安全 Checklist](#安全-checklist)
 - [开发](#开发)
+- [License](#license)
 
 ---
 
@@ -45,8 +60,13 @@
 
 MuxLane 的核心是两条正交的轴：
 
-- **Transport**（在哪里鉴权）—— 构建上游 URL 并返回鉴权头：`BedrockTransport`（SigV4 / Bearer）、`AzureTransport`（api-key）、`http`（通用 `upstream_resources`）。
-- **Dialect**（怎么说）—— 决定请求 / 响应 / 流式的线上形态：`anthropic`、`openai-responses`、`openai-chat`、`openai-images`、`openai-embeddings`、`anthropic-passthrough`。
+- **Transport**（在哪里鉴权）—— 构建上游 URL 并返回鉴权头。
+- **Dialect**（怎么说）—— 决定请求 / 响应 / 流式的线上形态。
+
+| 轴 | 成员 | 职责 |
+|---|---|---|
+| **Transport** | `BedrockTransport`（SigV4 / Bearer）、`AzureTransport`（api-key）、`http`（通用 `upstream_resources`） | 构建上游 URL + 返回鉴权头 |
+| **Dialect** | `anthropic`、`openai-responses`、`openai-chat`、`openai-images`、`openai-embeddings`、`anthropic-passthrough` | 决定请求 / 响应 / 流式形态 |
 
 一个模型 = 一个 `(transport, dialect)` 组合（来自 `ModelEntry`）。**加一个云 = 加一个 Transport；加一种线上协议 = 加一个 Dialect**，二者互不耦合。
 
@@ -54,7 +74,35 @@ MuxLane 的核心是两条正交的轴：
 
 ![MuxLane 多云 AI 网关架构](docs/muxlane-architecture.png)
 
+> [!NOTE]
 > 矢量源文件（可缩放）：[docs/muxlane-architecture.html](docs/muxlane-architecture.html)
+
+---
+
+## 快速开始
+
+```bash
+pip install git+https://github.com/wujiaming88/bedrock-gateway.git
+
+export AWS_BEARER_TOKEN_BEDROCK="你的-aws-bearer-token"
+bedrock-gateway
+# listening on http://127.0.0.1:4000
+```
+
+验证：
+
+```bash
+curl http://127.0.0.1:4000/health
+# {"status":"ok","version":"0.4.2","auth_mode":"bearer_token","region":"us-east-1","models":7}
+```
+
+发一条 Claude 请求：
+
+```bash
+curl http://127.0.0.1:4000/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-haiku","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
+```
 
 ---
 
@@ -128,33 +176,6 @@ MuxLane 的核心是两条正交的轴：
 
 ---
 
-## 快速开始
-
-```bash
-pip install git+https://github.com/wujiaming88/bedrock-gateway.git
-
-export AWS_BEARER_TOKEN_BEDROCK="你的-aws-bearer-token"
-bedrock-gateway
-# listening on http://127.0.0.1:4000
-```
-
-验证：
-
-```bash
-curl http://127.0.0.1:4000/health
-# {"status":"ok","version":"0.4.2","auth_mode":"bearer_token","region":"us-east-1","models":7}
-```
-
-发一条 Claude 请求：
-
-```bash
-curl http://127.0.0.1:4000/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude-haiku","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}'
-```
-
----
-
 ## 安装与更新
 
 ### 首次安装
@@ -218,7 +239,8 @@ systemctl restart bedrock-gateway
 curl -fsS http://127.0.0.1:4000/health
 ```
 
-> ⚠️ **校验版本时务必切到中立目录（如 `/tmp`）**。在源码目录中导入可能加载当前目录的源码，而不是 venv 中实际安装的包。只有依赖由外部配置管理系统完整维护并另有等效校验时，才可自行跳过 pip 的依赖解析；这不是通用升级方式。
+> [!WARNING]
+> **校验版本时务必切到中立目录（如 `/tmp`）**。在源码目录中导入可能加载当前目录的源码，而不是 venv 中实际安装的包。只有依赖由外部配置管理系统完整维护并另有等效校验时，才可自行跳过 pip 的依赖解析；这不是通用升级方式。
 
 ### 回滚
 
@@ -315,7 +337,8 @@ dashboard:
 | `iam_role` | EC2 / ECS / Lambda 元数据服务自动取凭据 | **是** |
 | `profile` | 使用 `~/.aws/credentials` 中的命名 profile | **是** |
 
-> ⚠️ **SigV4 模式（`credentials` / `iam_role` / `profile`）只适用于 Bedrock runtime 模型**（Claude 系）。它们对 **mantle 端点（GPT-5.5 / Grok）和 Azure 签不出有效凭据**——mantle 主机/服务不同、Azure 要 `api-key` header。要用 mantle 模型请配 `bearer_token`，Azure 由资源的 `api_key` 承担。若在 SigV4 模式下配了 mantle/Azure 模型，网关启动时会 WARNING 列出这些不可达的模型（服务照常运行，Bedrock 模型不受影响）。
+> [!WARNING]
+> **SigV4 模式（`credentials` / `iam_role` / `profile`）只适用于 Bedrock runtime 模型**（Claude 系）。它们对 **mantle 端点（GPT-5.5 / Grok）和 Azure 签不出有效凭据**——mantle 主机/服务不同、Azure 要 `api-key` header。要用 mantle 模型请配 `bearer_token`，Azure 由资源的 `api_key` 承担。若在 SigV4 模式下配了 mantle/Azure 模型，网关启动时会 WARNING 列出这些不可达的模型（服务照常运行，Bedrock 模型不受影响）。
 
 ### 鉴权与访问控制
 
@@ -344,14 +367,22 @@ dashboard:
 
 ## 多云与 Azure
 
-网关按 **Transport × Dialect 两轴** 支持多云。除 AWS Bedrock 外，可接入 **Azure OpenAI**。
+网关按 **Transport × Dialect 两轴** 支持多云。除 AWS Bedrock 外，可接入 **Azure OpenAI** 与任意 OpenAI/Anthropic 兼容的**通用 HTTP 上游**。
 
-### 概念
+| 上游 | 前缀直通 | 鉴权 | 支持端点 | 备注 |
+|---|---|---|---|---|
+| **Azure OpenAI** | `azure/`（可选） | `api-key` header | Responses / Chat / Images | 资源级 endpoint + key |
+| **DeepSeek** | `deepseek/` | `bearer` + `x-api-key` | Chat / Responses / Messages | 原生协议直通 |
+| **OpenRouter** | `openrouter/` | `bearer`（全端点） | Chat / Responses / Messages / Audio | `<vendor>/<model>` 动态直通 |
+| **火山方舟 Ark** | `ark/` | `bearer`（全端点） | Chat / Responses / Messages / Images | 模型需控制台先开通 |
+| **阿里云百炼** | `qwen/` | `bearer`（全端点） | Chat / Responses / Messages | Kimi 需控制台先开通 |
+
+### Azure：概念
 
 - **Azure 凭据是资源级的**：每个 Azure OpenAI 资源有自己独立的 endpoint 和 api-key（跨资源不通用）。一个资源下可部署多个模型（deployment），共享该资源的 endpoint + key。
 - 配置分两层：`azure_resources`（资源 = endpoint + key）+ `models`（模型引用资源 + 指定 deployment）。
 
-### 配置样例
+### Azure：配置样例
 
 ```yaml
 # 资源级：endpoint + key（一个资源配一次）
@@ -377,9 +408,10 @@ models:
     deployment: gpt-4o
 ```
 
+> [!NOTE]
 > `models:` 与内置默认模型**合并**：只需列出要新增的模型，Claude/GPT-5.5/Grok 等默认仍可用；同名条目会覆盖默认。想只暴露自己配的模型，设 `use_default_models: false`。
 
-### 前缀透传（零模型登记，推荐）
+### Azure：前缀透传（零模型登记，推荐）
 
 给资源加 `prefix`，即可**不逐个登记模型**——客户端用 `<prefix>/<deployment>` 调用，网关自动路由到该资源、剥离前缀作为 deployment，dialect 由端点决定（`/openai/v1/responses` → responses，`/v1/chat/completions` → chat，`/openai/v1/images/generations` → images）：
 
@@ -401,7 +433,7 @@ client.images.generate(model="azure/gpt-image-2", prompt="...")     # → images
 
 deployment 增删换名都不用动网关配置。代价：`/v1/models` 列不出这些透传模型（网关事先不知道有哪些）。需要别名/模型清单/dashboard 分模型统计时，用上面的显式 `models:` 登记；两者可共存。
 
-### 调用
+### Azure：调用
 
 Azure 模型的对外端点由其 `dialect` 决定，客户端用法与 Bedrock 上同类模型完全一致——只是 `model` 换成你配的别名：
 
@@ -420,7 +452,7 @@ OpenAI(base_url="http://127.0.0.1:4000/v1", api_key="<gateway-key>") \
 
 网关对 Azure 做**透传**（仅把别名换成 deployment 名），响应含 Azure 的 `content_filter_results` 字段原样保留；鉴权自动用 `api-key` header。URL 里保留资源 base 上的 `?api-version=...`（若有）。
 
-### 通用 HTTP 上游与 DeepSeek
+### 通用 HTTP 上游：DeepSeek
 
 `upstream_resources` 可把一个官方上游的多种原生协议注册到统一网关。以下配置让同一模型别名同时服务 Chat、Responses 和 Anthropic Messages，网关只做路由、鉴权和 model 替换，不做重复协议转换：
 
@@ -475,6 +507,7 @@ chmod 600 /opt/bedrock-gateway/.env
 
 也可使用 `deepseek/<model>` 动态前缀，不逐项登记模型；显式登记才能出现在 `/v1/models`。当前官方模型是 `deepseek-v4-flash` 和 `deepseek-v4-pro`，旧 `deepseek-chat` / `deepseek-reasoner` 不作为默认 alias。DeepSeek Beta Strict Tools、Prefix Completion 和 FIM 暂未接入。
 
+> [!WARNING]
 > Thinking + Tools 时必须完整保存并回传 assistant 的 `reasoning_content`；官方不支持该模式下的强制 `tool_choice`。网关按官方 wire 原样透传，不会伪造或补齐这段历史。
 
 ### 通用 HTTP 上游：OpenRouter
@@ -515,8 +548,6 @@ chmod 600 /opt/bedrock-gateway/.env
 调用端点：`/v1/chat/completions` → `/chat/completions`、`/openai/v1/responses` → `/responses`、`/v1/messages` → `/messages`、`/v1/audio/transcriptions` → `/audio/transcriptions`。与 DeepSeek 的区别：OpenRouter 三个端点**全部用 `Authorization: Bearer`**（含原生 `/messages`），所以 `anthropic-passthrough` 的 `auth` 是 `bearer` 而非 `x-api-key`。模型 ID 形如 `anthropic/claude-opus-4.6`、`openai/gpt-5.5`、`google/gemini-2.5-pro`（以 `GET https://openrouter.ai/api/v1/models` 实测为准）。已实测的模型：`deepseek/deepseek-v4.1-flash`（走 `openai-chat`，三端点均可）。
 
 语音转文字（STT）走同一条 `openai-audio` 路由：`POST /v1/audio/transcriptions`（`multipart/form-data`），`model` 传 `openrouter/<vendor>/<model>`（如 `openrouter/openai/whisper-large-v3-turbo`），`file` 传音频文件，可选 `language` / `prompt` / `response_format`（`json` / `verbose_json`）/ `temperature` 等。暂不支持 `stream`。返回 JSON `{"text": "..."}`（`verbose_json` 附带 `language`/`duration`/`segments`）。
-
----
 
 ### 通用 HTTP 上游：火山方舟（Ark）
 
@@ -659,6 +690,8 @@ client.embeddings.create(
 
 任务空间（`input_type`）：`cohere-embed-v4-document` / `cohere-embed-v4-query` 是**固定** alias，任务由模型名决定，不接受 `input_type`（保持标准 OpenAI）。裸 `cohere-embed-v4` 是**动态** profile，必须携带 `input_type`（`document` | `query` | `classification` | `clustering`），网关会映射到 Cohere 原生 `search_document` / `search_query` / `classification` / `clustering`。Titan 为对称模型，不接受任何 `input_type`。Cohere上游不返回token usage，因此稳定返回0；Titan使用真实`inputTextTokenCount`聚合。
 
+---
+
 ## 使用
 
 下列样例假设网关跑在 `http://127.0.0.1:4000`，且已设 `server.api_key`（未设时 `api_key` 字段填任意值即可）。
@@ -798,7 +831,8 @@ print(edited.data[0].b64_json[:40])
 
 Claude Code 只会说 Anthropic Messages 协议（它把请求发往 `/v1/messages`）。网关在这个端点上按目标模型**自动分流**：Claude 系模型原样透传；而 **GPT-5.5 / Grok / `azure/<deployment>`** 这类 Responses 模型会被**翻译**（Anthropic Messages ⇄ OpenAI Responses）后转发。于是把 `ANTHROPIC_BASE_URL` 指向网关，就能让 Claude Code（或任何 Anthropic-only 的 agent）用上非 Anthropic 模型——业务代码零改动。
 
-> ⚠️ **最容易踩的坑：`CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX`。**
+> [!WARNING]
+> **最容易踩的坑：`CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX`。**
 > 只要这些云厂商直连开关**存在且非空**，Claude Code 就会直连该云、**完全忽略
 > `ANTHROPIC_BASE_URL`**，请求根本不经过网关（表现为它自己报
 > `400 The provided model identifier is invalid`——因为 `gpt-5.5` 不是合法的
@@ -869,6 +903,13 @@ Claude 模型本身（`ANTHROPIC_MODEL=claude-opus-4.8` 等）在此端点走原
 ---
 
 ## 部署（生产）
+
+| 方式 | 适用场景 | 要点 |
+|---|---|---|
+| **systemd**（推荐） | 生产主机、开机自启、日志接入 journald | 非 root 运行、`.env` 分离密钥 |
+| **Docker** | 容器化、可移植 | `docker-compose.yml` 挂载 `./config.yaml` |
+| **Nginx 反向代理** | 需要域名 + 公网 TLS | 关闭 `proxy_buffering` 保 SSE 流式 |
+| **Tailscale 内网 HTTPS** | 无域名、自有机器（≤100 台） | 公网零暴露面，Let's-Encrypt 自动证书 |
 
 ### systemd（推荐）
 
