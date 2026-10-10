@@ -52,9 +52,9 @@ MuxLane 的核心是两条正交的轴：
 
 完整架构图：
 
-![MuxLane 多云 AI 网关架构](docs/architecture.png)
+![MuxLane 多云 AI 网关架构](docs/muxlane-architecture.png)
 
-> 交互式版本（可缩放、悬停节点查看源码出处）：[docs/architecture.html](docs/architecture.html)
+> 矢量源文件（可缩放）：[docs/muxlane-architecture.html](docs/muxlane-architecture.html)
 
 ---
 
