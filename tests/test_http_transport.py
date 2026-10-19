@@ -176,6 +176,44 @@ class TestGenericPrefixResolution:
         assert registry.resolve_prefixed("vendor/model", "openai-images") is None
         assert registry.resolve_prefixed("vendor", "openai-chat") is None
 
+    def test_registered_model_with_slash_wins_over_prefix(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "use_default_models: false\n"
+            "upstream_resources:\n"
+            "  ark:\n"
+            "    prefix: ark\n"
+            "    secret_env: ARK_API_KEY\n"
+            "    routes:\n"
+            "      openai-responses:\n"
+            "        base_url: https://ark.cn-beijing.volces.com/api/v3\n"
+            "        path: /responses\n"
+            "        auth: bearer\n"
+            "      openai-chat:\n"
+            "        base_url: https://ark.cn-beijing.volces.com/api/v3\n"
+            "        path: /chat/completions\n"
+            "        auth: bearer\n"
+            "models:\n"
+            "  ark/deepseek-flash:\n"
+            "    upstream_resource: ark\n"
+            "    upstream_id: deepseek-v4-1-flash-261017\n"
+            "    dialect: openai-responses\n"
+            "    context_length: 1000000\n"
+            "    max_output: 393216\n"
+        )
+        registry = ModelRegistry(load_config(config_file))
+        # The registered model wins over the ``ark`` prefix passthrough.
+        assert registry.resolve_prefixed("ark/deepseek-flash", "openai-responses") is None
+        resolved = registry.resolve_for_dialect("ark/deepseek-flash", "openai-responses")
+        assert resolved is not None
+        upstream_id, entry = resolved
+        assert upstream_id == "deepseek-v4-1-flash-261017"
+        assert entry.upstream_base_url == "https://ark.cn-beijing.volces.com/api/v3"
+        # Prefix passthrough still works for unregistered ``ark/<id>`` names.
+        passthrough = registry.resolve_prefixed("ark/some-other-id", "openai-chat")
+        assert passthrough is not None
+        assert passthrough.deployment == "some-other-id"
+
     def test_explicit_model_missing_route_does_not_resolve(self, tmp_path):
         registry = self._registry(tmp_path)
         assert registry.resolve_for_dialect("gpt-5.5", "openai-chat") is None

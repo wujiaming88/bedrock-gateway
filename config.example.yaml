@@ -476,6 +476,14 @@ models:
 #     dialect: openai-responses
 #     context_length: 1000000
 #     max_output: 393216
+#   # 名字含 `/` 的显式注册模型：注册优先于 `prefix` 直通，路由到配置的
+#   # `upstream_id`（而非把 `/` 后的 `deepseek-flash` 当模型 ID 直通）。
+#   ark/deepseek-flash:
+#     upstream_resource: ark
+#     upstream_id: deepseek-v4-1-flash-261017
+#     dialect: openai-responses
+#     context_length: 1000000
+#     max_output: 393216
 #   doubao-seedream-5-0-pro-260628:
 #     upstream_resource: ark
 #     upstream_id: doubao-seedream-5-0-pro-260628

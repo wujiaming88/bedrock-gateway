@@ -174,6 +174,13 @@ class ModelRegistry:
         endpoint/key resolution. Returns ``None`` when no prefix or route
         matches, so callers fall through to normal resolution.
         """
+        # A registered model wins over prefix passthrough: a named
+        # ``ark/deepseek-flash`` must resolve to its configured upstream id, not
+        # be shadowed by the ``ark`` prefix (which would route the bare
+        # ``deepseek-flash`` remainder). Defer to :meth:`resolve_for_dialect` /
+        # :meth:`resolve`, which handle registered entries.
+        if self.get_entry(alias) is not None:
+            return None
         if "/" not in alias:
             return None
         prefix, _, deployment = alias.partition("/")

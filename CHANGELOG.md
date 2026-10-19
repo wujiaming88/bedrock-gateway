@@ -3,6 +3,16 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.25] — 2026-10-19
+
+### 新增
+
+- 接入火山方舟 Ark 的 DeepSeek V4.1 Flash 新版本：模型 ID `deepseek-v4-1-flash-261017`，对外别名 `ark/deepseek-flash`（`openai-responses`，1M 上下文 / 393,216 最大输出）。这是首个「名字含 `/` 且与 `prefix` 冲突」的显式注册模型。见 README Ark 节与 `config.example.yaml`。
+
+### 修复
+
+- 修复**显式注册模型被 `prefix` 直通遮蔽**的问题：此前 `resolve_prefixed` 先于命名模型解析执行，导致 `ark/deepseek-flash` 这类名字含 `/` 的注册模型被 `ark` 前缀截走、把 `/` 后的剩余部分（`deepseek-flash`）当作上游模型 ID 直通（既有的 `deepseek/deepseek-v4.1-flash` 同样受影响）。现 `resolve_prefixed` 命中已注册模型时返回 `None`，回落到 `resolve_for_dialect` / `resolve` 按配置的 `upstream_id` 路由；`prefix` 直通对未注册的 `ark/<id>` 名字仍照常生效。
+
 ## [0.8.24] — 2026-10-10
 
 ### 新增
