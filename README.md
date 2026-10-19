@@ -589,7 +589,7 @@ ARK_API_KEY=...
 chmod 600 /opt/bedrock-gateway/.env
 ```
 
-已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260915`、`deepseek-v4-pro-ga-260813`、`deepseek-v4-1-flash-260910`（走 `openai-responses`，见下）、`doubao-seedream-5-0-pro-260628`（图像，走 `openai-images`）。另有 `ark/deepseek-flash` → `deepseek-v4-1-flash-261017`（`openai-responses`）。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。方舟 `openai-responses` 端点也不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后会自动删除该字段并重试，客户端无需改动。
+已实测的模型：`doubao-seed-evolving`（方舟侧解析为 `doubao-seed-evolving-latest-version`）、`doubao-seed-2-1-pro-260915`、`deepseek-v4-pro-ga-260813`、`deepseek-v4-1-flash-260910`（走 `openai-responses`，见下）、`ark/deepseek-flash` → `deepseek-v4-1-flash-261017`（`openai-responses`）、`doubao-seedream-5-0-pro-260628`（图像，走 `openai-images`）。豆包在 Chat 响应里带 `reasoning_content`、DeepSeek 在 Messages 里带 `thinking` 块，均原样透传。注意方舟 `openai-responses` 端点较新，不支持 `tool_choice` / `parallel_tool_calls` / `stream_options`；而 `/v1/messages` 走的是原生 Anthropic 兼容层（非 responses 翻译），不受此限制。方舟 `openai-responses` 端点也不接受 `reasoning.summary` / `verbosity` 字段，网关在收到 `json: unknown field "X"` 的 400 后会自动删除该字段并重试，客户端无需改动。
 
 当 `models:` 里注册的名字本身含 `/`（如 `ark/deepseek-flash`）时，**显式注册优先于 `prefix` 直通**：它路由到配置的 `upstream_id`（`deepseek-v4-1-flash-261017`），而不是把 `/` 后的剩余部分（`deepseek-flash`）当模型 ID 直通上游。
 
