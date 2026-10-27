@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.26] — 2026-10-26
+
+### 新增
+
+- 接入火山方舟 Ark 的 Kimi K3.1 Pro：模型 ID `kimi-k3-1-pro-261024`，对外别名 `ark/kimi-k3-1-pro`（`openai-responses`，1M 上下文 / 131,072 最大输出）。与 `ark/deepseek-flash` 同构（名字含 `/`、显式注册优先于 `prefix` 直通，复用 0.8.25 的解析修复）。已实测方舟 Chat 与 Responses 两端点均返回 HTTP 200（带 reasoning）。纯配置接入，无代码改动。见 README Ark 节与 `config.example.yaml`。
+
 ## [0.8.25] — 2026-10-19
 
 ### 新增

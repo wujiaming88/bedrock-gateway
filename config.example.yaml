@@ -484,6 +484,12 @@ models:
 #     dialect: openai-responses
 #     context_length: 1000000
 #     max_output: 393216
+#   ark/kimi-k3-1-pro:
+#     upstream_resource: ark
+#     upstream_id: kimi-k3-1-pro-261024
+#     dialect: openai-responses
+#     context_length: 1000000
+#     max_output: 131072
 #   doubao-seedream-5-0-pro-260628:
 #     upstream_resource: ark
 #     upstream_id: doubao-seedream-5-0-pro-260628
