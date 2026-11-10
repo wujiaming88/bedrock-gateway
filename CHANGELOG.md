@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.27] — 2026-11-10
+
+### 新增
+
+- 接入 Moonshot AI **Kimi K3.1 Pro — Highspeed**（Bedrock runtime 跨区域推理配置文件，Geo-US / Global，不支持 in-region）：模型 ID `us.moonshotai.kimi-k3.1`，1M 上下文 / 128K 最大输出。与 K3 / GLM 5.3 同构（`endpoint: runtime` + OpenAI 兼容 `/openai/v1` 根），其 model card 同时开放 Responses 与 Chat Completions 且**推荐 Chat**，故提供两个别名：`kimi-k3.1`（`openai-responses`）与 `kimi-k3.1-chat`（`openai-chat`）。别名：`kimi-k3-1` / `moonshotai.kimi-k3.1` / `moonshotai-kimi-k3.1`；card 上的 `us.moonshotai.kimi-k3.1` 与 `global.moonshotai.kimi-k3.1` 亦归一化到 Geo-US 配置文件。已实测上游 Responses 与 Chat 均返回 HTTP 200（带 reasoning）。见 README 模型表与 `config.example.yaml`。
+
 ## [0.8.26] — 2026-10-26
 
 ### 新增

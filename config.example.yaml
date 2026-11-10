@@ -253,6 +253,21 @@ models:
     max_output: 131072
     endpoint: runtime
     protocol: openai-responses
+  # Kimi K3.1 Pro — Highspeed. Same Moonshot cross-region class as K3, but
+  # the card exposes BOTH Responses and Chat Completions (recommending Chat),
+  # so a -chat variant is provided alongside the Responses primary.
+  kimi-k3.1:
+    bedrock_id: us.moonshotai.kimi-k3.1
+    context_length: 1000000
+    max_output: 131072
+    endpoint: runtime
+    protocol: openai-responses
+  kimi-k3.1-chat:
+    bedrock_id: us.moonshotai.kimi-k3.1
+    context_length: 1000000
+    max_output: 131072
+    endpoint: runtime
+    dialect: openai-chat
   # Z.AI GLM 5.3 — same cross-region class as Grok 4.7 / Kimi K3 (Geo-US /
   # Global, in-region unsupported), but the card exposes BOTH Responses and
   # Chat Completions, so a -chat variant is provided alongside the primary.

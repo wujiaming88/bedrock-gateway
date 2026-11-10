@@ -489,6 +489,24 @@ _DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "endpoint": "runtime",
         "protocol": "openai-responses",
     },
+    # Kimi K3.1 Pro — Highspeed. Same Moonshot cross-region class as kimi-k3
+    # (Geo-US / Global, in-region unsupported, runtime + us. prefix), but its
+    # card exposes BOTH Responses and Chat Completions and *recommends* Chat,
+    # so a -chat variant is provided alongside the Responses primary.
+    "kimi-k3.1": {
+        "bedrock_id": "us.moonshotai.kimi-k3.1",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "endpoint": "runtime",
+        "protocol": "openai-responses",
+    },
+    "kimi-k3.1-chat": {
+        "bedrock_id": "us.moonshotai.kimi-k3.1",
+        "context_length": 1_000_000,
+        "max_output": 131_072,
+        "endpoint": "runtime",
+        "dialect": "openai-chat",
+    },
     # ── Z.AI GLM 5.3 (Bedrock runtime, cross-region, Responses + Chat) ──
     # Same class as Grok 4.7 / Kimi K3: a Bedrock *cross-region* inference
     # profile (Geo-US / Global), in-region unsupported, so it rides ``endpoint:
@@ -653,6 +671,14 @@ _MODEL_ALIASES: dict[str, str] = {
     # Moonshot AI Kimi K3 variations
     "moonshotai.kimi-k3": "kimi-k3",
     "moonshotai-kimi-k3": "kimi-k3",
+    # Moonshot AI Kimi K3.1 (Highspeed) variations. The card's geo/global
+    # inference IDs normalize to the geo-US profile (same model,
+    # us.moonshotai.kimi-k3.1).
+    "kimi-k3-1": "kimi-k3.1",
+    "moonshotai.kimi-k3.1": "kimi-k3.1",
+    "moonshotai-kimi-k3.1": "kimi-k3.1",
+    "us.moonshotai.kimi-k3.1": "kimi-k3.1",
+    "global.moonshotai.kimi-k3.1": "kimi-k3.1",
     # Z.AI GLM 5.3 variations. The card's geo/global inference IDs normalize
     # to the geo-US profile (same model, ``us.zai.glm-5.3``).
     "glm5.3": "glm-5.3",

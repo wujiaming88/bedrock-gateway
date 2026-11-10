@@ -42,6 +42,9 @@ GROK47_ALIAS = "grok-4.7"
 GROK47_BEDROCK_ID = "us.xai.grok-4.7"
 KIMI_K3_ALIAS = "kimi-k3"
 KIMI_K3_BEDROCK_ID = "us.moonshotai.kimi-k3"
+KIMI_K31_ALIAS = "kimi-k3.1"
+KIMI_K31_CHAT_ALIAS = "kimi-k3.1-chat"
+KIMI_K31_BEDROCK_ID = "us.moonshotai.kimi-k3.1"
 
 
 @pytest.fixture
@@ -106,6 +109,22 @@ class TestGrok47KimiRegistration:
         assert e["context_length"] == 1_000_000
         assert e["max_output"] == 131_072
 
+    def test_kimi_k31_registered(self):
+        e = _DEFAULT_MODELS[KIMI_K31_ALIAS]
+        assert e["bedrock_id"] == KIMI_K31_BEDROCK_ID
+        assert e["endpoint"] == "runtime"
+        assert e["protocol"] == "openai-responses"
+        assert e["context_length"] == 1_000_000
+        assert e["max_output"] == 131_072
+
+    def test_kimi_k31_chat_registered(self):
+        e = _DEFAULT_MODELS[KIMI_K31_CHAT_ALIAS]
+        assert e["bedrock_id"] == KIMI_K31_BEDROCK_ID
+        assert e["endpoint"] == "runtime"
+        assert e["dialect"] == "openai-chat"
+        assert e["context_length"] == 1_000_000
+        assert e["max_output"] == 131_072
+
     @pytest.mark.parametrize(
         "alias", ["grok4.7", "grok-4-7", "xai.grok-4.7", "xai-grok-4.7"]
     )
@@ -118,10 +137,20 @@ class TestGrok47KimiRegistration:
     def test_kimi_k3_aliases_resolve(self, alias):
         assert _MODEL_ALIASES[alias] == KIMI_K3_ALIAS
 
+    @pytest.mark.parametrize(
+        "alias",
+        ["kimi-k3-1", "moonshotai.kimi-k3.1", "moonshotai-kimi-k3.1",
+         "us.moonshotai.kimi-k3.1", "global.moonshotai.kimi-k3.1"],
+    )
+    def test_kimi_k31_aliases_resolve(self, alias):
+        assert _MODEL_ALIASES[alias] == KIMI_K31_ALIAS
+
     def test_registry_resolves_canonical_bedrock_ids(self):
         reg = ModelRegistry(GatewayConfig(models=_parse_models(_DEFAULT_MODELS)))
         assert reg.resolve(GROK47_ALIAS) == GROK47_BEDROCK_ID
         assert reg.resolve(KIMI_K3_ALIAS) == KIMI_K3_BEDROCK_ID
+        assert reg.resolve(KIMI_K31_ALIAS) == KIMI_K31_BEDROCK_ID
+        assert reg.resolve(KIMI_K31_CHAT_ALIAS) == KIMI_K31_BEDROCK_ID
 
     def test_grok47_selects_responses_dialect(self):
         e = _parse_models(_DEFAULT_MODELS)[GROK47_ALIAS]
@@ -131,6 +160,16 @@ class TestGrok47KimiRegistration:
     def test_kimi_k3_selects_responses_dialect(self):
         e = _parse_models(_DEFAULT_MODELS)[KIMI_K3_ALIAS]
         assert get_dialect(e).name == "openai-responses"
+        assert get_transport(e).name == "bedrock"
+
+    def test_kimi_k31_selects_responses_dialect(self):
+        e = _parse_models(_DEFAULT_MODELS)[KIMI_K31_ALIAS]
+        assert get_dialect(e).name == "openai-responses"
+        assert get_transport(e).name == "bedrock"
+
+    def test_kimi_k31_chat_selects_chat_dialect(self):
+        e = _parse_models(_DEFAULT_MODELS)[KIMI_K31_CHAT_ALIAS]
+        assert get_dialect(e).name == "openai-chat"
         assert get_transport(e).name == "bedrock"
 
 
@@ -280,3 +319,11 @@ class TestKimiK3Endpoints:
         model = next(item for item in resp.json()["data"] if item["id"] == KIMI_K3_ALIAS)
         assert model["context_length"] == 1_000_000
         assert model["max_output_tokens"] == 131_072
+
+    def test_models_lists_kimi_k31_metadata(self, client):
+        resp = client.get("/v1/models")
+        by_id = {item["id"]: item for item in resp.json()["data"]}
+        for alias in (KIMI_K31_ALIAS, KIMI_K31_CHAT_ALIAS):
+            model = by_id[alias]
+            assert model["context_length"] == 1_000_000
+            assert model["max_output_tokens"] == 131_072

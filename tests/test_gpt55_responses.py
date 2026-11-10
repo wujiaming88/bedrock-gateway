@@ -189,6 +189,8 @@ class TestModelEntryDefaults:
         runtime_openai_models = {
             "grok-4.7": ("openai-responses", "runtime"),
             "kimi-k3": ("openai-responses", "runtime"),
+            "kimi-k3.1": ("openai-responses", "runtime"),
+            "kimi-k3.1-chat": ("openai-chat", "runtime"),
             "glm-5.3": ("openai-responses", "runtime"),
             "glm-5.3-chat": ("openai-chat", "runtime"),
         }
