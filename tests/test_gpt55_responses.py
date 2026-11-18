@@ -431,7 +431,7 @@ class TestEndpointGuards:
         mock_cls.return_value = _mock_sync_client(_responses_body())
         resp = client.post("/v1/messages", json={
             "model": GPT55_ALIAS,
-            "max_tokens": 10,
+            "max_tokens": 64,
             "messages": [{"role": "user", "content": "hi"}],
         })
         assert resp.status_code == 200
@@ -446,7 +446,9 @@ class TestEndpointGuards:
         # Upstream received a translated Responses body (input, not messages)
         sent = _sent(mock_cls)
         assert sent["model"] == GPT55_BEDROCK_ID
-        assert sent["max_output_tokens"] == 10
+        # Values above the upstream floor pass through untouched; the <16
+        # clamp is covered in test_messages_to_responses.py.
+        assert sent["max_output_tokens"] == 64
         assert sent["input"] == [
             {"role": "user", "content": [{"type": "input_text", "text": "hi"}]}
         ]

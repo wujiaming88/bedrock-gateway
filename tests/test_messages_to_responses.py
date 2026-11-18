@@ -177,6 +177,23 @@ class TestRequestTranslation:
         )
         assert out["instructions"] == "be brief"
 
+    @pytest.mark.parametrize("requested,expected", [
+        (1, 16),    # Claude Code's model-switch probe
+        (15, 16),   # just below the upstream floor
+        (16, 16),   # exactly at the floor
+        (17, 17),   # above the floor — untouched
+        (4096, 4096),
+    ])
+    def test_max_output_tokens_clamped_to_upstream_floor(self, requested, expected):
+        """Bedrock's OpenAI layer 400s on max_output_tokens < 16; Anthropic
+        clients use smaller values (Claude Code probes with max_tokens: 1)."""
+        out = to_responses_request(
+            {"messages": [{"role": "user", "content": "hi"}],
+             "max_tokens": requested},
+            "m",
+        )
+        assert out["max_output_tokens"] == expected
+
     def test_system_block_array(self):
         out = to_responses_request(
             {

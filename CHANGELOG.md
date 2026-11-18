@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.28] — 2026-11-18
+
+### 修复
+
+- 修复经 `/v1/messages` 调用任何 Responses 方言模型时，`max_tokens < 16` 被上游 400 顶掉的问题。Bedrock 的 OpenAI 兼容层要求 `max_output_tokens ≥ 16`，而 Claude Code 在切换模型时用 `max_tokens: 1` 做探测，网关此前原样透传导致探测失败、模型切换被拒（`Invalid 'max_output_tokens': integer below minimum value`）。现于 Anthropic→Responses 翻译处钳制到 16（`messages_to_responses._MIN_MAX_OUTPUT_TOKENS`），`≥16` 的值原样透传。实测该下限对 `kimi-k3` / `kimi-k3.1` / `glm-5.3` / `grok-4.7` / `gpt-5.5` 全部生效。
+
 ## [0.8.27] — 2026-11-10
 
 ### 新增

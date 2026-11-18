@@ -160,6 +160,7 @@ curl http://127.0.0.1:4000/v1/messages \
 - `gpt-6-sol` / `gpt-6-luna` 在 Bedrock mantle 上**仅 `us-east-1`（N. Virginia）** 提供（与 `gpt-6-astra` 的 `us-west-2` 相反）；内置条目通过 per-model `region` 覆盖自动路由，推荐使用注册 alias 而非原始 ID。别名各为 `gpt-6-sol` / `gpt-6sol` / `gpt6-sol` / `openai.gpt-6-sol` / `openai-gpt-6-sol`（Luna 同理）。Chat 变体 `gpt-6-sol-chat` / `gpt-6-luna-chat` 与 `gpt-6-astra-chat` 一样，在收到上游 400 后自动把 `max_tokens` 改名为 `max_completion_tokens`。
 - `gpt-6.1-sol` 在 Bedrock mantle 上**仅 `us-east-1`（N. Virginia）** 提供（同 `gpt-6-sol` / `gpt-6-luna`）；官方 model card 规格为 1M 上下文 / 131,072 最大输出。别名：`gpt-6.1-sol` / `gpt-6-1-sol` / `gpt6.1-sol` / `openai.gpt-6.1-sol` / `openai-gpt-6.1-sol`。Chat 变体 `gpt-6.1-sol-chat` 与 `gpt-6-sol-chat` 一样，在收到上游 400 后自动把 `max_tokens` 改名为 `max_completion_tokens`。
 - **超时**：网关全局单次上游尝试超时默认 `300s`（`retry.timeout`，env `BEDROCK_TIMEOUT`）。密集（dense）mantle 模型（`gpt-5.5` / `gpt-5.6-*` / `gpt-6-*`）预填充随上下文超线性增长，内置条目已通过 per-model `timeout: 600` 覆盖为 `600s`；自定义模型可在其 `models:` 条目里设 `timeout:` 单独覆盖（`None` 则继承全局默认）。
+- **`/v1/messages` 的 `max_tokens` 下限**：经该端点翻译到 Responses 时，`max_tokens < 16` 会被抬到 16——Bedrock 的 OpenAI 兼容层要求 `max_output_tokens ≥ 16`，而 Claude Code 切换模型时用 `max_tokens: 1` 做探测（不抬会直接 400 导致切换失败）。≥16 的值原样透传。
 - **Azure OpenAI**：多云支持，需在 config 里配 `azure_resources`（endpoint + key）+ 模型条目（见 [多云与 Azure](#多云与-azure)）。
 - 请求 `model` 也可直接传原始 Bedrock ID（以 `us.` / `anthropic.` / `openai.` / `xai.` 等开头的按 passthrough 处理）。
 

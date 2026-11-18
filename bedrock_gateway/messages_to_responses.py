@@ -45,6 +45,14 @@ _INCOMPLETE_REASON_TO_STOP: dict[str, str] = {
     "content_filter": "end_turn",
 }
 
+# Bedrock's OpenAI-compatible layer (and Azure's GPT-5/o-series) rejects
+# ``max_output_tokens`` below 16 with a 400. Anthropic clients have no such
+# floor — Claude Code's model-switch probe sends ``max_tokens: 1`` — so a
+# verbatim translation would fail the request before the model ever runs.
+# Requests asking for <16 tokens are probes in practice; raising them to the
+# floor costs nothing and keeps the client working.
+_MIN_MAX_OUTPUT_TOKENS = 16
+
 
 def _system_to_instructions(system: Any) -> str | None:
     """Flatten an Anthropic ``system`` (string or text-block array) to a string.
@@ -240,7 +248,7 @@ def to_responses_request(anthropic_body: dict, upstream_model: str) -> dict:
 
     max_tokens = anthropic_body.get("max_tokens")
     if max_tokens is not None:
-        out["max_output_tokens"] = max_tokens
+        out["max_output_tokens"] = max(max_tokens, _MIN_MAX_OUTPUT_TOKENS)
 
     if "temperature" in anthropic_body:
         out["temperature"] = anthropic_body["temperature"]
