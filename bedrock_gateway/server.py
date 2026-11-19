@@ -62,6 +62,7 @@ from .embeddings import (
     render_openai,
     resolve_profile,
 )
+from .http_diagnostics import http_protocol_class
 from .logging_config import configure_logging
 from .messages_to_responses import (
     AnthropicStreamAdapter,
@@ -3044,4 +3045,7 @@ def run(config: GatewayConfig | None = None) -> None:
         port=config.server.port,
         log_level=config.server.log_level,
         log_config=None,
+        # Name the peer + payload when a request fails HTTP parsing; uvicorn's
+        # default message says only "Invalid HTTP request received."
+        http=http_protocol_class(),
     )

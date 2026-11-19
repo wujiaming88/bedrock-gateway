@@ -1025,27 +1025,32 @@ class TestRunAndCreateAppDefaults:
         monkeypatch.chdir(tmp_path)
         called = {}
 
-        def fake_uvicorn_run(app, host, port, log_level, log_config):
+        def fake_uvicorn_run(app, host, port, log_level, log_config, **kwargs):
             called["host"] = host
             called["port"] = port
             called["log_config"] = log_config
+            called["http"] = kwargs.get("http")
 
         monkeypatch.setattr("bedrock_gateway.server.uvicorn.run", fake_uvicorn_run)
         run()
         assert called["port"] == 4000
         assert called["log_config"] is None
+        # The invalid-request diagnostics ride in as a protocol class.
+        assert called["http"] is not None
 
     def test_run_with_explicit_config(self, monkeypatch, config):
         calls = {}
 
-        def fake_uvicorn_run(app, host, port, log_level, log_config):
+        def fake_uvicorn_run(app, host, port, log_level, log_config, **kwargs):
             calls["port"] = port
             calls["log_config"] = log_config
+            calls["http"] = kwargs.get("http")
 
         monkeypatch.setattr("bedrock_gateway.server.uvicorn.run", fake_uvicorn_run)
         run(config)
         assert calls["port"] == 4000
         assert calls["log_config"] is None
+        assert calls["http"] is not None
 
 
 # ---------------------------------------------------------------------------

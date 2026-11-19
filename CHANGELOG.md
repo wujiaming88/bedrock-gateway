@@ -3,6 +3,12 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/spec/v2.0.0.html)。
 
+## [0.8.29] — 2026-11-19
+
+### 变更
+
+- **非法 HTTP 请求的日志现在能定位原因**。uvicorn 原生的 `Invalid HTTP request received.` 既不带来源也不带载荷，运维无法区分是互联网扫描器、客户端故障还是二进制协议探测。新增 `http_diagnostics` 模块：代理 httptools 解析器，解析失败时补记一条 `[DN] REJECT invalid_http peer=<ip:port> kind=<分类> bytes=<长度> preview=<repr + hex>`，分类含 `tls-client-hello`（HTTPS 打到明文端口）、`text`（畸形请求行/头）、`binary`、`mixed text/binary`；preview 截断到 64 字节，兼顾可辨识与不倾泻攻击载荷。不改变控制流——异常照常重新抛出，uvicorn 仍返回 400；日志自身出错也不会掩盖解析错误。httptools 不可用时自动回退 uvicorn 的 `auto` 选择。
+
 ## [0.8.28] — 2026-11-18
 
 ### 修复
